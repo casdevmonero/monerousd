@@ -101,8 +101,14 @@ jobs:
               ls "$B"/msi/*.msi "$B"/nsis/*.exe ;;
             Linux)
               ls "$B"/deb/*.deb "$B"/appimage/*.AppImage
-              dpkg-deb -c "$B"/deb/*.deb | grep -q sidecar/usdmd-node
-              dpkg-deb -c "$B"/deb/*.deb | grep -q sites/ionswap-monerousd-org/index.html ;;
+              # the listing goes to a file first: `dpkg-deb -c | grep -q` broke tar's pipe when grep stopped at its first match
+              # (run 44327737913, "tar: stdout: write error" under pipefail)
+              dpkg-deb -c "$B"/deb/*.deb > /tmp/deb-list.txt
+              grep -q sidecar/usdmd-node /tmp/deb-list.txt
+              grep -q sites/ionswap-monerousd-org/index.html /tmp/deb-list.txt
+              # the node the package installs starts on this system
+              rm -rf /tmp/deb-x && mkdir -p /tmp/deb-x && dpkg-deb -x "$B"/deb/*.deb /tmp/deb-x
+              "$(find /tmp/deb-x -path '*sidecar/usdmd-node' -type f -print -quit)" --version ;;
           esac
 
       - uses: actions/upload-artifact@v4

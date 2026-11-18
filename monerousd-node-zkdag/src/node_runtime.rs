@@ -6610,6 +6610,9 @@ impl<T: CellTransport> NodeRuntime<T> {
         // past the constant), and a peer that answers slowly lifts it only to the constant.
         if sent > 0 && !named.is_empty() && asked_at != 0 {
             let took = self.now_unix_ms().saturating_sub(asked_at);
+            // SPEED (lane speed5, 2026-11-18): the asker's side of the same round, on the machine clock (see `[fetch-time] getdata`).
+            // DIGITAL-CASH-PRIVACY-REVIEWED: this node's own clock and a duration; no id, peer or note.
+            crate::arti_transport::ilog(&format!("[fetch-time] page asked at {asked_at}, verified-in at {} after {took} ms ({sent} body(ies))", asked_at + took));
             if took > 0 {
                 let had_measure = self.relay_round_median_ms().is_some();
                 push_relay_round(&mut self.relay_round_ms, took);
@@ -14848,12 +14851,20 @@ impl<T: CellTransport> NodeRuntime<T> {
                 })
                 .collect();
             let bytes_max = BLOCK_BATCH_BYTES_MAX.min(byte_budget.max(crate::arti_transport::BULK_FRAME_MAX));
+            let serve_t0 = self.now_unix_ms();
             let blocks = self.node.whole_blocks_by_ids(&ids, bytes_max);
             let (out, n) = batch_page_frame(&crate::hash::Hash32([0u8; 32]), &blocks);
             crate::arti_transport::ilog(&format!(
                 "[block-lane] serving {n} of {} named whole block(s) ({} byte(s)) — DB-275 getdata",
                 ids.len(),
                 out.len()
+            ));
+            // SPEED (lane speed5, 2026-11-18): the serve's own share of a one-block fetch round (~5.7 s on a rig), stamped on the
+            // machine clock so the asker's `[fetch-time] page` line splits the round into before / during / after the serve.
+            // DIGITAL-CASH-PRIVACY-REVIEWED: this node's own clock and a duration; no id, peer or note.
+            crate::arti_transport::ilog(&format!(
+                "[fetch-time] getdata served at {serve_t0} in {} ms ({n} body(ies))",
+                self.now_unix_ms().saturating_sub(serve_t0)
             ));
             return out;
         }
