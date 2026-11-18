@@ -793,6 +793,49 @@ if (restoreBtn) restoreBtn.addEventListener('click', async () => {
   }
 })();
 
+// ═══ THE CHAIN DECIDES, AND THE PERSON IS TOLD (wallet audit D8, lane speed5 2026-11-18) ═══════════════════════════════
+// User 2026-11-18: "the wallet and the apps are missing a lot of pending/sent notifications that let the user know that their
+// funds have been sent or moved, or are still unconfirmed. The chain should decide." Every action that moves value adds one
+// line here: "waiting for the chain" until the chain's own answer turns it to done (or refused). Each check reads the
+// wallet's own view of the chain (a send's spent input, a stake in Your stake, a new token in the balance, the change of a
+// spent note back) — never a timer, never the screen's guess. There is no deadline: the line says it is still waiting.
+const _tray = [];
+function _trayBox() {
+  let box = document.getElementById('pendingTray');
+  if (!box) { box = document.createElement('div'); box.id = 'pendingTray'; box.className = 'pending-tray'; box.setAttribute('aria-live', 'polite'); document.body.appendChild(box); }
+  return box;
+}
+function _trayDraw(it) {
+  if (!it.el) { it.el = document.createElement('div'); it.el.className = 'pt-item'; _trayBox().appendChild(it.el); }
+  const waitedS = Math.round((Date.now() - it.t0) / 1000);
+  const word = it.state === 'landed' ? '✓ ' + it.done : it.state === 'refused' ? '✗ ' + (it.why || 'refused by the chain') : (waitedS > 180 ? 'still waiting for the chain' : 'waiting for the chain…');
+  it.el.className = 'pt-item pt-' + it.state;
+  it.el.textContent = it.label + ' — ' + word;
+}
+// trackPending(label, check, done): `check()` answers 'landed', 'refused' (or { refused: why }), or null for not yet.
+function trackPending(label, check, done) {
+  const it = { label, check, done: done || 'done', state: 'pending', t0: Date.now(), el: null, why: '' };
+  _tray.push(it); _trayDraw(it);
+  const tick = async () => {
+    let v = null;
+    try { v = await it.check(); } catch (_) { v = null; }
+    if (v === 'landed') { it.state = 'landed'; _trayDraw(it); if (typeof renderBalance === 'function') renderBalance(); setTimeout(() => { if (it.el) it.el.remove(); }, 9000); return; }
+    if (v === 'refused' || (v && v.refused)) { it.state = 'refused'; it.why = (v && v.refused) || ''; _trayDraw(it); setTimeout(() => { if (it.el) it.el.remove(); }, 20000); return; }
+    _trayDraw(it);
+    setTimeout(tick, 4000);
+  };
+  setTimeout(tick, 2500);
+}
+// The chain-decided checks every action uses.
+const chainCheck = {
+  send: (nf) => async () => { if (!nf) return null; const s = await walletCore('wallet_send_status', { nullifier_hex: nf }); return s && s.confirmed === true ? 'landed' : null; },
+  stakeAbove: (before) => async () => { const m = await walletCore('wallet_my_stake'); return Number((m && m.usdm) || 0) + Number((m && m.pending_usdm) || 0) > before + 1e-9 ? 'landed' : null; },
+  stakeBelow: (before) => async () => { const m = await walletCore('wallet_my_stake'); return Number((m && m.usdm) || 0) + Number((m && m.pending_usdm) || 0) < before - 1e-9 ? 'landed' : null; },
+  assetHeld: (tag) => async () => { const b = await walletCore('wallet_balance'); return tag && Number(((b && b.assets_atomic) || {})[String(tag).toLowerCase()] || 0) > 0 ? 'landed' : null; },
+  changeBack: () => async () => { const b = await walletCore('wallet_balance'); return Number((b && b.pending_change_usdm) || 0) === 0 ? 'landed' : null; },
+};
+async function _stakeTotalNow() { try { const m = await walletCore('wallet_my_stake'); return Number((m && m.usdm) || 0) + Number((m && m.pending_usdm) || 0); } catch (_) { return 0; } }
+
 // --- create: the Rust core draws a fresh CSPRNG PQ seed (never a fixed/derived-from-nothing key) ---
 const genBtn = document.getElementById('btnDoGenerate');
 if (genBtn) genBtn.addEventListener('click', async () => {
@@ -889,6 +932,36 @@ function activityRowHtml(it) {
          `<span class="activity-amt ${out ? 'out' : 'in'}${pending ? ' pending' : ''}${spent || dropped ? ' spent' : ''}">${dropped ? '' : escapeHtml(sign)}${escapeHtml(usdm)} ${escapeHtml(it.unit || 'USDm')}</span></div>`;
 }
 
+// ROWS UPDATE IN PLACE (wallet audit D3, lane speed5 2026-11-18; user: the lists "shouldnt flicker at every receive it should
+// just tick up like a live counter"). MEASURED cause: every poll rebuilt the whole list's innerHTML, and every activity row
+// carries an entry animation (styles.css rowIn), so every row replayed it on every refresh. Now a row whose markup is
+// unchanged is left exactly where it is; a new row is inserted alone (and only it animates); a changed row is replaced alone.
+function patchRows(box, htmlList) {
+  if (!box) return;
+  const want = htmlList.slice();
+  const tpl = document.createElement('template');
+  let cur = box.firstElementChild;
+  for (const html of want) {
+    if (cur && cur.dataset.rowHtml === html) { cur = cur.nextElementSibling; continue; }
+    tpl.innerHTML = html.trim();
+    const node = tpl.content.firstElementChild;
+    if (!node) continue;
+    node.dataset.rowHtml = html;
+    // a row further down with the same markup moves up (an insert above it), every other is new
+    let found = null;
+    for (let n = cur; n; n = n.nextElementSibling) { if (n.dataset.rowHtml === html) { found = n; break; } }
+    if (found) { box.insertBefore(found, cur); found.style.animation = 'none'; }
+    else box.insertBefore(node, cur);
+  }
+  while (cur) { const next = cur.nextElementSibling; cur.remove(); cur = next; }
+  for (const n of Array.from(box.children)) if (!n.dataset.rowHtml) n.remove(); // a placeholder ("Scanning…") goes once rows exist
+}
+function setRowsOrEmpty(box, htmlList, emptyHtml) {
+  if (!box) return;
+  if (htmlList.length) { box.dataset.emptyHtml = ''; patchRows(box, htmlList); return; }
+  if (box.dataset.emptyHtml !== emptyHtml) { box.innerHTML = emptyHtml; box.dataset.emptyHtml = emptyHtml; }
+}
+
 // The live balance — NO cache/store: every load RE-READS fresh (fetch-all served notes → local
 // ML-KEM decap → sum owned). O(served notes), sub-1s.
 let _lastPendingUsdm = 0; // prior render's pending amount — used to TIME the pending→confirmed settle render
@@ -907,10 +980,12 @@ function renderHeldAssets(b) {
   const box = document.getElementById('heldAssets');
   if (!card || !box) return 0;
   const atomic = (b && b.assets_atomic) || {};
-  const held = Object.keys(atomic).filter((tag) => tag !== USDM_ASSET_TAG_HEX && Number(atomic[tag]) > 0);
+  // a stake position ([STKE, epoch, REWD]: limbs 0 and 2 read 454b5453… and 44574552… little-endian) is shown under Earn (D2)
+  const isStakePos = (t) => String(t).toLowerCase().startsWith('454b5453') && String(t).toLowerCase().slice(32, 40) === '44574552';
+  const held = Object.keys(atomic).filter((tag) => tag !== USDM_ASSET_TAG_HEX && Number(atomic[tag]) > 0 && !isStakePos(tag));
   card.hidden = held.length === 0;
   const cards = assetCards();
-  box.innerHTML = held.map((tag) => {
+  patchRows(box, held.map((tag) => {
     const coin = (window.__ASSET_SYMBOLS || {})[tag];            // SAT and any other coin the core names
     // named by a card this wallet was handed, else by the chain's own record of the asset (read from this wallet's
     // own node; when it arrives the list is drawn again)
@@ -923,7 +998,7 @@ function renderHeldAssets(b) {
     return '<div class="held-asset">' + sanitizeHtml(assetLogo(coin || (c && c.symbol) || '?')) +
       '<div class="held-asset-name"><b>' + escapeHtml(title) + (nft ? ' <span class="held-asset-kind">NFT</span>' : '') + '</b><span>' + escapeHtml(under) + '</span></div>' +
       '<div class="held-asset-amt">' + escapeHtml(amount) + '</div></div>';
-  }).join('');
+  }));
   return held.length;
 }
 async function renderBalance() {
@@ -1018,9 +1093,7 @@ async function loadWallet() {
   try {
     const r = await walletCore('wallet_activity');
     const items = (r && r.activity) || [];
-    peek.innerHTML = items.length
-      ? items.slice(0, 4).map(activityRowHtml).join('')
-      : '<div class="activity-empty">No activity yet.</div>';
+    setRowsOrEmpty(peek, items.slice(0, 4).map(activityRowHtml), '<div class="activity-empty">No activity yet.</div>');
   } catch (e) {
     peek.innerHTML = '<div class="activity-empty">' + ((e && e.notInApp)
       ? 'Open the MoneroUSD app to see activity.' : ('Unavailable: ' + escapeHtml(e && (e.message || e)))) + '</div>';
@@ -1248,14 +1321,13 @@ async function doClaimName() {
 }
 async function loadActivity() {
   const list = document.getElementById('activityList');
-  list.innerHTML = '<div class="activity-empty">Scanning your notes…</div>';
+  if (!list.firstElementChild) list.innerHTML = '<div class="activity-empty">Scanning your notes…</div>'; // first visit only
   const t0 = performance.now();
   try {
     const r = await walletCore('wallet_activity');
     console.log('[activity] wallet_activity ' + Math.round(performance.now() - t0) + 'ms', r);
     const items = (r && r.activity) || [];
-    list.innerHTML = items.length ? items.map(activityRowHtml).join('')
-      : '<div class="activity-empty">No activity yet.</div>';
+    setRowsOrEmpty(list, items.map(activityRowHtml), '<div class="activity-empty">No activity yet.</div>');
   } catch (e) {
     list.innerHTML = '<div class="activity-empty">' + ((e && e.notInApp)
       ? 'Open the MoneroUSD app to see activity.' : ('Activity unavailable: ' + escapeHtml(e && (e.message || e)))) + '</div>';
@@ -1372,12 +1444,14 @@ async function doStake() {
   btn.disabled = true; st.className = 'send-status'; st.textContent = 'Proving + staking…';
   const t0 = performance.now();
   try {
+    const _stBefore = await _stakeTotalNow();
     const r = await walletCore('wallet_stake', { amount_usdm: amount, lock_tier: 0 });
     const ms = Math.round(performance.now() - t0);
     console.log('[stake] wallet_stake ' + ms + 'ms', r);
     st.className = 'send-status ok';
     if (!(r && r.published)) throw new Error('the network did not take the stake yet (' + String((r && r.outcome) || 'unknown') + ') — nothing moved');
     st.textContent = '✓ Staked (' + ms + 'ms) · it shows in Your stake once the next block applies it';
+    trackPending('Stake of ' + amount.toLocaleString(undefined, { maximumFractionDigits: 8 }) + ' USDm', chainCheck.stakeAbove(_stBefore), 'in Your stake');
     document.getElementById('stakeAmount').value = '';
     // Refresh the live stake stats but KEEP the green confirmation (it persists until the next action / tab switch).
     setTimeout(() => { renderBalance(); loadEarn({ keepStatus: true }); }, 400);
@@ -1423,7 +1497,9 @@ async function doUnstake() {
     warning: 'Your staked USDm returns to your spendable balance with the reward it has earned. It stops earning until you stake again.' }))) return;
   btn.disabled = true; st.className = 'send-status'; st.textContent = 'Proving + unstaking…';
   try {
+    const _stBefore = await _stakeTotalNow();
     const r = await walletCore('wallet_unstake');
+    trackPending('Unstake', chainCheck.stakeBelow(_stBefore), 'back in your balance');
     st.className = 'send-status ok';
     st.textContent = '✓ Unstaking ' + Number((r && r.principal_usdm) || 0).toLocaleString(undefined, { maximumFractionDigits: 8 }) + ' USDm + ' + Number((r && r.reward_usdm) || 0).toLocaleString(undefined, { maximumFractionDigits: 8 }) + ' reward · it returns once the next block applies it';
     setTimeout(() => { renderBalance(); loadEarn({ keepStatus: true }); }, 400);
@@ -1786,6 +1862,7 @@ async function doSend() {
     // every 404 and no send could ever flip to confirmed. wallet_send_status computes the same truth from
     // this wallet's OWN input cms via unspent_presence_mask (certified absence, no oracle re-opened).
     const nf = r && r.nullifier_hex;
+    trackPending('Send of ' + Number(amount).toLocaleString(undefined, { maximumFractionDigits: 8 }) + ' USDm', chainCheck.send(nf), 'carried by the chain');
     if (nf) {
       const t1 = performance.now();
       const poll = async () => {
@@ -3699,7 +3776,7 @@ const VEIL_READS = new Set(['getNetwork', 'getHeight', 'qrSvg']);
 const VEIL_IDENTITY = new Set(['connect', 'getAddress', 'listAddresses', 'getBalance', 'newAddress']);
 async function _veilSiteCall(name, method, p) {
   const site = name + '.mud';
-  if (VEIL_READS.has(method)) return _dappProviderCall(method, p);
+  if (VEIL_READS.has(method)) return _dappProviderCallTracked(method, p);
   if (VEIL_IDENTITY.has(method) || method === 'transfer' || method === 'signAndBroadcast') {
     if (!_veilGrants.get(name)) {
       const yes = await confirmCost({ title: site + ' wants to see your address and balance', confirmLabel: 'Allow for this visit',
@@ -3716,7 +3793,7 @@ async function _veilSiteCall(name, method, p) {
         warning: WARN_IRREVERSIBLE + ' This request comes from ' + site + ', a site on the Veil. Only send if you meant to pay this site.' }))) throw new Error('USER_DECLINED: the user cancelled in the wallet');
       return _tauriInvoke('dapp_provider_transfer', { to: p.to, amountUsdm: amt });
     }
-    return _dappProviderCall(method, p);
+    return _dappProviderCallTracked(method, p);
   }
   // ⭐ ITS OWN BACK END (Veil spec §12): the contract the site's `veil.json` binds, and only that one. A read is answered
   // from the back end's state as this wallet reads it from its own node (checked against the chain); a write is a call
@@ -3754,6 +3831,19 @@ async function sovApi(path, body) {
 }
 // Map one provider method → a node-backed result. Reads hit the node RPC; a spend
 // clears the wallet auth gate inside dapp_provider_transfer.
+// Every app request that moves value gets its line in the chain-decided tray (wallet audit D8): sent, then carried (or
+// refused) as the chain says. Read requests and quotes add nothing.
+const _APP_MOVES = { transfer: 'Payment from an app', signAndBroadcast: 'Payment from an app', sendAsset: 'Sending a token',
+  nativeSwap: 'Swap', swapExecute: 'Swap', ionSwap: 'Swap', ionBuy: 'Buy', ionSell: 'Sell', ionAdd: 'Adding to a pool',
+  ionRemove: 'Taking out of a pool', ionRemoveLocked: 'Taking out of a pool', ionLock: 'Locking pool liquidity',
+  ionUnlock: 'Unlocking pool liquidity', ionLaunch: 'Launching a pool', ionClaim: 'Claiming pool earnings',
+  orderPost: 'Order', ladderPost: 'Orders', createCollection: 'Creating a collection', dirRegister: 'Registering a name',
+  profileSet: 'Saving your profile', claimStakeReward: 'Claiming your stake reward' };
+async function _dappProviderCallTracked(method, params, ctx) {
+  const out = await _dappProviderCall(method, params, ctx);
+  if (_APP_MOVES[method]) trackPending(_APP_MOVES[method], chainCheck.changeBack(), 'carried by the chain');
+  return out;
+}
 async function _dappProviderCall(method, params, ctx) {
   const p = params || {};
   const site = ctx && ctx.site ? ctx.site : ''; // set only for a request a WEBSITE made through the connect door
@@ -3918,6 +4008,7 @@ async function _dappProviderCall(method, params, ctx) {
       // `artHex`: the asset's own picture. The core checks it, binds its digest into the asset, and returns a card that carries it.
       const made = await _tauriInvoke('dapp_provider_create_token', { params: { name, symbol, maxSupply: kind === 'nft' ? '1' : String(whole), decimals: 8, kind, logoDigestHex: p.logoDigestHex || undefined, artHex: p.artHex || undefined, collection: collection || undefined } });
       if (made && made.card) { try { await rememberAssetCard(made.card); } catch (_) { /* created all the same; its card is in the reply */ } }
+      trackPending('Creating ' + (kind === 'nft' ? 'the NFT ' : 'the token ') + symbol, chainCheck.assetHeld(made && made.asset_tag_hex), 'in your wallet');
       return made;
     }
     // The card (and so the tag) of an asset THIS wallet made or would make, from its facts and picture. Nothing is created.
@@ -4435,7 +4526,7 @@ setInterval(() => {
     if (f.dataset.veil === '1') return;                        // a Veil site is answered as itself, below
     if (!_isDappOrigin(ev.origin)) { console.debug('[dapp-bridge] ignored foreign origin', ev.origin); return; }
     const reply = (payload) => { try { ev.source.postMessage(Object.assign({ type: 'monerousd:res', id: d.id }, payload), ev.origin); } catch (e) { console.debug('[dapp-bridge] reply failed', e); } };
-    try { reply({ ok: true, result: await _dappProviderCall(d.method, d.params) }); }
+    try { reply({ ok: true, result: await _dappProviderCallTracked(d.method, d.params) }); }
     catch (e) { reply({ ok: false, error: String((e && e.message) || e) }); }
   });
   // A VEIL SITE's requests: its sandboxed frame has an opaque origin ("null"), so it is known by the frame it is in and
@@ -4542,7 +4633,7 @@ async function web3Answer(q) {
       web3Refresh();
       return reply(true, { granted: true });
     }
-    return reply(true, await _dappProviderCall(q.method, q.params, { site: q.origin }));
+    return reply(true, await _dappProviderCallTracked(q.method, q.params, { site: q.origin }));
   } catch (e) { return reply(false, null, String((e && e.message) || e)); }
 }
 (function wireWeb3Connect() {

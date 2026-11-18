@@ -2852,6 +2852,11 @@ fn unspent_candidates_excluding(st: &ScanState, held: &HashSet<[u8; 32]>) -> Vec
 /// ROOT-LAYER: the one predicate every selector reads, so two readers can no longer disagree about one note.
 /// MEASURED: READ (the audit's six readers, docs/DB-305); the db305 pins drive the send and the extracted selectors.
 /// MUST-STAY-GREEN: the db279/db300 selection pins; a_send_never_offers_a_note_the_wallet_recorded_as_spent.
+/// A stake position's asset tag: [`STAKE_TAG_MARK`, start epoch, `STAKE_TAG_MARK2`] (whir_rec_block). Not a token.
+fn is_stake_position_tag(asset: &[u64; 3]) -> bool {
+    asset[0] == usdm_decider::whir_rec_block::STAKE_TAG_MARK && asset[2] == usdm_decider::whir_rec_block::STAKE_TAG_MARK2
+}
+
 fn spendable_now(
     spent: &HashSet<(u64, Digest4)>,
     pending_change: &std::collections::HashMap<[u8; 32], [u8; 32]>,
@@ -2865,6 +2870,22 @@ fn spendable_now(
     }
     // a note one of this wallet's open orders spends is spent for every other selection (`defi_buy::is_order_input`)
     !held.contains(nf) && !defi_buy::is_order_input(nf) && !change_still_in_flight(pending_change, nf, &nf_carrier::authority, held)
+        && !input_on_hold(nf)
+}
+
+/// Inputs of submissions the node never answered (wallet audit D1): kept out of selection for [`UNANSWERED_HOLD`]. If the
+/// chain carries the spend, the note is spent there and the scan drops it; if not, the hold lapses and the note is
+/// spendable again. Process memory only: a restart re-reads the chain, which is the authority on what was spent.
+/// SCALE: one entry per unanswered submission, dropped when it lapses.
+static UNANSWERED_INPUTS: Mutex<Vec<([u8; 32], Instant)>> = Mutex::new(Vec::new());
+const UNANSWERED_HOLD: Duration = Duration::from_secs(600);
+fn hold_unanswered_input(nf: [u8; 32]) {
+    let mut g = UNANSWERED_INPUTS.lock().unwrap_or_else(|e| e.into_inner());
+    g.retain(|(_, at)| at.elapsed() < UNANSWERED_HOLD);
+    g.push((nf, Instant::now()));
+}
+fn input_on_hold(nf: &[u8; 32]) -> bool {
+    UNANSWERED_INPUTS.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|(n, at)| n == nf && at.elapsed() < UNANSWERED_HOLD)
 }
 
 /// DB-305: the note a USDm sell spends: the SMALLEST USDm note spendable NOW that covers `atomic`. The "not enough"
@@ -12448,7 +12469,11 @@ fn wallet_balance_summary(key_id: [u8; 32], view: &pq::NoteView) -> Result<serde
             (if spendable { *amt } else { 0 }, *asset)
         })
         .collect();
-    let asset_totals: std::collections::BTreeMap<[u64; 3], u64> = balances_by_asset(&note_amounts);
+    // A stake note is a POSITION, not a token (wallet audit D2, lane speed5 2026-11-18): its asset is [STKE, start epoch,
+    // REWD], so each stake read as a separate nameless "asset 454b54…" in the held list, which then asked the chain for a
+    // name that does not exist. Stakes are shown where they belong, under Earn (`wallet_my_stake`).
+    let note_amounts_held: Vec<(u64, [u64; 3])> = note_amounts.iter().copied().filter(|(_, a)| !is_stake_position_tag(a)).collect();
+    let asset_totals: std::collections::BTreeMap<[u64; 3], u64> = balances_by_asset(&note_amounts_held);
     let atomic: u64 = asset_totals[&pq::USDM_ASSET_TAG];
     // The part of `atomic` that can be spent now and is not final yet: a merchant should not hand over goods against it.
     let book_ordinal: std::collections::HashMap<[u8; 32], u64> = with_member_book(&key_id, |b| {
@@ -16819,7 +16844,10 @@ fn stake_submit(
     let (membership_carrier_hex, membership_tip_hex) = membership_bind_for(&agent, &cm_in, o.nullifier, lc_blind)
         .ok_or("the note's membership cannot be proved yet (its member leg is not ready) — nothing was sent")?;
     let recs = self_note_clue_records(&loc_sk, &[cm0, cm1], &[Some(j0), j1]);
-    let reply: serde_json::Value = agent
+    // The node proves, admits and relays the stake before it answers; a loaded node can take past a minute (wallet audit
+    // D1: at 60 s the wallet read "failed" while the node had accepted the stake, so the next press spent the same note).
+    let slow = ureq::AgentBuilder::new().timeout(Duration::from_secs(300)).build();
+    let reply: serde_json::Value = slow
         .post(&format!("{}/stake", node_url()))
         .send_json(serde_json::json!({
             "nullifier": hex::encode(input_nf),
@@ -16838,7 +16866,16 @@ fn stake_submit(
             "membership_tip_hex": membership_tip_hex,
             "note_clues_hex": hex::encode(&recs),
         }))
-        .map_err(|e| format!("the node refused the stake: {}", node_refusal(e)))
+        .map_err(|e| {
+            // NO VERDICT (a timeout, a dropped link): the node MAY hold the stake. Its input stays out of every selection for
+            // the hold window, so a second press cannot spend the same note again (BORROWED: Bitcoin Core keeps an
+            // unconfirmed broadcast's inputs out of coin selection until it is abandoned). A refusal (an HTTP status) is a
+            // verdict: nothing is held.
+            if !matches!(e, ureq::Error::Status(..)) {
+                hold_unanswered_input(input_nf);
+            }
+            format!("the node refused the stake: {}", node_refusal(e))
+        })
         .and_then(|r| r.into_json().map_err(|e| format!("stake reply json: {e}")))?;
     let published = reply.get("published").and_then(|v| v.as_bool()) == Some(true);
     if published {
@@ -17825,6 +17862,14 @@ fn ensure_node_receives_my_rewards() -> Result<serde_json::Value, String> {
         && now.get("scan_ek_hex").and_then(|v| v.as_str()) == Some(mine_hex.as_str());
     if is_mine {
         return Ok(serde_json::json!({ "provisioned": true, "mine": true, "next_index": now.get("next_index").cloned().unwrap_or(0.into()) }));
+    }
+    // NEVER TAKE ANOTHER WALLET'S REWARDS (wallet audit D4, lane speed5 2026-11-18). MEASURED: a test wallet that attached to
+    // the testnet origin replaced the origin's recipient on its first sync and received its block rewards from then on (the
+    // node's rule: "a different recipient REPLACES"). A wallet now claims only a node that rewards nobody yet — on a person's
+    // own machine that is their own wallet, the first and only one; a node that already rewards someone keeps doing so.
+    if now.get("provisioned").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Ok(serde_json::json!({ "provisioned": true, "mine": false,
+            "note": "this node already rewards another wallet; it was left as it is" }));
     }
     let from_index = SAT_NEXT_INDEX.load(Ordering::SeqCst);
     let set: serde_json::Value = agent
@@ -26462,6 +26507,18 @@ fn wallet_token_create_blocking(
     };
     if created.get("asset_id").and_then(|v| v.as_str()) != Some(id_hex.as_str()) {
         return Err("the node derived a different asset id than this wallet".into());
+    }
+    // THE CREATOR HOLDS ITS SUPPLY THE MOMENT THE NODE TAKES THE CREATION (wallet audit D9, lane speed5 2026-11-18). MEASURED:
+    // the repro's RPRO token was absent from the creator's balance 33 s after a 122 s creation, so IonSwap could not see it
+    // and its pool failed. The supply note is sealed to this wallet's own keys, so it is recorded here exactly as a stake's
+    // outputs are (`record_own_output`); the chain still decides it — a creation no block carries is never spendable, and
+    // the scan finds the same note by its commitment, never twice.
+    match (own_note_keys(), own_scan_dk()) {
+        (Ok(keys), Ok(dk)) => match pq::scan_note_full(&note, &dk, &keys.spk) {
+            Some((_, seed)) => record_own_output(&keys.view(), supply, tag, seed, &note),
+            None => eprintln!("[asset-create] ⛔ the supply note does not open with this wallet's own key — not recorded; the scan must find it"),
+        },
+        _ => eprintln!("[asset-create] the wallet's keys are not open — the supply is not recorded here; the scan must find it"),
     }
     // what the callers that read the old two-step reply's `mint` find there: the supply's verdict is the creation's
     let minted = serde_json::json!({

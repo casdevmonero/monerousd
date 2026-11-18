@@ -1967,3 +1967,11 @@ html.m-phone .update-banner { margin: 0; }
   animation: browserLoad 0.9s var(--ease) infinite; }
 @keyframes browserLoad { from { background-position: -50% 0; } to { background-position: 150% 0; } }
 @media (prefers-reduced-motion: reduce) { .browser-viewport.loading::before { animation: none; background: var(--orange); opacity: .6; } }
+
+/* The chain-decided status tray (wallet audit D8): one line per movement, bottom-right, clear of the content. */
+.pending-tray { position: fixed; right: 16px; bottom: 16px; z-index: 900; display: flex; flex-direction: column; gap: 8px; max-width: min(420px, calc(100vw - 32px)); pointer-events: none; }
+.pt-item { pointer-events: auto; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.45; color: var(--text-0);
+  background: #121218; border: 1px solid rgba(255,255,255,.12); box-shadow: 0 10px 30px -12px rgba(0,0,0,.7); overflow-wrap: anywhere; }
+.pt-pending { border-color: rgba(245,166,35,.45); }
+.pt-landed { border-color: rgba(52,211,153,.55); color: var(--good, #34d399); }
+.pt-refused { border-color: rgba(229,72,77,.6); color: var(--bad, #e5484d); }

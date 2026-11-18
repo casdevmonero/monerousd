@@ -76,9 +76,12 @@ jobs:
         shell: bash
         run: |
           npm ci
+          # Every installer needs its icon set (Windows: icon.ico for the program's resource file; AppImage: a square PNG;
+          # run 44266xxxx failed on both). Generated from the one square 512 px source by Tauri's own command.
+          npx tauri icon src-tauri/icons/icon.png
           # Only the wallet program goes into an installer: the test harnesses (wallet-harness drives the macOS Bluetooth
           # tap) are not built here (run 44256233250: wallet-harness did not compile on Linux, where that radio is absent).
-          npx tauri build --bundles ${{ matrix.bundles }} --config '{"bundle":{"active":true,"resources":["sidecar/*","sites/**/*"]}}' -- --bin monerousd-wallet-v2
+          npx tauri build --bundles ${{ matrix.bundles }} --config '{"bundle":{"active":true,"resources":["sidecar/*","sites/**/*"],"icon":["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.icns","icons/icon.ico"]}}' -- --bin monerousd-wallet-v2
 
       - name: Smoke — the installer exists and the bundled node inside it starts
         shell: bash
