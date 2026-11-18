@@ -96,10 +96,18 @@ pub async fn dial(addr: &CarrierAddr, own_unix: Option<&PathBuf>) -> Option<BoxS
             s.set_nodelay(true).ok()?;
             Some(Box::new(s))
         }
+        // A local socket exists only on Unix systems; on Windows this carrier is simply not offered (wallet audit W23:
+        // the Windows node did not compile). Relay links carry the mix there as everywhere.
+        #[cfg(unix)]
         CarrierAddr::Unix(p) => {
             own_unix?;
             let s = tokio::net::UnixStream::connect(p).await.ok()?;
             Some(Box::new(s))
+        }
+        #[cfg(not(unix))]
+        CarrierAddr::Unix(_) => {
+            let _ = own_unix;
+            None
         }
         CarrierAddr::Via(_) => None, // a hop through its gateway is never dialled
     }

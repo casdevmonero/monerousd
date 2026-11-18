@@ -284,6 +284,11 @@ function showScreen(id) {
 }
 
 // --- network toggle ---
+// Before the mainnet launch the Mainnet tab says so instead of looking like a choice that silently does nothing (W12).
+if (!MAINNET_OPEN) {
+  const mb = document.querySelector('#netToggle button[data-net="mainnet"]');
+  if (mb) { mb.disabled = true; mb.title = 'Mainnet opens at launch — this wallet runs on the public testnet'; mb.setAttribute('aria-disabled', 'true'); }
+}
 document.getElementById('netToggle').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-net]');
   if (!btn || btn.disabled || !NET_OPEN(btn.dataset.net)) return;
@@ -335,7 +340,38 @@ async function probeNode() {
 // --- create / restore navigation (screens are real DOM below) ---
 // ADOPTABLE A1 (user 2026-10-24: "getting USDm takes three taps or fewer"): Create draws the seed at once — the words are on
 // screen after ONE tap; "I've written it down" is the second; "Add money with Bitcoin" on home is the third.
-document.getElementById('btnCreate').addEventListener('click', () => {
+// THE SAVED WALLET OPENS IN ONE TAP (lane speed5 2026-11-18, wallet audit W19/W20). Create and Restore save the phrase on
+// this device; without this the app asked for the 24 words again at every launch. Create on a device that already holds
+// a wallet replaces that saved wallet, so it now says so in plain words first (ADOPTABLE: nothing lost by surprise).
+let _hasSavedWallet = false;
+(async function offerSavedWallet() {
+  try {
+    const r = await walletCore('wallet_saved');
+    _hasSavedWallet = !!(r && r.saved);
+  } catch (_) { _hasSavedWallet = false; }
+  const open = document.getElementById('btnOpenSaved'), create = document.getElementById('btnCreate');
+  if (!open || !create) return;
+  if (_hasSavedWallet) {
+    open.classList.remove('hidden');
+    create.classList.add('demoted');
+  }
+})();
+const _openSavedBtn = document.getElementById('btnOpenSaved');
+if (_openSavedBtn) _openSavedBtn.addEventListener('click', async () => {
+  const sub = _openSavedBtn.querySelector('.sub');
+  if (sub) sub.textContent = 'Opening…';
+  try {
+    await walletCore('wallet_open_saved');
+    resetWalletSessionState();
+    openHome();
+  } catch (e) {
+    if (sub) sub.textContent = 'Could not open: ' + String((e && e.message) || e);
+  }
+});
+document.getElementById('btnCreate').addEventListener('click', async () => {
+  if (_hasSavedWallet && !(await confirmCost({ title: 'Replace the wallet on this device?', lines: [],
+      warning: 'This device already holds a wallet. A new one replaces it here. If you have not written down its 24 words, you lose access to its funds.',
+      confirmLabel: 'Create a new wallet' }))) return;
   showScreen('screen-create');
   const seed = document.getElementById('createSeed');
   const gen = document.getElementById('btnDoGenerate');
@@ -680,13 +716,17 @@ const WelcomeSpace = (() => {
 
   // Keep the space backdrop live across the onboarding screens: full planet flythrough on Welcome, the calm sparkling
   // starfield on Create + Restore. Hidden once the wallet home opens (display:none → zero cost inside the app).
-  const ONBOARDING = { 'screen-welcome': 'full', 'screen-create': 'stars', 'screen-restore': 'stars' };
+  // The planets keep travelling behind the open wallet on a desktop (user 2026-11-18: "i actually like the planets continuing
+  // their movement while the wallet is open"), dimmed under the app so every number stays readable. Phones keep the wallet
+  // still: the measured WKWebView cost of a full-screen recomposite each frame (styles.css, Mobile PERF) stands there.
+  const ONBOARDING = Object.assign({ 'screen-welcome': 'full', 'screen-create': 'stars', 'screen-restore': 'stars' },
+    COARSE ? {} : { 'screen-home': 'full' });
   function sync(id) {
     if (!initted && !init()) return;
     const m = ONBOARDING[id];
     const show = m != null;
-    if (canvas) canvas.style.display = show ? 'block' : 'none';
-    if (scrim) scrim.style.display = show ? 'block' : 'none';
+    if (canvas) { canvas.style.display = show ? 'block' : 'none'; canvas.classList.toggle('in-app', id === 'screen-home'); }
+    if (scrim) { scrim.style.display = show ? 'block' : 'none'; scrim.classList.toggle('in-app', id === 'screen-home'); }
     if (!show) { stop(); return; }
     mode = m;
     start();
@@ -730,6 +770,29 @@ if (restoreBtn) restoreBtn.addEventListener('click', async () => {
   }
 });
 
+// COPY THE SEED (user 2026-11-18: "add a copy button to the seed so users can copy it easily"). Copies the 24 words, in
+// order, exactly as drawn; the button then says where they belong. A webview that refuses the async clipboard API gets the
+// classic selection copy, so the button never silently does nothing.
+(function wireSeedCopy() {
+  for (const id of ['btnCopySeed', 'btnCopyViewSeed']) {
+  const b = document.getElementById(id); if (!b) continue;
+  b.addEventListener('click', async () => {
+    const text = b.dataset.seed || '';
+    if (!text) return;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (_) {
+      try {
+        const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta); ta.select();
+        ok = document.execCommand('copy'); ta.remove();
+      } catch (_) { ok = false; }
+    }
+    b.textContent = ok ? 'Copied — paste it somewhere offline you trust, then copy something else over it'
+                       : 'Copy is blocked here — select the words above and copy them';
+  });
+  }
+})();
+
 // --- create: the Rust core draws a fresh CSPRNG PQ seed (never a fixed/derived-from-nothing key) ---
 const genBtn = document.getElementById('btnDoGenerate');
 if (genBtn) genBtn.addEventListener('click', async () => {
@@ -738,8 +801,25 @@ if (genBtn) genBtn.addEventListener('click', async () => {
   msg.textContent = 'Drawing a fresh post-quantum seed…'; msg.style.color = 'var(--text-2)';
   try {
     const r = await walletCore('wallet_generate');
-    out.textContent = (r && r.seed) ? r.seed : '';
+    // Whole words in a numbered grid: a word is never split across a line (the old block broke "zebra" into "zeb / ra"),
+    // so what a person writes down is exactly the seed, in order.
+    const seedText = (r && r.seed) ? String(r.seed).trim() : '';
+    const words = seedText.split(/\s+/).filter(Boolean);
+    out.textContent = '';
+    if (words.length > 1) {
+      out.classList.add('seed-grid');
+      words.forEach((w, i) => {
+        const cell = document.createElement('span'); cell.className = 'seed-w';
+        const n = document.createElement('i'); n.textContent = String(i + 1);
+        cell.appendChild(n); cell.appendChild(document.createTextNode(w));
+        out.appendChild(cell);
+      });
+    } else {
+      out.classList.remove('seed-grid'); out.textContent = seedText;
+    }
     out.classList.remove('hidden');
+    const copyBtn = document.getElementById('btnCopySeed');
+    if (copyBtn) { copyBtn.dataset.seed = seedText; copyBtn.textContent = 'Copy seed'; copyBtn.classList.remove('hidden'); }
     msg.textContent = 'Write this down and keep it offline. It is the only way to recover your funds.';
     msg.style.color = 'var(--warn)';
     document.getElementById('btnContinueCreate').classList.remove('hidden');
@@ -752,7 +832,7 @@ if (genBtn) genBtn.addEventListener('click', async () => {
   }
 });
 const _btnContinue = document.getElementById('btnContinueCreate');
-if (_btnContinue) _btnContinue.addEventListener('click', () => { resetWalletSessionState(); openHome(); });
+if (_btnContinue) _btnContinue.addEventListener('click', () => { const cb = document.getElementById('btnCopySeed'); if (cb) { cb.dataset.seed = ''; cb.classList.add('hidden'); } const sb = document.getElementById('createSeed'); if (sb) { sb.textContent = ''; sb.classList.add('hidden'); } resetWalletSessionState(); openHome(); });
 
 // =========================================================================================
 // HOME — desktop two-pane app. The sidebar nav switches ONE active view; each view LOADS real
@@ -3422,9 +3502,9 @@ async function doPrivateBtcDeposit(btc, rows) {
 function renderMixPlans(plans) {
   const rows = document.getElementById('buyRows'); if (!rows) return;
   rows.innerHTML = (plans || []).map(p => '<div class="settings-row mix-plan" data-mix="' + escapeHtml(p.plan_id || '') + '">' +
-    '<div><b>Private Bitcoin deposit</b> · ' + escapeHtml(p.note || '') + '</div>' +
-    (p.status === 'awaiting_funds' ? '<div class="mono selectable">' + escapeHtml(p.receive_address || '') + '</div><button class="chip" data-copy="' + escapeHtml(p.receive_address || '') + '">Copy address</button>' : '') +
-    '<div class="muted">' + (p.rounds_done || 0) + ' step(s) done · ' + (p.minting || 0) + ' private deposit(s) minting · ' + (p.minted || 0) + ' minted' +
+    '<div class="mix-head"><b>Private Bitcoin deposit</b>' + (p.note ? '<span class="mix-status">' + escapeHtml(p.note) + '</span>' : '') + '</div>' +
+    (p.status === 'awaiting_funds' ? '<div class="mix-addr mono selectable">' + escapeHtml(p.receive_address || '') + '</div><button class="chip mix-copy" data-copy="' + escapeHtml(p.receive_address || '') + '">Copy address</button>' : '') +
+    '<div class="mix-progress muted">' + (p.rounds_done || 0) + ' step(s) done · ' + (p.minting || 0) + ' private deposit(s) minting · ' + (p.minted || 0) + ' minted' +
     (p.left_in_vault_btc > 0 ? ' · ' + Number(p.left_in_vault_btc).toFixed(8) + ' BTC stays in your vault' : '') + '</div></div>').join('');
   rows.querySelectorAll('[data-copy]').forEach(b => b.addEventListener('click', () => { try { navigator.clipboard.writeText(b.dataset.copy); b.textContent = 'Copied'; } catch (_) {} }));
 }
@@ -4616,7 +4696,8 @@ async function tapFaucetNative(app) {
   say('Testnet Tap · asking your node for 25 testnet USDm…');
   try {
     const r = await walletCore('wallet_faucet_drip', { amount_usdm: 25 });
-    say('Testnet Tap · 25 USDm published as a chain credit (tx ' + String((r && r.tx_id) || '').slice(0, 12) + '…) — it lands with the next block.');
+    const txid = String((r && ((r.node_reply && r.node_reply.tx_id) || r.tx_id)) || '');
+    say('Testnet Tap · 25 USDm published as a chain credit' + (txid ? ' (tx ' + txid.slice(0, 12) + '…)' : '') + ' — it lands with the next block.');
     setTimeout(renderBalance, 3000);
   } catch (e) {
     say('Testnet Tap · ' + (e && (e.message || e)));
@@ -4624,16 +4705,10 @@ async function tapFaucetNative(app) {
 }
 function openApp(app) {
   if (app.native) { openSovereignBrowser(); return; }   // Sovereign tile → the Sovereign page (pages/sovereign.js)
-  if (app.id === 'faucet') {
-    if (_netInfo && _netInfo.ios) { tapFaucetNative(app); return; }
-    if (_netInfo === null) {
-      // The descriptor loads with the first home-status poll; a tap before that asks the backend directly.
-      walletCore('wallet_network_info')
-        .then((i) => { _netInfo = learnSiteHost(i) || {}; if (_netInfo.ios) tapFaucetNative(app); else { hideSovereignBrowser(); loadDapp(appUrl(app)); } })
-        .catch(() => { hideSovereignBrowser(); loadDapp(appUrl(app)); });
-      return;
-    }
-  }
+  // The Testnet Tap asks this wallet's own node directly on every system (wallet audit W11, lane speed5 2026-11-18):
+  // the desktop used to open the faucet SITE from the node's site host on 127.0.0.1:27752, which showed a blank page
+  // whenever that host was not up, with no word of why. Same door (/faucet/drip), same chain object, same settlement.
+  if (app.id === 'faucet') { tapFaucetNative(app); return; }
   hideSovereignBrowser();
   // BOTH networks embed in the wallet's own webview (old-wallet parity): sovereign mode → the private node
   // mirror; clearnet mode → the real subdomain. The shield in the toolbar toggles which.
@@ -5035,7 +5110,11 @@ async function doRepay(row, p) {
 function switchView(name) {
   if (!VIEW_LOADERS[name]) return;
   // Leaving the Browser tab: park the embedded dApp webview off-screen so it never floats over another view.
-  if (state.view === 'browser' && name !== 'browser') parkDapp();
+  // Leaving the Browser tab closes the open app (wallet audit W21, lane speed5 2026-11-18): MEASURED in the shipped app,
+  // after the Testnet Tap page was opened and the person moved to Receive and then Pay, the wallet's views stopped
+  // repainting (the sidebar kept "Receive" lit, Pay showed only its card, Wallet showed nothing). The app frame is taken
+  // out of the page on the way out, as `hideDappFrame` says a left app must be; returning shows the launchpad.
+  if (state.view === 'browser' && name !== 'browser') { parkDapp(); try { showLaunchpad(); } catch (_) { hideDappFrame(); } }
   state.view = name;
   for (const b of document.querySelectorAll('.nav-item')) b.classList.toggle('active', b.dataset.view === name);
   for (const v of document.querySelectorAll('.view')) v.classList.toggle('active', v.dataset.view === name);
@@ -5179,6 +5258,7 @@ async function homeStatusPoll() {
     // Canonical GHOSTDAG height = selected-tip blue_score (see probeNode); `blocks` is only the in-memory DAG size.
     const h = info && (info.blue_score != null ? info.blue_score : (info.height != null ? info.height : info.blocks));
     if (h != null) {
+      _nodeStartingSince = 0;
       const txt = '● block ' + Number(h).toLocaleString();
       foot.textContent = txt; foot.style.color = 'var(--good)';
       // Live mirror of the canonical network descriptor: show which network this node is on. Loaded once
@@ -5216,14 +5296,55 @@ async function homeStatusPoll() {
         if (document.getElementById('homeBalance')) renderBalance();
       }
     } else {
-      foot.textContent = 'starting your node…'; foot.style.color = 'var(--text-3)';
-      if (conn) conn.textContent = 'starting your node…';
+      await showNodeStarting(foot, conn);
     }
   } catch (_) {
-    foot.textContent = 'starting your node…'; foot.style.color = 'var(--text-3)';
-    if (conn) conn.textContent = 'starting your node…';
+    await showNodeStarting(foot, conn);
   }
   _homeStatusTimer = setTimeout(homeStatusPoll, 4000);
+}
+
+// THE NODE'S STATE IS NEVER A MYSTERY (wallet audit W3, lane speed5 2026-11-18). "starting your node…" used to stay up
+// forever while the node had refused to start and said why only in its log. After the start window (the wallet waits up
+// to 50 s for its own node, ensure_node), the home screen shows the reason the node gave, in the status line.
+// TEST USDm IN ONE TAP ON THE TESTNET (wallet audit W10): the testnet's way in is the tap, which sat three screens deep
+// (Browser → Testnet Tap) while the home screen offered only a Bitcoin deposit. On the testnet the home screen offers it
+// first; the drip is the node's testnet-only door (403 on mainnet), so the button is shown only off mainnet.
+(function wireTestTap() {
+  const b = document.getElementById('btnTestTap'); if (!b) return;
+  if (state.net !== 'mainnet') b.classList.remove('hidden');
+  b.addEventListener('click', async () => {
+    const label = b.textContent; b.disabled = true; b.textContent = 'Asking your node…';
+    try {
+      await walletCore('wallet_faucet_drip', { amount_usdm: 25 });
+      b.textContent = '25 test USDm on the way — it lands with the next block';
+      setTimeout(() => { if (document.getElementById('homeBalance')) renderBalance(); }, 4000);
+    } catch (e) {
+      b.textContent = 'Tap not available: ' + String((e && e.message) || e).slice(0, 90);
+    }
+    setTimeout(() => { b.textContent = label; b.disabled = false; }, 12000);
+  });
+})();
+let _nodeStartingSince = 0;
+async function showNodeStarting(foot, conn) {
+  if (!_nodeStartingSince) _nodeStartingSince = Date.now();
+  let text = 'starting your node…', color = 'var(--text-3)', title = '';
+  if (Date.now() - _nodeStartingSince > 55000) {
+    try {
+      const p = await walletCore('wallet_node_problem');
+      if (p && p.running_from_image) {
+        text = 'Move MoneroUSD Wallet into Applications, then open it again — your node runs only for this session from the disk image';
+        color = 'var(--warn, #f5a623)';
+      } else if (p && (p.refusal || p.autostart)) {
+        text = 'Your node has not started: ' + String(p.refusal || p.autostart).slice(0, 160);
+        color = 'var(--bad, #e5484d)'; title = String(p.refusal || p.autostart) + (p.log ? '\nLog: ' + p.log : '');
+      } else {
+        text = 'Your node is still starting — joining the network over Tor can take a few minutes';
+      }
+    } catch (_) { /* outside the app: keep the plain line */ }
+  }
+  foot.textContent = text; foot.style.color = color; foot.title = title;
+  if (conn) { conn.textContent = text; conn.style.color = color; conn.title = title; }
 }
 
 // Refresh = a SOUND full re-scan (decap every served note locally, ignore clues) that heals any owned-set drift,
@@ -5655,13 +5776,15 @@ const _btnViewSeed = document.getElementById('btnViewSeed');
 if (_btnViewSeed) _btnViewSeed.addEventListener('click', async () => {
   const box = document.getElementById('viewSeedBox');
   if (!box) return;
-  if (!box.classList.contains('hidden')) { box.classList.add('hidden'); box.textContent = ''; _btnViewSeed.textContent = 'View recovery seed'; return; }
+  if (!box.classList.contains('hidden')) { box.classList.add('hidden'); box.textContent = ''; _btnViewSeed.textContent = 'View recovery seed'; const cv = document.getElementById('btnCopyViewSeed'); if (cv) { cv.classList.add('hidden'); cv.dataset.seed = ''; } return; }
   if (_btnViewSeed.dataset.armed !== '1') { _btnViewSeed.dataset.armed = '1'; _btnViewSeed.textContent = 'Tap again to reveal (anyone at this screen will see it)'; setTimeout(() => { _btnViewSeed.dataset.armed = '0'; if (box.classList.contains('hidden')) _btnViewSeed.textContent = 'View recovery seed'; }, 5000); return; }
   _btnViewSeed.dataset.armed = '0';
   try {
     const r = await walletCore('wallet_view_seed');
     box.textContent = r.seed + (r.master_key ? '\n\nMaster key (restores the same wallet; a typo is refused by its checksum):\n' + r.master_key : '');
     box.classList.remove('hidden');
+    const cv = document.getElementById('btnCopyViewSeed');
+    if (cv) { cv.dataset.seed = r.seed || ''; cv.textContent = 'Copy seed'; cv.classList.remove('hidden'); }
     _btnViewSeed.textContent = 'Hide recovery seed';
   } catch (e) { box.textContent = String(e); box.classList.remove('hidden'); }
 });

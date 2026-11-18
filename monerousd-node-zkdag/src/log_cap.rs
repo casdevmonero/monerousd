@@ -34,10 +34,24 @@ pub fn rotate_stderr_if_over(cap: u64) -> Option<u64> {
     if len <= cap {
         return None;
     }
-    let n = rotate_path_if_over(&path, cap)?;
-    let fresh = std::fs::OpenOptions::new().append(true).open(&path).ok()?;
-    crate::oscall::replace_stderr_with(&fresh).ok()?;
-    Some(n)
+    // Windows (lane speed5 2026-11-18, wallet audit W4): stderr cannot be re-pointed without `unsafe`, so the file is
+    // rotated in place instead: its bytes are copied to `<path>.1` and the file is truncated. The wallet opens it in APPEND
+    // mode (FILE_APPEND_DATA), so the node's next write lands at the new end. Same bound: two generations of `cap`.
+    #[cfg(not(unix))]
+    {
+        let mut prev = path.as_os_str().to_owned();
+        prev.push(".1");
+        std::fs::copy(&path, std::path::PathBuf::from(prev)).ok()?;
+        std::fs::OpenOptions::new().write(true).open(&path).ok()?.set_len(0).ok()?;
+        return Some(len);
+    }
+    #[cfg(unix)]
+    {
+        let n = rotate_path_if_over(&path, cap)?;
+        let fresh = std::fs::OpenOptions::new().append(true).open(&path).ok()?;
+        crate::oscall::replace_stderr_with(&fresh).ok()?;
+        Some(n)
+    }
 }
 
 #[cfg(all(test, feature = "pins-core"))]

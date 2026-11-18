@@ -33,10 +33,12 @@ pub fn path_of_stderr() -> Option<PathBuf> {
     {
         std::fs::read_link("/proc/self/fd/2").ok().filter(|p| p.is_absolute())
     }
-    // Windows (lane speed5 2026-11-18): no fd-2 path to read; the log cap then does not rotate (its documented "nothing to rotate")
+    // Windows (lane speed5 2026-11-18, wallet audit W4): a handle has no path the process can read back without more
+    // APIs, so the starter names it: the wallet sets MONEROUSD_STDERR_PATH to the file it gave the node as stderr. Unset
+    // (a console, a pipe) means nothing to rotate, as on the other systems.
     #[cfg(not(unix))]
     {
-        None
+        std::env::var_os("MONEROUSD_STDERR_PATH").map(PathBuf::from).filter(|p| p.is_absolute() && p.is_file())
     }
 }
 

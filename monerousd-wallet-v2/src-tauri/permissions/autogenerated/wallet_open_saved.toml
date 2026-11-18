@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-open-saved"
+description = "Enables the wallet_open_saved command without any pre-configured scope."
+commands.allow = ["wallet_open_saved"]
+
+[[permission]]
+identifier = "deny-wallet-open-saved"
+description = "Denies the wallet_open_saved command without any pre-configured scope."
+commands.deny = ["wallet_open_saved"]

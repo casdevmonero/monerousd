@@ -7658,6 +7658,9 @@ async fn node_rpc(path: String, body: String) -> Result<serde_json::Value, Strin
 ///      the standalone canonical default, this only points elsewhere when set.
 ///   2. Bundled beside the wallet binary (`Contents/MacOS/usdmd-node`, `.../bin/usdmd-node`) or as a Tauri
 ///      resource (`Contents/Resources/usdmd-node`) — the ship-with-the-app locations, portable by construction.
+/// This install's resource folder (Tauri `resource_dir`), recorded at app setup. (wallet audit W22)
+static RESOURCE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 fn find_node_binary() -> Option<PathBuf> {
     // 1. Explicit dev/ops override — the standalone default (below) stands on its own without it.
     if let Ok(p) = std::env::var("MONEROUSD_NODE_BIN") {
@@ -7669,20 +7672,29 @@ fn find_node_binary() -> Option<PathBuf> {
             }
         }
     }
-    // 2. Ship-with-the-app locations, all derived from the running executable so they hold on ANY machine.
+    // 2. Ship-with-the-app locations. THE NODE IS FOUND ON EVERY SYSTEM (wallet audit W22, lane speed5 2026-11-18): the list
+    //    held only macOS shapes and the bare name `usdmd-node`, so the Windows installer's `<install dir>\sidecar\
+    //    usdmd-node.exe` and the .deb's `/usr/lib/<app>/sidecar/usdmd-node` were never found and those wallets had no
+    //    node. Tauri's own resource folder comes first, with the platform's file name.
+    let name = if cfg!(windows) { "usdmd-node.exe" } else { "usdmd-node" };
     let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(res) = RESOURCE_DIR.get() {
+        candidates.push(res.join("sidecar").join(name));
+        candidates.push(res.join(name));
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            candidates.push(dir.join("usdmd-node")); // Contents/MacOS/usdmd-node (bundled sidecar)
-            candidates.push(dir.join("bin").join("usdmd-node"));
+            candidates.push(dir.join(name)); // Contents/MacOS/usdmd-node (bundled sidecar)
+            candidates.push(dir.join("sidecar").join(name));
+            candidates.push(dir.join("bin").join(name));
             // Tauri resources land in Contents/Resources, a sibling of Contents/MacOS.
             if let Some(contents) = dir.parent() {
-                candidates.push(contents.join("Resources").join("usdmd-node"));
+                candidates.push(contents.join("Resources").join(name));
                 // Tauri's `bundle.resources` preserves the SOURCE directory structure, so a resource listed
                 // as "sidecar/usdmd-node" lands at Resources/sidecar/usdmd-node — NOT Resources/usdmd-node.
                 // Bundling the node without this candidate ships the binary and still fails to find it: the
                 // app would hang on "starting your node" exactly as if nothing had been fixed.
-                candidates.push(contents.join("Resources").join("sidecar").join("usdmd-node"));
+                candidates.push(contents.join("Resources").join("sidecar").join(name));
             }
         }
     }
@@ -7736,6 +7748,39 @@ fn node_data_dir() -> PathBuf {
 /// islanded. Genesis carries NO commit: it is a deterministic per-network CONSTANT (`f(network)`), so two nodes on
 /// the same network build the byte-identical genesis by construction and a fresh node reaches chain parity by
 /// ADOPTING the canonical chain over the mesh (#29 DSYNC verify-once), never by any per-device genesis input.
+/// The state base of the node this wallet starts: its own folder, per network (see `node_mesh_env`).
+fn wallet_node_state_dir() -> PathBuf {
+    node_data_dir().join(format!("node-{}", network_descriptor::canonical_net()))
+}
+
+/// When the wallet's OWN node refused to start because it cannot decode its snapshot (an older network's layout), move that
+/// one file aside — renamed, never deleted — so the node starts fresh and joins the chain by the bundle adopt. The node's
+/// rule names exactly this ("move the file aside DELIBERATELY"); the wallet does it only inside its own state folder, never
+/// in an operator's ~/.usdmd-node, and only for that refusal. Custody books and keys are separate files and stay.
+/// LOCAL-STORAGE-REQUIRED: a rename of the node's own existing snapshot, which no proof can replace: the node refuses to
+/// start while an unreadable file sits at its path, and the user's opened wallet must start its node and join the mesh.
+/// bound: one renamed file per unreadable layout met (one per network reset at most), the snapshot's own fixed size.
+#[cfg(not(target_os = "ios"))]
+fn move_aside_unreadable_own_snapshot() -> Option<PathBuf> {
+    let refused = wallet_node_problem_blocking().ok()
+        .and_then(|v| v.get("refusal").and_then(|r| r.as_str()).map(|s| s.to_string()))
+        .filter(|r| r.contains("REFUSING TO START") && r.contains("cannot decode"))?;
+    let own = wallet_node_state_dir().join(".usdmd-node");
+    if !refused.contains(&own.display().to_string()) {
+        return None; // the refused file is not this wallet's own: never touch another node's state
+    }
+    let port = match ACTIVE_PORT.load(Ordering::SeqCst) { 0 => 27780, p => p };
+    let snap = own.join(format!("state-{port}.snap"));
+    if !snap.exists() {
+        return None;
+    }
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let aside = own.join(format!("state-{port}.snap.unreadable-{stamp}"));
+    std::fs::rename(&snap, &aside).ok()?;
+    eprintln!("[ensure_node] the node could not read its own snapshot (older layout): moved it aside to {} and starting fresh", aside.display());
+    Some(aside)
+}
+
 fn node_mesh_env() -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     // ⛔ CARRY THE FAILOVER PORT. Every spawn path (launchd, systemd, detached child, iOS in-process) goes
@@ -7756,6 +7801,19 @@ fn node_mesh_env() -> Vec<(String, String)> {
     // A fork of the same chain is still a SPLIT. Naming the identity slot explicitly makes the wallet's node
     // keep ONE `.onion` forever, whichever loopback port it happens to land on, so a pinned seed stays valid.
     out.push(("MONEROUSD_MESH_IDENTITY".into(), "wallet".into()));
+    // THE WALLET'S NODE HAS ITS OWN STATE, PER NETWORK (lane speed5 2026-11-18; BORROWED: Bitcoin Core's per-network
+    // datadir, ~/.bitcoin/testnet3). MEASURED: the node's state base defaulted to $HOME, so the wallet's node opened the
+    // same ~/.usdmd-node/state-27780.snap an operator node on this machine wrote under an older layout, refused it
+    // (correctly), and the wallet sat on "starting your node…" forever. Its own folder under the wallet's data means no
+    // other process's files can stop it, and the network name keeps a testnet node's files apart from mainnet's. The node
+    // derives every per-node file and its Tor state from this one base (node_files::state_base), so the onion identity,
+    // keys and chain state move together. An operator's explicit MONEROUSD_STATE_DIR is kept. Desktop only: the phone's
+    // node keeps its sandbox path. cons: none on a fresh install; a wallet that once ran a node under ~/.usdmd-node
+    // starts this one fresh and joins by the bundle adopt (one O(1) sync).
+    #[cfg(not(target_os = "ios"))]
+    if std::env::var("MONEROUSD_STATE_DIR").map_or(true, |d| d.trim().is_empty()) {
+        out.push(("MONEROUSD_STATE_DIR".into(), wallet_node_state_dir().display().to_string()));
+    }
     // Every value comes from the ONE canonical network_descriptor (env override ∪ canonical default) — the
     // single self-maintaining source, so every fresh node ON EVERY DEVICE (desktop spawn, launchd/systemd
     // service, iOS in-process) joins the SAME mesh + chain with zero hand-config. The network NAME rides here
@@ -7826,6 +7884,42 @@ fn wallet_network_info_blocking() -> Result<serde_json::Value, String> {
     Ok(wallet_network_info_value())
 }
 off_ui_thread!(wallet_network_info => wallet_network_info_blocking());
+
+/// True when this app runs from a mounted disk image or a macOS App Translocation copy (a path that does not last).
+fn app_runs_from_temporary_location() -> bool {
+    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    cfg!(target_os = "macos") && (exe.starts_with("/Volumes/") || exe.contains("/AppTranslocation/"))
+}
+
+/// The autostart's last failure, kept for the UI (lane speed5 2026-11-18, UI audit: a node that refused to start left
+/// the wallet on "starting your node…" forever while the reason sat in a log the person never sees).
+static NODE_START_PROBLEM: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Why the node is not answering, in words the home screen can show: the autostart's error and the node's own last
+/// refusal line ("REFUSING TO START", "fatal:") from the tail of its log. Pure read: at most the last 64 KiB of one file,
+/// never spawns, never changes state. Scale: constant work per call (one bounded read).
+fn wallet_node_problem_blocking() -> Result<serde_json::Value, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let autostart = NODE_START_PROBLEM.lock().ok().and_then(|g| g.clone());
+    let mut refusal: Option<String> = None;
+    let log = node_data_dir().join("node.err.log");
+    if let Ok(mut f) = std::fs::File::open(&log) {
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let _ = f.seek(SeekFrom::Start(len.saturating_sub(64 * 1024)));
+        let mut buf = Vec::new();
+        let _ = f.take(64 * 1024).read_to_end(&mut buf);
+        let text = String::from_utf8_lossy(&buf);
+        refusal = text.lines().rev()
+            .find(|l| l.contains("REFUSING TO START") || l.starts_with("fatal:") || l.contains("[network] ⛔"))
+            .map(|l| {
+                let l = l.trim();
+                let l = if l.starts_with('[') { l.split_once("] ").map_or(l, |(_, rest)| rest) } else { l };
+                l.trim_start_matches(|c: char| c == '⛔' || c == ' ').chars().take(400).collect()
+            });
+    }
+    Ok(serde_json::json!({ "autostart": autostart, "refusal": refusal, "log": log.display().to_string(), "running_from_image": app_runs_from_temporary_location() }))
+}
+off_ui_thread!(wallet_node_problem => wallet_node_problem_blocking());
 
 fn wallet_network_info_value() -> serde_json::Value {
     let net = network_descriptor::canonical_net();
@@ -8043,9 +8137,17 @@ fn ensure_sovereign_sites(bin: &std::path::Path, data: &std::path::Path) -> Resu
     // If none is found, fail LOUDLY: a silent exit is exactly what hid this.
     let sites_dir: Option<std::path::PathBuf> = {
         let mut cands: Vec<std::path::PathBuf> = Vec::new();
+        // THE APPS SHIP WITH THE WALLET (wallet audit W26, lane speed5 2026-11-18; user: "make all of the launchpad apps work
+        // as soon as they open the wallet. Them being blank is unaceptable"). MEASURED: the release app logged "no site
+        // bundle directory found" and every launchpad tile opened a dead :27752. The installers now carry the bundles in
+        // their resource folder (Contents/Resources/sites, <install dir>/sites, /usr/lib/<app>/sites), searched first.
+        if let Some(res) = RESOURCE_DIR.get() {
+            cands.push(res.join("sites"));
+        }
         if let Some(d) = bin.parent() {
             cands.push(d.join("sites"));
             cands.push(d.join("../Resources/sites"));
+            cands.push(d.join("../sites"));
         }
         if let Some(home) = std::env::var_os("HOME") {
             cands.push(std::path::PathBuf::from(home).join("Desktop/connect/monerousd-node-zkdag/sites"));
@@ -8084,6 +8186,20 @@ fn ensure_sovereign_sites(bin: &std::path::Path, data: &std::path::Path) -> Resu
     for (k, v) in node_mesh_env() {
         cmd.env(k, v);
     }
+    // The bundle folder by absolute path (the host's first argument), never resolved from a working directory; and the
+    // host's /api, /v1 and /ws proxy pointed at THIS wallet's own node on loopback — the host leaves that proxy OFF unless
+    // told (usdmd-node main.rs run_sovereign), so the launchpad apps loaded with no chain data behind them (W26).
+    if let Some(d) = sites_dir.as_ref() {
+        cmd.arg(d);
+    }
+    // The host takes a loopback AUTHORITY (`127.0.0.1:27780`), not a URL: a scheme makes it refuse the link as "not loopback".
+    let authority = node_url().trim_start_matches("http://").trim_start_matches("https://").trim_end_matches('/').to_string();
+    cmd.env("MONEROUSD_SOVEREIGN_API_UPSTREAM", authority);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200); // no console window; outlives the wallet (W5)
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -8094,9 +8210,20 @@ fn ensure_sovereign_sites(bin: &std::path::Path, data: &std::path::Path) -> Resu
             });
         }
     }
-    let child = cmd.spawn().map_err(|e| format!("failed to start the sovereign site host: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("failed to start the sovereign site host: {e}"))?;
     let _ = std::fs::write(data.join("sites.pid"), child.id().to_string());
-    Ok(true)
+    // The host binds its port at once or exits: say which, so a dead app host is never silent again (bounded: 6 s).
+    for _ in 0..30 {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], sovereign_port()));
+        if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok() {
+            return Ok(true); // it answers (a connect only observes; a bind here could steal the port from the host)
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!("the app host exited at start ({status})"));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Err("the app host did not bind its port in 6 s".into())
 }
 
 fn spawn_detached_node(bin: &std::path::Path, data: &std::path::Path) -> Result<(), String> {
@@ -8132,12 +8259,13 @@ fn spawn_detached_node(bin: &std::path::Path, data: &std::path::Path) -> Result<
         //
         // This is the REMOVAL, not another guard in front of the same door: the spawn is unreachable unless
         // MONEROUSD_ALLOW_NODE_SPAWN=1 is set explicitly, which nothing in the wallet ever sets.
-        if std::env::var("MONEROUSD_ALLOW_NODE_SPAWN").ok().as_deref() != Some("1") {
-            eprintln!(
-                "[no-fork] node spawning is DISABLED in the wallet. Attach to a running node \
-                 (MONEROUSD_NODE_URL), or start one yourself. A wallet that can fork a node is how competing \
-                 nodes on one data dir happen, and it has bitten this project more than once."
-            );
+        // lane speed5 2026-11-18 (wallet audit W1): this path is the ONLY node start on Windows and on a Linux without
+        // systemd, and the old opt-in gate (MONEROUSD_ALLOW_NODE_SPAWN=1, never set by an installer) made the wallet
+        // report success while starting nothing, so a Windows user's wallet never had a node. The guard against two
+        // nodes on one data dir is the port-bound check below (a bound port means a node IS running: never a second);
+        // MONEROUSD_NO_NODE_SPAWN=1 keeps the old attach-only behaviour for a developer who runs the node by hand.
+        if std::env::var("MONEROUSD_NO_NODE_SPAWN").ok().as_deref() == Some("1") {
+            eprintln!("[no-fork] node spawning disabled by MONEROUSD_NO_NODE_SPAWN=1: attach to a running node (MONEROUSD_NODE_URL)");
             return Ok(());
         }
         for probe in [addr.as_str(), "127.0.0.1:27780"] {
@@ -8174,13 +8302,28 @@ fn spawn_detached_node(bin: &std::path::Path, data: &std::path::Path) -> Result<
         .env("MONEROUSD_RPC_PORT", rpc_port.to_string())
         .env("MONEROUSD_ONION_ONLY", "1")
         .current_dir(data)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null());
+    // The node's own output goes where the launchd/systemd paths put it, so the wallet can show why a node stopped
+    // (wallet_node_problem reads node.err.log). A failed open falls back to null.
+    // LOCAL-STORAGE-REQUIRED: a diagnostic log the person's own wallet reads to say why its node stopped; no proof or
+    // record carries a local process's refusal. bound: the node rotates the file behind its stderr at
+    // log_cap::STDERR_CAP_BYTES (16 MiB, two generations at most: 32 MiB) on every desktop system; never a term in height.
+    let log = |name: &str| std::fs::OpenOptions::new().create(true).append(true).open(data.join(name))
+        .map(std::process::Stdio::from).unwrap_or_else(|_| std::process::Stdio::null());
+    cmd.stdout(log("node.out.log")).stderr(log("node.err.log"));
+    cmd.env("MONEROUSD_STDERR_PATH", data.join("node.err.log"));
     // Join the mesh, don't island: forward the shared genesis-commit + onion seed peer(s) so this node
     // converges with the rest of the network (same chain, auto-dial). See node_mesh_env().
     for (k, v) in node_mesh_env() {
         cmd.env(k, v);
+    }
+    // Windows: the node is a console program; started from the GUI it would open a console window, and closing that
+    // window would kill it. CREATE_NO_WINDOW keeps it windowless; CREATE_NEW_PROCESS_GROUP keeps it running after the
+    // wallet closes (the 24/7 rule the launchd and systemd services keep on the other systems).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200);
     }
     // Detach into a NEW SESSION so quitting the wallet (SIGHUP / process-group teardown) does not take the node
     // down with it — the node must keep producing/relaying 24/7 (Cardinal Pillar D: chain never halts).
@@ -8245,17 +8388,16 @@ fn start_node_service(bin: &std::path::Path, data: &std::path::Path) -> Result<(
     }
     // Per-port label: two wallets on two nodes install two services that can never collide or hijack
     // one another (the shared-label overwrite is the measured chain-halt above).
+    // An app opened from the mounted disk image (/Volumes/…) or run by macOS from a randomized App Translocation copy has
+    // a binary path that vanishes (eject, quit). A 24/7 service written with that path would start nothing for good, so
+    // from there the node is started detached for this session only, and the UI asks the person to move the app into
+    // Applications (wallet_node_problem's `running_from_image`). (wallet audit W17)
+    if app_runs_from_temporary_location() {
+        eprintln!("[ensure_node] the app runs from a disk image or a translocated copy — node started for this session only");
+        return spawn_detached_node(bin, data);
+    }
     let label = format!("org.monerousd.node-{rpc_port}");
     let plist_path = agents.join(format!("{label}.plist"));
-    let label_loaded = std::process::Command::new("launchctl")
-        .arg("print").arg(format!("gui/{uid}/{label}"))
-        .output().map(|o| o.status.success()).unwrap_or(false);
-    if label_loaded {
-        let _ = std::process::Command::new("launchctl")
-            .arg("kickstart").arg(format!("gui/{uid}/{label}")).output();
-        eprintln!("[ensure_node] this port's launchd node service exists — kickstarted it, definition untouched");
-        return Ok(());
-    }
     // Mesh env (shared genesis + onion seed peer) so this launchd-managed node joins the network, not islands.
     let extra_env: String = node_mesh_env()
         .iter()
@@ -8274,7 +8416,7 @@ fn start_node_service(bin: &std::path::Path, data: &std::path::Path) -> Result<(
   <key>WorkingDirectory</key><string>{data}</string>\n\
   <key>RunAtLoad</key><true/>\n\
   <key>KeepAlive</key><true/>\n\
-  <key>ProcessType</key><string>Background</string>\n\
+  <key>ProcessType</key><string>Standard</string>\n\
   <key>StandardOutPath</key><string>{out}</string>\n\
   <key>StandardErrorPath</key><string>{err}</string>\n\
 </dict></plist>\n",
@@ -8286,6 +8428,25 @@ fn start_node_service(bin: &std::path::Path, data: &std::path::Path) -> Result<(
         label = label,
         rpc_port = rpc_port,
     );
+    // THIS WALLET'S SERVICE ALWAYS RUNS THIS WALLET'S NODE (lane speed5 2026-11-18, wallet audit W6). The per-port label
+    // is the wallet's own (the classic origin label above is never touched). It used to be kickstarted "definition
+    // untouched" whenever it existed, so a service first written while the app ran from the mounted disk image (gone once
+    // the image is ejected), from an older install, or before an env change (the node's own state folder) kept starting
+    // the wrong binary or none, for good. Now an identical definition is kickstarted and any other is replaced.
+    let label_loaded = std::process::Command::new("launchctl")
+        .arg("print").arg(format!("gui/{uid}/{label}"))
+        .output().map(|o| o.status.success()).unwrap_or(false);
+    let same = std::fs::read_to_string(&plist_path).map_or(false, |cur| cur == plist);
+    if label_loaded && same {
+        let _ = std::process::Command::new("launchctl")
+            .arg("kickstart").arg(format!("gui/{uid}/{label}")).output();
+        eprintln!("[ensure_node] this wallet's launchd node service is current — kickstarted it");
+        return Ok(());
+    }
+    if label_loaded {
+        let _ = std::process::Command::new("launchctl").arg("bootout").arg(format!("gui/{uid}/{label}")).output();
+        eprintln!("[ensure_node] this wallet's launchd node service ran another definition (binary or env) — replacing it");
+    }
     if std::fs::write(&plist_path, &plist).is_err() {
         return spawn_detached_node(bin, data);
     }
@@ -8770,15 +8931,24 @@ async fn ensure_node() -> Result<serde_json::Value, String> {
         return Err(e);
     }
     spawn_node_watchdog();
-    // 4) Wait for the freshly-started node to answer (node → seconds), then report.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let mut info = None;
-    while Instant::now() < deadline {
-        if let Some(i) = probe_node(600) {
-            info = Some(i);
-            break;
+    // 4) Wait for the freshly-started node to answer (node → seconds), then report. If it refused its own unreadable
+    //    snapshot, move that file aside once and wait again (the service's KeepAlive restarts it).
+    let wait_for_node = |secs: u64| -> Option<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            if let Some(i) = probe_node(600) {
+                return Some(i);
+            }
+            std::thread::sleep(Duration::from_millis(400));
         }
-        std::thread::sleep(Duration::from_millis(400));
+        None
+    };
+    let mut info = wait_for_node(20);
+    if info.is_none() && move_aside_unreadable_own_snapshot().is_some() {
+        if let Ok(bin) = find_node_binary().ok_or(()) {
+            let _ = start_node_service(&bin, &node_data_dir());
+        }
+        info = wait_for_node(30);
     }
     SPAWNING.store(false, Ordering::SeqCst);
     match info {
@@ -8889,6 +9059,30 @@ async fn wallet_restore(seed: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || restore_open_impl(&seed))
         .await
         .map_err(|e| format!("wallet_restore task failed: {e}"))?
+}
+
+/// Whether this device holds a saved wallet (the phrase `persist_seed_phrase` wrote at Create/Restore). Pure read; never
+/// returns the phrase. (lane speed5 2026-11-18, wallet audit W19/W20)
+#[tauri::command]
+fn wallet_saved() -> serde_json::Value {
+    let has = std::fs::read_to_string(node_data_dir().join("seed")).map_or(false, |s| !s.trim().is_empty());
+    serde_json::json!({ "saved": has })
+}
+
+/// OPEN THE WALLET SAVED ON THIS DEVICE (lane speed5 2026-11-18, wallet audit W19). MEASURED: the app opened on Create /
+/// Restore every launch, though Create and Restore had saved the phrase (0600) beside the note store, so a person had to
+/// type 24 words again each time they opened the app. This opens the same saved phrase through the same path Restore
+/// takes (`restore_open_impl`); the phrase never crosses to the UI. Protection model unchanged: device possession, as View
+/// Seed and Lock already state (AI RESISTANT (c), one machine: the owner's own device).
+#[tauri::command]
+async fn wallet_open_saved() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let phrase = std::fs::read_to_string(node_data_dir().join("seed"))
+            .map_err(|_| "no wallet is saved on this device: restore it from its 24 words".to_string())?;
+        restore_open_impl(phrase.trim())
+    })
+    .await
+    .map_err(|e| format!("wallet_open_saved task failed: {e}"))?
 }
 
 /// Sync core of [`wallet_restore`]: derive keys → open the session → resume the encrypted note store. Invoked by
@@ -28154,6 +28348,9 @@ macro_rules! wallet_invoke_handler {
             node_rpc,
             ensure_node,
             wallet_network_info,
+            wallet_node_problem,
+            wallet_saved,
+            wallet_open_saved,
             node_status,
             wallet_generate,
             wallet_restore,
@@ -28372,6 +28569,13 @@ pub fn run() {
         // `ensure_node` is idempotent (the SPAWNING dedupe), so calling it here costs nothing on any path
         // that also calls it later.
         .setup(|_app| {
+            // Where this install's bundled resources really are (wallet audit W22): Contents/Resources on macOS,
+            // <install dir> on Windows, /usr/lib/<app> for a .deb, inside the mount for an AppImage. Read once here,
+            // before the node autostart below searches for the bundled node.
+            {
+                use tauri::Manager;
+                if let Ok(d) = _app.path().resource_dir() { let _ = RESOURCE_DIR.set(d); }
+            }
             // ⭐⭐⭐ THE SPEND AUTHORITY FOLLOWS THE CHAIN FROM APP START — not from the first send.
             //
             // A wallet's spend authority is the recursive A_tip absence carrier (`nf_carrier`), and a
@@ -28458,7 +28662,10 @@ pub fn run() {
                     let outcome = tauri::async_runtime::block_on(ensure_node());
                     match outcome {
                         Ok(status) => eprintln!("[autostart] node brought up with the app: {status}"),
-                        Err(e) => eprintln!("[autostart] node did not come up at launch: {e}"),
+                        Err(e) => {
+                            eprintln!("[autostart] node did not come up at launch: {e}");
+                            if let Ok(mut g) = NODE_START_PROBLEM.lock() { *g = Some(e.clone()); }
+                        }
                     }
                     // The in-wallet dApps (the testnet faucet tile among them) call `/api/...` on the loopback
                     // sovereign host. Supervising the node but not this left every one of them with no backend,

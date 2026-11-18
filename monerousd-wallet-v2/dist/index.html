@@ -37,6 +37,9 @@
       <div class="status-line" id="statusLine">Auto · finding the canonical PQ chain<span class="blink">…</span></div>
 
       <div class="actions">
+        <button class="btn btn-primary hidden" id="btnOpenSaved">
+          <span>Open my wallet<span class="sub">The wallet saved on this device</span></span>
+        </button>
         <button class="btn btn-primary" id="btnCreate">
           <span>Create new wallet<span class="sub">Generate a fresh post-quantum seed</span></span>
         </button>
@@ -62,6 +65,7 @@
       <p class="sheet-sub">A fresh post-quantum seed is drawn from your device's secure RNG — never a fixed or
         pre-derived key. It controls your ML-DSA spend key and ML-KEM scan key.</p>
       <pre class="seed-box hidden" id="createSeed"></pre>
+      <button class="btn btn-ghost full hidden" id="btnCopySeed" type="button">Copy seed</button>
       <button class="btn btn-primary full" id="btnDoGenerate">Generate seed</button>
       <div class="msg" id="createMsg"></div>
       <button class="btn btn-primary full hidden" id="btnContinueCreate">I've written it down — open wallet</button>
@@ -159,6 +163,7 @@
           <div class="balance-amount" id="homeBalance">—</div>
           <div class="balance-sub" id="homeBalanceSub">USDm · read live from your node</div>
           <div class="balance-actions">
+            <button class="chip chip-primary hidden" id="btnTestTap" title="Free test USDm from the testnet tap, paid to this wallet">Get free test USDm</button>
             <button class="chip chip-primary" id="btnAddMoney" title="One private Bitcoin address — the wallet mixes and deposits whatever arrives">Add money with Bitcoin</button>
             <button class="chip chip-primary" data-goto="send">Send</button>
             <button class="chip" data-goto="receive">Receive</button>
@@ -929,6 +934,7 @@
             While it is off, nothing about your income is worked out at all.</div>
           <button class="btn btn-ghost full" id="btnViewSeed">View recovery seed</button>
           <div id="viewSeedBox" class="hidden" style="margin:8px 0; padding:10px; border:1px solid var(--warn); border-radius:8px; font-family:monospace; word-break:break-word; user-select:all;"></div>
+          <button class="btn btn-ghost hidden" id="btnCopyViewSeed" type="button">Copy seed</button>
           <button class="btn btn-ghost full" id="btnLock">Lock wallet</button>
         </section>
         <!-- §BR-10: updates — offered only when three independent builders attest one release; always the user's choice. -->

@@ -18,7 +18,7 @@
 //!   local store is caught fail-closed) and exposes the root in `X-MonerousD-Site-Root` so a client
 //!   can independently authenticate the bytes against consensus — trust the root, not the server.
 //! * **No phone-home.** A strict `Content-Security-Policy` (`default-src 'self'`, no external hosts)
-//!   plus `Referrer-Policy: no-referrer` mean a served page cannot beacon out or leak the user's
+//!   plus `Referrer-Policy: same-origin` (a Veil page: `no-referrer`) mean a served page cannot beacon out or leak the user's
 //!   interest, address, or amount to anyone.
 //!
 //! Because ANY node holding the bundle can serve it and the client verifies against the chain root,
@@ -141,13 +141,19 @@ impl HttpResponse {
         let mut head = format!(
             "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\
              Cache-Control: no-cache\r\n\
-             Content-Security-Policy: {}\r\nReferrer-Policy: no-referrer\r\nX-Content-Type-Options: nosniff\r\n\
+             Content-Security-Policy: {}\r\nReferrer-Policy: {}\r\nX-Content-Type-Options: nosniff\r\n\
              X-MonerousD-Sovereign: node\r\n{}",
             self.status,
             self.reason,
             self.content_type,
             self.body.len(),
             csp,
+            // An app's own requests carry its page as Referer to THIS host only (`same-origin`): the host's subpath
+            // re-resolution of root-absolute assets (`/assets/site.css` under `/monerousd-org/`) reads it, and
+            // `no-referrer` on every page had made that impossible, so such an app loaded unstyled (wallet audit W26).
+            // Nothing goes to any other origin (and the CSP lets no other origin be reached). A Veil page keeps
+            // `no-referrer`: it is sandboxed, opaque-origin, and needs no re-resolution.
+            if self.veil.is_some() { "no-referrer" } else { "same-origin" },
             if self.veil.is_some() { veil_headers() } else { String::new() },
         );
         if let Some(root) = self.site_root {
@@ -2556,9 +2562,11 @@ mod tests {
         let head_str = String::from_utf8_lossy(&head_bytes);
         assert!(head_str.contains(&format!("Content-Length: {}", r.body.len())));
         assert!(full_bytes.len() > head_bytes.len()); // full carries the body, HEAD does not
-                                                      // CSP + no-referrer present so a served page cannot phone home.
+                                                      // CSP present so a served page cannot phone home; its Referer
+                                                      // reaches only this same host (same-origin), never another origin.
         assert!(head_str.contains("Content-Security-Policy:"));
-        assert!(head_str.contains("Referrer-Policy: no-referrer"));
+        assert!(head_str.contains("Referrer-Policy: same-origin"));
+        assert!(!head_str.contains("Referrer-Policy: unsafe-url") && !head_str.contains("no-referrer-when-downgrade"));
     }
 
     /// THE SERVED PAGE REACHES TWO PLACES AND NO OTHER: this host, and the MonerousD wallet's connect door on this same

@@ -64,13 +64,21 @@ jobs:
           mkdir -p monerousd-wallet-v2/src-tauri/sidecar
           rm -f monerousd-wallet-v2/src-tauri/sidecar/usdmd-node monerousd-wallet-v2/src-tauri/sidecar/usdmd-node.exe
           cp monerousd-node-zkdag/target/release/${{ matrix.node_bin }} monerousd-wallet-v2/src-tauri/sidecar/
+          # The launchpad apps ship with the wallet (its app host serves them from the installer's resource folder): every
+          # site bundle except the promo films, editor backups and Markdown.
+          rm -rf monerousd-wallet-v2/src-tauri/sites
+          cp -R monerousd-node-zkdag/sites monerousd-wallet-v2/src-tauri/sites
+          find monerousd-wallet-v2/src-tauri/sites \( -name '*.mp4' -o -name '*.pre*' -o -name '*.md' -o -name '.canonical-restore-*' \) -prune -exec rm -rf {} +
+          du -sh monerousd-wallet-v2/src-tauri/sites
 
       - name: Build the wallet installer
         working-directory: monerousd-wallet-v2
         shell: bash
         run: |
           npm ci
-          npx tauri build --bundles ${{ matrix.bundles }} --config '{"bundle":{"active":true}}'
+          # Only the wallet program goes into an installer: the test harnesses (wallet-harness drives the macOS Bluetooth
+          # tap) are not built here (run 44256233250: wallet-harness did not compile on Linux, where that radio is absent).
+          npx tauri build --bundles ${{ matrix.bundles }} --config '{"bundle":{"active":true,"resources":["sidecar/*","sites/**/*"]}}' -- --bin monerousd-wallet-v2
 
       - name: Smoke — the installer exists and the bundled node inside it starts
         shell: bash
@@ -90,7 +98,8 @@ jobs:
               ls "$B"/msi/*.msi "$B"/nsis/*.exe ;;
             Linux)
               ls "$B"/deb/*.deb "$B"/appimage/*.AppImage
-              dpkg-deb -c "$B"/deb/*.deb | grep -q sidecar/usdmd-node ;;
+              dpkg-deb -c "$B"/deb/*.deb | grep -q sidecar/usdmd-node
+              dpkg-deb -c "$B"/deb/*.deb | grep -q sites/ionswap-monerousd-org/index.html ;;
           esac
 
       - uses: actions/upload-artifact@v4

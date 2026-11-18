@@ -1884,17 +1884,26 @@ async fn unix_acceptor(s: Arc<Shared>, path: PathBuf) {
             eprintln!("[mix] the folder for the local socket could not be made");
         }
     }
-    let Ok(l) = tokio::net::UnixListener::bind(&path) else {
-        eprintln!("[mix] could not listen on the local path this node was given");
-        return;
-    };
-    loop {
-        match l.accept().await {
-            Ok((stream, _)) => {
-                tokio::spawn(s.clone().respond_link(Box::new(stream)));
+    #[cfg(unix)]
+    {
+        let Ok(l) = tokio::net::UnixListener::bind(&path) else {
+            eprintln!("[mix] could not listen on the local path this node was given");
+            return;
+        };
+        loop {
+            match l.accept().await {
+                Ok((stream, _)) => {
+                    tokio::spawn(s.clone().respond_link(Box::new(stream)));
+                }
+                Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
             }
-            Err(_) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
         }
+    }
+    // Windows has no local socket here (wallet audit W23); this node offers its relay face only.
+    #[cfg(not(unix))]
+    {
+        let _ = (s, path);
+        eprintln!("[mix] a local socket is not available on this system; the relay face carries this node's links");
     }
 }
 

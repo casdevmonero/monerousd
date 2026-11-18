@@ -198,7 +198,14 @@ a { color: inherit; text-decoration: none; }
   padding: 16px; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto;
   user-select: text;
 }
+.seed-box.seed-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px 12px;
+  white-space: normal; word-break: normal; max-height: none; overflow: visible; }
+.seed-w { white-space: nowrap; font-size: 14px; }
+.seed-w i { font-style: normal; color: var(--text-3); display: inline-block; min-width: 1.7em; margin-right: 6px; text-align: right; font-size: 11.5px; }
 .btn.full { width: 100%; }
+/* "Create new wallet" when this device already holds one: same layout as the primary button, quieter colours. */
+.btn.btn-primary.demoted { background: var(--bg-2, #16161b); color: var(--text-1); border: 1px solid var(--stroke); box-shadow: none; }
+.btn.btn-primary.demoted .sub { color: var(--text-3); }
 .msg { min-height: 18px; font-size: 13px; color: var(--text-2); text-align: center; line-height: 1.5; }
 
 .hidden { display: none !important; }
@@ -316,7 +323,8 @@ a { color: inherit; text-decoration: none; }
   font-variant-numeric: tabular-nums;
 }
 .balance-sub { font-size: 12.5px; color: var(--text-2); }
-.balance-actions { display: flex; gap: 10px; margin-top: 18px; }
+.balance-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.balance-actions .chip { white-space: nowrap; }
 .chip {
   padding: 10px 20px; border-radius: 10px; cursor: pointer;
   background: var(--bg-3); border: 1px solid var(--stroke); color: var(--text-1);
@@ -379,6 +387,18 @@ a { color: inherit; text-decoration: none; }
   background: var(--bg-0); border: 1px solid #22222a;
 }
 .settings-k { color: var(--text-2); font-size: 12.5px; flex: 0 0 auto; }
+/* A row's children may shrink: long values (addresses, keys, status lines) wrap inside the card, never past its edge. */
+.settings-row > * { min-width: 0; }
+.settings-row { max-width: 100%; box-sizing: border-box; }
+/* The private Bitcoin deposit is a stacked card: title + status, the full address (wraps), Copy, then progress. */
+.settings-row.mix-plan { flex-direction: column; align-items: stretch; gap: 10px; }
+.mix-plan .mix-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 12px; }
+.mix-plan .mix-status { color: var(--text-2); font-size: 12.5px; }
+.mix-plan .mix-addr { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; line-height: 1.5;
+  overflow-wrap: anywhere; word-break: break-all; padding: 10px 12px; border-radius: var(--radius-s);
+  background: rgba(255,255,255,.03); border: 1px solid #26262e; color: var(--text-0); }
+.mix-plan .mix-copy { align-self: flex-start; }
+.mix-plan .mix-progress { font-size: 12.5px; line-height: 1.5; }
 .settings-v {
   color: var(--text-1, var(--text-0)); font-size: 12px; text-align: right;
   font-family: ui-monospace, "SF Mono", Menlo, monospace; word-break: break-all;
@@ -647,6 +667,19 @@ a { color: inherit; text-decoration: none; }
       the camera travels through space, lit by a distant orange sun (painted by WelcomeSpace in app.js). Black
       stays dominant; the card sits above a soft scrim so text always stays crisp. ──────────────────────────── */
 .welcome-card { position: relative; z-index: 2; }
+/* Inside the wallet the flythrough runs dimmed under the app: the planets stay visible between the cards and never
+   compete with a balance or an address. */
+.welcome-space.in-app { opacity: .55; }
+.space-scrim.in-app { background: rgba(3,3,8,.35); }
+.app .sidebar { background: rgba(16,16,19,.88); }
+/* With the planets moving behind the wallet, every card keeps a solid base under its gradients: a world passes between
+   the cards, never through a balance, a button or an address. */
+.app .balance-card, .app .card, .app .settings-row, .app .gov-row, .app .launchpad-card, .app .uname, .app .seg { background-color: #0f0f13; }
+/* Text over a passing planet stays readable (wallet audit W9): a dark halo under the welcome card's text, so a bright
+   world drifting behind the tagline never washes it out. Paint-only; no layout change. */
+.welcome-card .wordmark, .welcome-card .tagline, .welcome-card .net-label, .welcome-card .status-line, .welcome-card .pq-badge {
+  text-shadow: 0 0 6px rgba(3,3,8,.95), 0 0 14px rgba(3,3,8,.85);
+}
 .welcome-space {
   position: fixed; inset: 0; z-index: 0; display: block; width: 100vw; height: 100vh;
   pointer-events: none; background: #05050a;
