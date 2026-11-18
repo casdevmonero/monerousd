@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-qr-svg"
+description = "Enables the wallet_qr_svg command without any pre-configured scope."
+commands.allow = ["wallet_qr_svg"]
+
+[[permission]]
+identifier = "deny-wallet-qr-svg"
+description = "Denies the wallet_qr_svg command without any pre-configured scope."
+commands.deny = ["wallet_qr_svg"]

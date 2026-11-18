@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sale-relay-set"
+description = "Enables the sale_relay_set command without any pre-configured scope."
+commands.allow = ["sale_relay_set"]
+
+[[permission]]
+identifier = "deny-sale-relay-set"
+description = "Denies the sale_relay_set command without any pre-configured scope."
+commands.deny = ["sale_relay_set"]

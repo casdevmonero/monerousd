@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-purchase-status"
+description = "Enables the purchase_status command without any pre-configured scope."
+commands.allow = ["purchase_status"]
+
+[[permission]]
+identifier = "deny-purchase-status"
+description = "Denies the purchase_status command without any pre-configured scope."
+commands.deny = ["purchase_status"]

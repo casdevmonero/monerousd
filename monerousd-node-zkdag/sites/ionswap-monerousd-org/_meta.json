@@ -1,0 +1,12 @@
+{
+  "version": "1.2.233",
+  "contentType": "spa-with-api",
+  "rootHash": null,
+  "bundleSize": 973594,
+  "publisher": "official",
+  "publishedAt": null,
+  "displayName": "Ion Swap",
+  "primaryDomain": "ion.monerousd.org",
+  "tier": "T1",
+  "verified": true
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-letter-send"
+description = "Enables the dapp_provider_letter_send command without any pre-configured scope."
+commands.allow = ["dapp_provider_letter_send"]
+
+[[permission]]
+identifier = "deny-dapp-provider-letter-send"
+description = "Denies the dapp_provider_letter_send command without any pre-configured scope."
+commands.deny = ["dapp_provider_letter_send"]

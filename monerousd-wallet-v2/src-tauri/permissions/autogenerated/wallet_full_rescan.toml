@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-full-rescan"
+description = "Enables the wallet_full_rescan command without any pre-configured scope."
+commands.allow = ["wallet_full_rescan"]
+
+[[permission]]
+identifier = "deny-wallet-full-rescan"
+description = "Denies the wallet_full_rescan command without any pre-configured scope."
+commands.deny = ["wallet_full_rescan"]

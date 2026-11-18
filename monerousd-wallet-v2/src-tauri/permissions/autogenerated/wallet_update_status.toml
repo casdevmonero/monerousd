@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-update-status"
+description = "Enables the wallet_update_status command without any pre-configured scope."
+commands.allow = ["wallet_update_status"]
+
+[[permission]]
+identifier = "deny-wallet-update-status"
+description = "Denies the wallet_update_status command without any pre-configured scope."
+commands.deny = ["wallet_update_status"]

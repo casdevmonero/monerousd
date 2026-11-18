@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-dsol-call"
+description = "Enables the dapp_provider_dsol_call command without any pre-configured scope."
+commands.allow = ["dapp_provider_dsol_call"]
+
+[[permission]]
+identifier = "deny-dapp-provider-dsol-call"
+description = "Denies the dapp_provider_dsol_call command without any pre-configured scope."
+commands.deny = ["dapp_provider_dsol_call"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-faucet-drip"
+description = "Enables the wallet_faucet_drip command without any pre-configured scope."
+commands.allow = ["wallet_faucet_drip"]
+
+[[permission]]
+identifier = "deny-wallet-faucet-drip"
+description = "Denies the wallet_faucet_drip command without any pre-configured scope."
+commands.deny = ["wallet_faucet_drip"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-become-validator"
+description = "Enables the wallet_become_validator command without any pre-configured scope."
+commands.allow = ["wallet_become_validator"]
+
+[[permission]]
+identifier = "deny-wallet-become-validator"
+description = "Denies the wallet_become_validator command without any pre-configured scope."
+commands.deny = ["wallet_become_validator"]

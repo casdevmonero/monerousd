@@ -1,0 +1,16 @@
+# THE CUSTODY VAULT LIFECYCLE AS A MODEL — a design proof that builds and runs in seconds, with no dependency on the node
+# crate. It compiles the REAL `src/custody_vaults.rs` (the seat rules) alone and checks the lifecycle's invariants over
+# every short sequence of events and over long random walks. See src/lib.rs.
+#   run:  cd monerousd-node-zkdag/models/custody-lifecycle && CARGO_TARGET_DIR=~/.cargo-targets/model cargo test --release
+[package]
+name = "custody-lifecycle-model"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+blake3 = "1"
+
+# its own workspace: never built with, or by, the node crate
+[workspace]

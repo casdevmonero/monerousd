@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-checkout-hand-over"
+description = "Enables the checkout_hand_over command without any pre-configured scope."
+commands.allow = ["checkout_hand_over"]
+
+[[permission]]
+identifier = "deny-checkout-hand-over"
+description = "Denies the checkout_hand_over command without any pre-configured scope."
+commands.deny = ["checkout_hand_over"]

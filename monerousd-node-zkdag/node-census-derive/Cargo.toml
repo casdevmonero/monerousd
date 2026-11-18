@@ -1,0 +1,17 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root).
+# DB-402 R2: the `Node` field census, derived from the struct itself at compile time (test builds only).
+[package]
+name = "node-census-derive"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", default-features = false, features = ["derive", "parsing", "proc-macro", "printing"] }
+quote = "1"
+proc-macro2 = "1"

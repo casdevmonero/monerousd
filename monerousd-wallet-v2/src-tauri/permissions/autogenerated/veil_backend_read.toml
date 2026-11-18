@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-veil-backend-read"
+description = "Enables the veil_backend_read command without any pre-configured scope."
+commands.allow = ["veil_backend_read"]
+
+[[permission]]
+identifier = "deny-veil-backend-read"
+description = "Denies the veil_backend_read command without any pre-configured scope."
+commands.deny = ["veil_backend_read"]

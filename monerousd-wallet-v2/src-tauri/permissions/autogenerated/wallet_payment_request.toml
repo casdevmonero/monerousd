@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-payment-request"
+description = "Enables the wallet_payment_request command without any pre-configured scope."
+commands.allow = ["wallet_payment_request"]
+
+[[permission]]
+identifier = "deny-wallet-payment-request"
+description = "Denies the wallet_payment_request command without any pre-configured scope."
+commands.deny = ["wallet_payment_request"]

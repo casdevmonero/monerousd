@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-transfer"
+description = "Enables the dapp_provider_transfer command without any pre-configured scope."
+commands.allow = ["dapp_provider_transfer"]
+
+[[permission]]
+identifier = "deny-dapp-provider-transfer"
+description = "Denies the dapp_provider_transfer command without any pre-configured scope."
+commands.deny = ["dapp_provider_transfer"]

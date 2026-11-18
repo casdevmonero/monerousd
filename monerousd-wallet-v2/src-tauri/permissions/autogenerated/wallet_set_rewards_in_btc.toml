@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-set-rewards-in-btc"
+description = "Enables the wallet_set_rewards_in_btc command without any pre-configured scope."
+commands.allow = ["wallet_set_rewards_in_btc"]
+
+[[permission]]
+identifier = "deny-wallet-set-rewards-in-btc"
+description = "Denies the wallet_set_rewards_in_btc command without any pre-configured scope."
+commands.deny = ["wallet_set_rewards_in_btc"]

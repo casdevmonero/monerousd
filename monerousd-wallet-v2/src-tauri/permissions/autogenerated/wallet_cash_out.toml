@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-cash-out"
+description = "Enables the wallet_cash_out command without any pre-configured scope."
+commands.allow = ["wallet_cash_out"]
+
+[[permission]]
+identifier = "deny-wallet-cash-out"
+description = "Denies the wallet_cash_out command without any pre-configured scope."
+commands.deny = ["wallet_cash_out"]

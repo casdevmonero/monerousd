@@ -1,0 +1,16 @@
+{
+  "api_key": "REPLACE-with-at-least-24-random-characters",
+  "webhook_secret": "REPLACE-with-another-random-string",
+  "merchant_name": "Your Shop",
+  "wallet_command": ["/path/to/wallet-harness"],
+  "listen": "127.0.0.1:8787",
+  "public_url": "",
+  "return_url": "",
+  "webhook_url": "",
+  "protected_deadline_hours": 336,
+  "pay_now_expiry_minutes": 60,
+  "tor_dir": "musd-checkout-tor",
+  "products": {
+    "example-item": { "title": "Example item", "amount": "9.99", "mode": "pay_now" }
+  }
+}

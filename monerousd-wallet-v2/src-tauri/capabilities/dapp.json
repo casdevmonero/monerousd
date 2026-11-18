@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2/capability",
+  "identifier": "dapp-provider",
+  "description": "Embedded dApp pages served by THIS user's own node (the sovereign mirror on loopback; DB-373 removed every clearnet origin) may reach the MonerousD wallet provider bridge. Private reads (address, balance, letters, note ownership) need the user's session consent; every value move, publication and signature needs the user's per-action approval in the wallet core.",
+  "webviews": [
+    "dapp"
+  ],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:27752"
+    ]
+  },
+  "permissions": [
+    "allow-dapp-provider-connect",
+    "allow-dapp-provider-new-address",
+    "allow-dapp-provider-balance",
+    "allow-dapp-provider-network",
+    "allow-dapp-provider-height",
+    "allow-dapp-provider-node-rpc",
+    "allow-dapp-provider-transfer",
+    "allow-dapp-provider-letter-address",
+    "allow-dapp-provider-letter-send",
+    "allow-dapp-provider-letter-inbox",
+    "allow-dapp-provider-letter-history",
+    "allow-dapp-provider-dir-register",
+    "allow-dapp-provider-profile-set",
+    "allow-dapp-provider-profile-get",
+    "allow-dapp-provider-note-owned",
+    "allow-dapp-provider-create-token"
+  ]
+}

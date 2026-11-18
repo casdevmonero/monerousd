@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-sell-sat"
+description = "Enables the wallet_sell_sat command without any pre-configured scope."
+commands.allow = ["wallet_sell_sat"]
+
+[[permission]]
+identifier = "deny-wallet-sell-sat"
+description = "Denies the wallet_sell_sat command without any pre-configured scope."
+commands.deny = ["wallet_sell_sat"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-web3-grant"
+description = "Enables the web3_grant command without any pre-configured scope."
+commands.allow = ["web3_grant"]
+
+[[permission]]
+identifier = "deny-web3-grant"
+description = "Denies the web3_grant command without any pre-configured scope."
+commands.deny = ["web3_grant"]

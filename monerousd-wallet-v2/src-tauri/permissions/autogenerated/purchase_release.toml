@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-purchase-release"
+description = "Enables the purchase_release command without any pre-configured scope."
+commands.allow = ["purchase_release"]
+
+[[permission]]
+identifier = "deny-purchase-release"
+description = "Denies the purchase_release command without any pre-configured scope."
+commands.deny = ["purchase_release"]

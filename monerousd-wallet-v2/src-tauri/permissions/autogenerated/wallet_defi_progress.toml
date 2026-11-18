@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-defi-progress"
+description = "Enables the wallet_defi_progress command without any pre-configured scope."
+commands.allow = ["wallet_defi_progress"]
+
+[[permission]]
+identifier = "deny-wallet-defi-progress"
+description = "Denies the wallet_defi_progress command without any pre-configured scope."
+commands.deny = ["wallet_defi_progress"]

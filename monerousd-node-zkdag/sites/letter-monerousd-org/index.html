@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<!--
+  Copyright (c) 2026, The MoneroUSD Protocol
+  SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root).
+  See LICENSE and NOTICE. Forks must display this license and credit MoneroUSD.
+
+  Letter — 100% private P2P messaging. PQ-sealed end to end (ML-KEM-768 + ML-DSA-65 + blake3), zero metadata,
+  MonerousD payments built in. No email, no phone, no IP — your identity is your wallet address.
+  Static frontend; the BACKEND IS THE CHAIN — every seal/open/relay/pay runs in the user's own wallet + node
+  through the postMessage provider bridge. Zero VPS dependency. Design: black + orange, high-tech motion.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Letter — private messaging</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  :root{
+    --bg:#060607; --bg2:#0b0b0e; --glass:rgba(18,18,22,.66); --glass2:rgba(26,26,32,.72);
+    --panelSolid:#101014; --hover:rgba(255,255,255,.045); --line:rgba(255,255,255,.07);
+    --text:#f4f1ee; --muted:#8b8b95; --dim:#5c5c66;
+    --acc:#ff7a00; --acc2:#ffab4d; --accDeep:#b53e00; --glow:rgba(255,122,0,.45);
+    --bubbleIn:rgba(255,255,255,.055); --ok:#39d98a; --pay:#ffb43c;
+    --rad:14px;
+  }
+  *{box-sizing:border-box}
+  input,textarea{caret-color:var(--acc)}
+  html,body{height:100%;margin:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,system-ui,sans-serif;background:var(--bg);color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased}
+  #bg{position:fixed;inset:0;z-index:0;display:block}
+  /* drifting aurora blobs behind everything (orange on black) */
+  .aurora{position:fixed;z-index:0;filter:blur(70px);opacity:.5;pointer-events:none;border-radius:50%}
+  .a1{width:520px;height:520px;left:-140px;top:-120px;background:radial-gradient(circle,rgba(255,122,0,.30),transparent 62%);animation:drift1 26s ease-in-out infinite}
+  .a2{width:600px;height:600px;right:-180px;bottom:-160px;background:radial-gradient(circle,rgba(181,62,0,.28),transparent 62%);animation:drift2 32s ease-in-out infinite}
+  .a3{width:360px;height:360px;left:45%;top:55%;background:radial-gradient(circle,rgba(255,171,77,.14),transparent 60%);animation:drift1 40s ease-in-out infinite reverse}
+  @keyframes drift1{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(80px,60px) scale(1.12)}}
+  @keyframes drift2{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-90px,-50px) scale(1.15)}}
+  #app{position:relative;z-index:2;display:flex;height:100vh}
+  /* ── sidebar ── */
+  #side{width:340px;min-width:300px;background:var(--glass);backdrop-filter:blur(22px) saturate(140%);-webkit-backdrop-filter:blur(22px) saturate(140%);border-right:1px solid var(--line);display:flex;flex-direction:column}
+  .side-top{padding:14px 14px 12px;display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--line)}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px;letter-spacing:.3px}
+  .brand .bt{background:linear-gradient(120deg,#fff,var(--acc2) 55%,var(--acc));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .mark{width:38px;height:38px;display:flex;align-items:center;justify-content:center;position:relative;animation:pulse 3.6s ease-in-out infinite}
+  .mark svg{width:100%;height:100%;position:relative;z-index:1;filter:drop-shadow(0 0 8px var(--glow))}
+  @keyframes pulse{0%,100%{filter:drop-shadow(0 0 6px var(--glow))}50%{filter:drop-shadow(0 0 15px var(--glow))}}
+  .me{margin-left:auto;font-size:11px;color:var(--muted);text-align:right;max-width:150px;cursor:pointer;line-height:1.35}
+  .gearbtn{flex:0 0 auto;width:28px;height:28px;margin-left:6px;border-radius:9px;border:1px solid rgba(240,116,30,.75);background:rgba(240,116,30,.14);color:#f0741e;font-size:15px;line-height:1;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;box-shadow:0 0 8px rgba(240,116,30,.55),0 0 18px rgba(240,116,30,.28);animation:gearGlow 2.4s ease-in-out infinite;transition:color .15s,box-shadow .15s,background .15s}
+  .gearbtn:hover{color:#fff;background:rgba(240,116,30,.32);box-shadow:0 0 12px rgba(240,116,30,.9),0 0 26px rgba(240,116,30,.5)}
+  @keyframes gearGlow{0%,100%{box-shadow:0 0 8px rgba(240,116,30,.55),0 0 18px rgba(240,116,30,.28)}50%{box-shadow:0 0 13px rgba(240,116,30,.95),0 0 30px rgba(240,116,30,.5)}}
+  .me .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--dim);margin-right:5px;vertical-align:middle}
+  .me.on .dot{background:var(--ok);box-shadow:0 0 8px var(--ok);animation:blink 2s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.45}}
+  .qdrop{position:absolute;left:14px;right:14px;top:100%;margin-top:6px;z-index:40;background:var(--panelSolid);
+    border:1px solid var(--line);border-radius:12px;box-shadow:0 18px 44px rgba(0,0,0,.55);overflow:hidden;display:none}
+  .qdrop.on{display:block}
+  .idico{display:flex;align-items:center;justify-content:center}
+  .menuwrap{position:relative}
+  .menu{position:absolute;right:0;top:110%;z-index:50;background:var(--panelSolid,#141416);border:1px solid var(--line);
+    border-radius:12px;box-shadow:0 18px 50px rgba(0,0,0,.5);min-width:190px;padding:6px;display:none}
+  .menu.on{display:block}
+  .mrow{padding:10px 12px;border-radius:8px;cursor:pointer;font-size:14px;display:flex;gap:9px;align-items:center}
+  .mrow:hover{background:rgba(255,255,255,.06)}
+  .mrow.danger{color:#ff6d6d}
+  .feebar{display:none;gap:10px;align-items:center;margin:0 14px 10px;padding:11px 14px;border:1px solid rgba(255,150,60,.35);
+    background:rgba(255,122,0,.08);border-radius:12px;font-size:13.5px}
+  .feebar.on{display:flex}
+  .reqhdr{padding:9px 14px 4px;font-size:11.5px;font-weight:700;letter-spacing:.08em;color:var(--acc);text-transform:uppercase}
+  .reqact{display:flex;gap:6px;margin-left:auto}
+  .reqact .btn{padding:5px 10px;font-size:12px}
+  .pill{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:99px;background:rgba(255,122,0,.18);color:var(--acc);margin-left:6px}
+  .qrow{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;border-bottom:1px solid var(--line)}
+  .qrow:last-child{border-bottom:none}
+  .qrow:hover,.qrow.sel{background:var(--hover)}
+  .qrow .qa{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accDeep),var(--acc));
+    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#1a0d00;flex:0 0 30px}
+  .qrow .qt{min-width:0}
+  .qrow .qt b{display:block;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .qrow .qt span{font-size:11px;color:var(--muted)}
+  .search{position:relative;padding:10px 14px;display:flex;gap:8px;align-items:center}
+  .search input{flex:1;min-width:0;background:rgba(255,255,255,.05);border:1px solid transparent;border-radius:20px;color:var(--text);padding:10px 14px;font-size:13px;outline:none;transition:.2s}
+  .search input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(255,122,0,.12)}
+  .newbtn{flex:none;width:38px;height:38px;border-radius:50%;border:none;background:linear-gradient(135deg,var(--acc),var(--accDeep));color:#fff;font-size:16px;cursor:pointer;box-shadow:0 4px 16px var(--glow);transition:.15s}
+  .newbtn:hover{filter:brightness(1.1)} .newbtn:active{transform:scale(.9)}
+  .backbtn{display:none;background:none;border:none;color:var(--acc);font-size:30px;line-height:1;cursor:pointer;padding:0 6px 0 0;margin-left:-4px}
+  @media (max-width:720px){ .backbtn{display:block} }
+  .tabs{display:flex;gap:6px;padding:2px 12px 10px}
+  .tab{flex:1;text-align:center;padding:8px;border-radius:10px;font-size:12.5px;color:var(--muted);cursor:pointer;user-select:none;transition:.2s;border:1px solid transparent}
+  .tab:hover{background:var(--hover)}
+  .tab.active{background:linear-gradient(135deg,rgba(255,122,0,.22),rgba(181,62,0,.16));color:#fff;border-color:rgba(255,122,0,.4);box-shadow:0 0 18px rgba(255,122,0,.12)}
+  .chats{flex:1;overflow-y:auto;padding:4px 8px}
+  .chat{display:flex;gap:11px;padding:10px;cursor:pointer;align-items:center;border-radius:12px;margin-bottom:2px;transition:.15s;position:relative}
+  .chat:hover{background:var(--hover)}
+  .chat.sel{background:linear-gradient(135deg,rgba(255,122,0,.18),rgba(181,62,0,.10));box-shadow:inset 0 0 0 1px rgba(255,122,0,.28)}
+  .ava{width:46px;height:46px;border-radius:14px;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:16px;position:relative;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+  .ava::after{content:"";position:absolute;inset:0;border-radius:14px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}
+  .chat .meta{min-width:0;flex:1}
+  .chat .name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chat .last{font-size:12.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:3px}
+  .chat.sel .last{color:#f0d3b8}
+  .empty{color:var(--muted);text-align:center;padding:44px 22px;font-size:13px;line-height:1.7}
+  /* ── main ── */
+  #main{flex:1;display:flex;flex-direction:column;min-width:0}
+  .head{height:62px;flex:none;display:flex;align-items:center;gap:12px;padding:0 18px;background:var(--glass);backdrop-filter:blur(22px);-webkit-backdrop-filter:blur(22px);border-bottom:1px solid var(--line)}
+  .head>div{min-width:0}
+  .head .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .head .sub{font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:5px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .head .sub .lock{color:var(--ok)}
+  .head .spacer{flex:1}
+  .btn{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px 13px;font-size:13px;cursor:pointer;display:inline-flex;gap:7px;align-items:center;transition:.18s}
+  .btn:hover{background:var(--hover);border-color:rgba(255,255,255,.14)}
+  .btn.pay{background:linear-gradient(135deg,var(--acc),var(--accDeep));color:#fff;font-weight:600;border-color:transparent;box-shadow:0 6px 20px var(--glow)}
+  .btn.pay:hover{filter:brightness(1.08);box-shadow:0 8px 26px var(--glow)}
+  .btn:disabled{opacity:.5;cursor:default}
+  .msgs{flex:1;overflow-y:auto;padding:20px 9%;display:flex;flex-direction:column;gap:7px}
+  .row{display:flex;animation:pop .28s cubic-bezier(.2,.9,.3,1.2)}
+  .row.out{justify-content:flex-end}
+  @keyframes pop{from{opacity:0;transform:translateY(10px) scale(.96)}to{opacity:1;transform:none}}
+  .bubble{max-width:68%;padding:9px 13px;border-radius:16px;font-size:14px;line-height:1.45;word-wrap:break-word;position:relative;backdrop-filter:blur(6px)}
+  .row.in .bubble{background:var(--bubbleIn);border:1px solid var(--line);border-bottom-left-radius:5px}
+  .row.out .bubble{background:linear-gradient(135deg,var(--acc),var(--accDeep));color:#fff;border-bottom-right-radius:5px;box-shadow:0 4px 18px rgba(255,122,0,.28)}
+  .bubble.pay{background:linear-gradient(135deg,rgba(255,180,60,.16),rgba(181,62,0,.14));border:1px solid var(--pay);color:var(--text)}
+  .bubble .t{font-size:10px;opacity:.6;margin-top:4px;text-align:right;display:flex;gap:4px;justify-content:flex-end;align-items:center}
+  .paychip{display:flex;align-items:center;gap:9px;font-weight:700;color:var(--pay)}
+  .paychip .amt{font-size:17px}
+  .composer{flex:none;display:flex;gap:10px;padding:14px 18px;background:var(--panelSolid);border-top:1px solid var(--line);align-items:flex-end}
+  .composer textarea{flex:1;resize:none;max-height:130px;background:rgba(255,255,255,.05);border:1px solid transparent;border-radius:18px;color:var(--text);padding:11px 15px;font-size:14px;outline:none;font-family:inherit;transition:.2s}
+  .composer textarea:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(255,122,0,.1)}
+  .send{width:46px;height:46px;border-radius:50%;border:none;background:linear-gradient(135deg,var(--acc),var(--accDeep));color:#fff;cursor:pointer;flex:none;font-size:18px;box-shadow:0 6px 20px var(--glow);transition:.15s;position:relative;overflow:hidden}
+  .send:hover{filter:brightness(1.1)}
+  .send:active{transform:scale(.9)}
+  .send:disabled{opacity:.5;cursor:default}
+  .send.sealing{pointer-events:none}
+  .send.sealing::after{content:"";position:absolute;inset:0;border-radius:50%;border:2px solid rgba(255,255,255,.5);border-top-color:transparent;animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .icobtn{width:42px;height:42px;border-radius:50%;border:none;background:rgba(255,255,255,.05);color:var(--muted);font-size:18px;cursor:pointer;flex:none;transition:.15s;display:flex;align-items:center;justify-content:center}
+  .icobtn:hover{background:rgba(255,122,0,.14);color:var(--acc)}
+  .icobtn:active{transform:scale(.9)}
+  .bubble img,.bubble video{max-width:min(340px,100%);max-height:340px;border-radius:12px;display:block;margin:2px 0;background:#000}
+  .bubble .cap{margin-top:5px}
+  .row .sticker{font-size:82px;line-height:1;filter:drop-shadow(0 6px 16px rgba(0,0,0,.45))}
+  .row.sticky .bubble{background:none!important;border:none!important;box-shadow:none!important;padding:2px 0;backdrop-filter:none}
+  .stickers-panel{position:absolute;bottom:82px;right:16px;background:var(--glass2);backdrop-filter:blur(24px) saturate(150%);-webkit-backdrop-filter:blur(24px);border:1px solid rgba(255,122,0,.28);border-radius:16px;padding:12px;display:none;grid-template-columns:repeat(6,1fr);gap:4px;box-shadow:0 22px 60px rgba(0,0,0,.55);z-index:40;max-width:340px}
+  .stickers-panel.on{display:grid;animation:rise .2s cubic-bezier(.2,.9,.3,1.1)}
+  .stickers-panel .s{font-size:30px;cursor:pointer;text-align:center;padding:6px;border-radius:10px;transition:.12s;user-select:none}
+  .stickers-panel .s:hover{background:rgba(255,122,0,.16);transform:scale(1.18)}
+  /* welcome */
+  .welcome{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--muted);gap:16px;text-align:center;padding:20px}
+  .welcome .big{width:118px;height:118px;display:flex;align-items:center;justify-content:center;animation:float 5s ease-in-out infinite}
+  .welcome .big svg{width:100%;height:100%;filter:drop-shadow(0 0 26px var(--glow))}
+  @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-10px)}}
+  .welcome h1{color:#fff;margin:8px 0 0;font-size:34px;letter-spacing:.5px;background:linear-gradient(120deg,#fff,var(--acc2) 60%,var(--acc));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+  .welcome .tag{max-width:440px;font-size:14px;line-height:1.7}
+  .feat{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;justify-content:center;max-width:560px}
+  .feat .chip{font-size:12px;padding:8px 13px;border-radius:20px;background:rgba(255,255,255,.04);border:1px solid var(--line);display:flex;gap:7px;align-items:center;transition:.2s}
+  .feat .chip:hover{border-color:rgba(255,122,0,.4);background:rgba(255,122,0,.08);transform:translateY(-2px)}
+  /* modal */
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.62);backdrop-filter:blur(4px);display:none;align-items:center;justify-content:center;z-index:50}
+  .modal-bg.on{display:flex;animation:fade .2s}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .modal{background:var(--glass2);backdrop-filter:blur(30px) saturate(150%);-webkit-backdrop-filter:blur(30px);border:1px solid rgba(255,122,0,.22);border-radius:18px;padding:22px;width:440px;max-width:92vw;box-shadow:0 30px 80px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.05);animation:rise .28s cubic-bezier(.2,.9,.3,1.1)}
+  @keyframes rise{from{opacity:0;transform:translateY(16px) scale(.97)}to{opacity:1;transform:none}}
+  .modal h3{margin:0 0 4px;font-size:18px}
+  .modal p{color:var(--muted);font-size:12.5px;margin:0 0 8px;line-height:1.6}
+  .modal label{font-size:11.5px;color:var(--muted);display:block;margin:12px 0 5px;text-transform:uppercase;letter-spacing:.6px}
+  .modal input{width:100%;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:11px 13px;font-size:14px;outline:none;transition:.2s}
+  .modal input:focus{border-color:var(--acc);box-shadow:0 0 0 3px rgba(255,122,0,.12)}
+  .modal .actions{display:flex;gap:9px;justify-content:flex-end;margin-top:18px}
+  .modal .err{color:#ff6b6b;font-size:12px;min-height:16px;margin-top:8px}
+  .toast{pointer-events:none;position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(10px);background:var(--glass2);backdrop-filter:blur(20px);color:var(--text);padding:11px 18px;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.5);font-size:13px;opacity:0;transition:.25s;z-index:60;border:1px solid rgba(255,122,0,.3)}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+  ::-webkit-scrollbar{width:8px}
+  ::-webkit-scrollbar-thumb{background:rgba(255,122,0,.25);border-radius:8px}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(255,122,0,.4)}
+  @media (max-width:720px){ #side{width:100%;position:absolute;inset:0;z-index:5} #side.hide{display:none} .msgs{padding:16px 5%} }
+</style>
+  <script src="lib/wallet-nav.js?v=1"></script>
+  <!-- A WALLET-ONLY APP (user 2026-11-11: "letter is on chain so it can stay in the wallet ... it doesnt need a web app
+       yet"): letters travel over the chain and are sealed, opened and sent by the wallet that frames this page. Opened
+       anywhere else it says to open it in the wallet, and that is the whole of what it should do there. -->
+  <meta name="monerousd-app" content="wallet-only">
+</head>
+<body>
+<canvas id="bg"></canvas>
+<!-- The Letter mark — a sealed envelope with a post-quantum wax seal. One definition, reused at every size + the favicon. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="lgStroke" x1="10" y1="12" x2="38" y2="36" gradientUnits="userSpaceOnUse"><stop stop-color="#ffc178"/><stop offset=".5" stop-color="#ff9024"/><stop offset="1" stop-color="#ff6a00"/></linearGradient>
+  <linearGradient id="lgSeal" x1="20" y1="22" x2="28" y2="30" gradientUnits="userSpaceOnUse"><stop stop-color="#ffd39c"/><stop offset="1" stop-color="#ff7a00"/></linearGradient>
+  <!-- transparent-background glowing mark: an orange sealed envelope, no filled tile — glows against the dark UI -->
+  <symbol id="letterMark" viewBox="0 0 48 48">
+    <rect x="11" y="15" width="26" height="19" rx="3.6" fill="none" stroke="url(#lgStroke)" stroke-width="2.9"/>
+    <path d="M12.4 17.4 L24 26.2 L35.6 17.4" fill="none" stroke="url(#lgStroke)" stroke-width="2.9" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="24" cy="26.2" r="4.6" fill="url(#lgSeal)"/>
+    <circle cx="24" cy="26.2" r="1.9" fill="#0a0a0c" fill-opacity=".55"/>
+  </symbol>
+</defs></svg>
+<div class="aurora a1"></div><div class="aurora a2"></div><div class="aurora a3"></div>
+<div id="app">
+  <aside id="side">
+    <div class="side-top">
+      <div class="brand"><span class="mark"><svg><use href="#letterMark"/></svg></span><span class="bt">Letter</span></div>
+      <div class="me" id="me"><span class="dot"></span>connecting…</div>
+      <button class="gearbtn" id="gearBtn" title="Profile &amp; settings" aria-label="Profile and settings">⚙</button>
+    </div>
+    <div class="search"><input id="q" placeholder="Search, @username, or paste address" autocomplete="off"><button class="newbtn" id="newBtn" title="New chat">✚</button><div class="qdrop" id="qdrop"></div></div>
+    <div class="tabs">
+      <div class="tab active" data-tab="chats">Chats</div>
+      <div class="tab" data-tab="groups">Groups</div>
+    </div>
+    <div class="chats" id="list"></div>
+  </aside>
+  <main id="main">
+    <div class="welcome" id="welcome">
+      <div class="big"><svg><use href="#letterMark"/></svg></div>
+      <h1>Letter</h1>
+      <div class="tag">Messaging that <b>bypasses</b> Telegram. Post-quantum sealed end to end, zero metadata, and money that moves inside the conversation. No email. No phone. No IP.</div>
+      <div class="feat">
+        <div class="chip">🔐 ML-KEM-768 + ML-DSA-65</div>
+        <div class="chip">🫥 Metadata-blind relay</div>
+        <div class="chip">💸 Send USDm in chat</div>
+        <div class="chip">🧅 Onion-only, no servers</div>
+      </div>
+      <button class="btn pay" id="startBtn" style="margin-top:8px;padding:12px 22px">✚&nbsp; Start a new chat</button>
+    </div>
+    <div id="conv" style="display:none;flex:1;flex-direction:column;min-height:0;position:relative">
+      <div class="head">
+        <button class="backbtn" id="backBtn" title="Back">‹</button>
+        <div class="ava" id="cAva" style="width:42px;height:42px;border-radius:12px;font-size:15px"></div>
+        <div><div class="name" id="cName"></div><div class="sub" id="cSub"></div></div>
+        <div class="spacer"></div>
+        <button class="btn" id="addBtn" style="display:none">＋&nbsp; Add</button>
+        <button class="btn pay" id="payBtn">💸&nbsp; Send USDm</button>
+        <div class="menuwrap"><button class="btn" id="menuBtn" title="Chat options" style="padding:9px 12px">⋯</button>
+          <div class="menu" id="chatMenu"></div></div>
+      </div>
+      <div class="msgs" id="msgs"></div>
+      <div class="stickers-panel" id="stickers"></div>
+      <div class="stickers-panel" id="emojis"></div>
+      <div class="feebar" id="feebar"></div>
+      <div class="composer">
+        <button class="icobtn" id="attachBtn" title="Send a photo, video or GIF">📎</button>
+        <button class="icobtn" id="emojiBtn" title="Emoji">😀</button>
+        <button class="icobtn" id="stickerBtn" title="Stickers">🙂</button>
+        <input type="file" id="fileInput" accept="image/*,video/*" multiple style="display:none">
+        <textarea id="input" rows="1" placeholder="Write a letter… (it's sealed before it leaves your device)"></textarea>
+        <button class="send" id="sendBtn" title="Send">➤</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="modal-bg" id="startModal">
+  <div class="modal">
+    <h3>New chat</h3>
+    <p>Enter a <b>@username</b> or paste a MonerousD <b>address</b>. Your correspondent's identity is their wallet — no phone number, no email, nothing to leak.</p>
+    <label>Recipient</label>
+    <input id="startInput" placeholder="@alice  or  cZkxw…" autocomplete="off" spellcheck="false">
+    <div class="err" id="startErr"></div>
+    <div class="actions"><button class="btn" id="startCancel">Cancel</button><button class="btn pay" id="startGo">Start chat</button></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="groupModal">
+  <div class="modal">
+    <h3>New group</h3>
+    <p>A <b>private</b> group, sealed to each member individually — the relay only ever sees opaque letters, never who is in the group or how many. Invite by <b>@username</b> or address; they join the moment they receive it.</p>
+    <label>Group name</label>
+    <input id="grpName" placeholder="e.g. Rust Devs" autocomplete="off">
+    <label>Invite members (one per line)</label>
+    <textarea id="grpMembers" rows="3" placeholder="@alice&#10;cZkxw…" style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:11px 13px;font-size:14px;outline:none;font-family:inherit;resize:none"></textarea>
+    <label>Discoverable @handle (optional)</label>
+    <input id="grpHandle" placeholder="@rustdevs — registers on-chain so people can find &amp; join" autocomplete="off" spellcheck="false">
+    <div class="err" id="grpErr"></div>
+    <div class="actions"><button class="btn" id="grpCancel">Cancel</button><button class="btn pay" id="grpGo">Create group</button></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="profileModal">
+  <div class="modal">
+    <h3>Your profile</h3>
+    <p>Published <b>on-chain</b>, signed by your wallet — only <b>you</b> can ever write it (the chain refuses any other key, cryptographically). Photo optional: without one, your avatar is derived from your address.</p>
+    <div style="display:flex;gap:12px;align-items:center;margin:6px 0 10px"><div class="ava idico" id="pfAva" style="width:52px;height:52px;border-radius:14px;overflow:hidden"></div>
+      <button class="btn" id="pfPhoto" style="font-size:12.5px">📷 Set photo</button>
+      <button class="btn" id="pfPhotoDel" style="font-size:12.5px;display:none">Remove photo</button>
+      <button class="btn" id="pfCopy" style="font-size:12.5px">Copy my address</button>
+      <input type="file" id="pfFile" accept="image/*" style="display:none"></div>
+    <p style="font-size:12px;color:var(--muted);margin:0 0 6px">Your photo lives <b>on the chain</b>, inside your signed profile — no photo host, no CDN, nothing fetches from a third party (so viewing it can't leak anyone's IP). Downscaled to 128px.</p>
+    <label>Display name</label>
+    <input id="pfName" maxlength="48" placeholder="How you appear in chats" autocomplete="off">
+    <label>Bio</label>
+    <input id="pfBio" maxlength="140" placeholder="A line about you (optional)" autocomplete="off">
+    <label>DM fee for new contacts (USDm) — 0 = open DMs</label>
+    <input id="pfFee" type="number" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
+    <p style="font-size:12.5px;color:var(--muted);margin-top:4px">Strangers must attach this payment to their first message. Real anti-spam: spam costs money, and the fee is <b>yours</b>.</p>
+    <div class="err" id="pfErr"></div>
+    <div class="actions"><button class="btn" id="pfCancel">Cancel</button><button class="btn pay" id="pfSave">Publish profile</button></div>
+  </div>
+</div>
+
+<div class="modal-bg" id="payModal">
+  <div class="modal">
+    <h3>Send USDm</h3>
+    <p>A real, private on-chain payment to this contact. It clears your wallet's own approval, then a sealed receipt appears in the chat.</p>
+    <label>Amount (USDm)</label>
+    <input id="payAmt" type="number" min="0" step="0.01" placeholder="0.00" inputmode="decimal">
+    <label>Note (optional)</label>
+    <input id="payNote" placeholder="What's it for?">
+    <div class="err" id="payErr"></div>
+    <div class="actions"><button class="btn" id="payCancel">Cancel</button><button class="btn pay" id="payGo">Send payment</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+// ── animated PQ-lattice background: orange nodes drifting on black, linking when near (evokes the lattice
+//    cryptography + the private mesh). Pure canvas, transform-free, paused when hidden — light on the CPU. ──
+(function lattice(){
+  const c=document.getElementById('bg'), x=c.getContext('2d'); let w,h,pts,raf;
+  function size(){ w=c.width=innerWidth*devicePixelRatio; h=c.height=innerHeight*devicePixelRatio; c.style.width=innerWidth+'px'; c.style.height=innerHeight+'px'; make(); }
+  function make(){ const n=Math.min(90,Math.floor(w*h/26000/devicePixelRatio)); pts=[]; for(let i=0;i<n;i++) pts.push({x:Math.random()*w,y:Math.random()*h,vx:(Math.random()-.5)*.22*devicePixelRatio,vy:(Math.random()-.5)*.22*devicePixelRatio}); }
+  function step(){
+    x.clearRect(0,0,w,h);
+    for(const p of pts){ p.x+=p.vx; p.y+=p.vy; if(p.x<0||p.x>w)p.vx*=-1; if(p.y<0||p.y>h)p.vy*=-1; }
+    const R=150*devicePixelRatio;
+    for(let i=0;i<pts.length;i++){
+      for(let j=i+1;j<pts.length;j++){
+        const a=pts[i],b=pts[j],dx=a.x-b.x,dy=a.y-b.y,d=Math.hypot(dx,dy);
+        if(d<R){ const o=(1-d/R)*.16; x.strokeStyle='rgba(255,122,0,'+o+')'; x.lineWidth=devicePixelRatio; x.beginPath(); x.moveTo(a.x,a.y); x.lineTo(b.x,b.y); x.stroke(); }
+      }
+    }
+    for(const p of pts){ x.fillStyle='rgba(255,150,60,.55)'; x.beginPath(); x.arc(p.x,p.y,1.5*devicePixelRatio,0,7); x.fill(); }
+    raf=requestAnimationFrame(step);
+  }
+  addEventListener('resize',size); size(); step();
+  document.addEventListener('visibilitychange',()=>{ if(document.hidden){cancelAnimationFrame(raf);} else {step();} });
+})();
+
+// ── PROVIDER BRIDGE — the backend IS the chain; this page holds no keys, only UI. ──
+const _pending=new Map(); let _rid=1;
+function rpc(method,params){ return new Promise((res,rej)=>{ const id=_rid++; _pending.set(id,{res,rej}); (window.parent||window).postMessage({type:'monerousd:rpc',id,method,params:params||{}},'*'); const ms=method==='transfer'?180000:20000; /* a payment legitimately waits on the wallet's own auth gate + prove */ setTimeout(()=>{ if(_pending.has(id)){_pending.delete(id);rej(new Error('wallet did not answer '+method));} },ms); }); }
+window.addEventListener('message',(ev)=>{ const d=ev.data; if(!d) return; if(d.type==='monerousd:res'&&_pending.has(d.id)){ const {res,rej}=_pending.get(d.id); _pending.delete(d.id); d.ok?res(d.result):rej(new Error(d.error||'rpc error')); } });
+
+const S={me:null,chats:{},sel:null,tab:'chats'};
+// THREAD-MERGE ledgers (session state; SENT1 restore refills sent): cm = content hash of a sealed letter.
+// A reply that echoes one of OUR sent cms proves its sender decapped that exact letter — the only safe
+// basis for merging a typed-address thread into the counterpart's canonical identity (no hijack surface).
+const sentCms={};  // chatKey -> Set(cm of letters WE sealed to it)
+const recvCms={};  // chatKey -> latest inbound cm (what our replies echo as the ack)
+function cmNote(map,key,cm){ if(!cm) return; (map[key]=map[key]||new Set()).add(cm); }
+
+// ── PROFILES / BLOCK / DM-FEE state. blocked+accepted are ON-CHAIN (self-sealed BLOCK1/ACC1 letters), so a
+//    seed restore on a fresh device brings back who you blocked and whose requests you accepted — no local store.
+const profiles={};                 // addr -> {display,bio,fee_micro,ts}
+S.blocked=new Set(); S.accepted=new Set(); S.myFeeMicro=0; S.myProfile=null;
+
+// Address-derived 5×5 mirrored identicon — Telegram-grade visual identity with NOTHING uploaded or hosted:
+// the avatar is a pure function of the address, so it needs no storage and can never leak a photo.
+// THE HTML-SINK CLASS (2026-10-05): every value from a profile, a message or a media payload is escaped before innerHTML;
+// `sanitizeHtml` is a REAL DOM sanitizer (allowlisted tags, no on*/srcdoc/javascript:/non-media data:) for assembled
+// markup; `sanitizeMediaUrl` admits only image/video data URLs (a letter's media is outside bytes).
+const SANITIZE_SAFE_TAGS=new Set(['div','span','b','i','em','strong','p','br','small','button','img','video','svg','rect','path','circle','g','a','pre','code','ul','li']);
+function sanitizeHtml(markup){ const doc=new DOMParser().parseFromString('<body>'+String(markup==null?'':markup)+'</body>','text/html');
+  const walk=(node)=>{ for(const el of Array.from(node.children)){ if(!SANITIZE_SAFE_TAGS.has(el.tagName.toLowerCase())){ el.remove(); continue; }
+    for(const at of Array.from(el.attributes)){ const n=at.name.toLowerCase(), v=String(at.value||'').trim().toLowerCase().replace(/\s+/g,'');
+      const url=n==='href'||n==='src'||n==='action'||n==='xlink:href'||n==='formaction';
+      if(n.startsWith('on')||n==='srcdoc'||(url&&(v.startsWith('javascript:')||v.startsWith('vbscript:')||(v.startsWith('data:')&&!v.startsWith('data:image/')&&!v.startsWith('data:video/'))))) el.removeAttribute(at.name); }
+    walk(el); } };
+  walk(doc.body); return doc.body.innerHTML; }
+function sanitizeMediaUrl(d){ const v=String(d||''); return (/^data:(image|video)\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=]+$/i.test(v))?escapeHtml(v):''; }
+function identicon(a,px){
+  let h1=0,h2=0x9e3779b9; for(const c of (a||'')){ h1=(h1*131+c.charCodeAt(0))>>>0; h2=((h2^c.charCodeAt(0))*16777619)>>>0; }
+  let st=((h1^h2)>>>0)||1; const rnd=()=>{ st^=st<<13;st>>>=0;st^=st>>17;st^=st<<5;st>>>=0; return st/4294967296; };
+  let cells='';
+  for(let y=0;y<5;y++) for(let x=0;x<3;x++){ if(rnd()<.48) continue;
+    cells+='<rect x="'+x+'" y="'+y+'" width="1.06" height="1.06"/>';
+    if(x<2) cells+='<rect x="'+(4-x)+'" y="'+y+'" width="1.06" height="1.06"/>'; }
+  return sanitizeHtml('<svg viewBox="-0.7 -0.7 6.4 6.4" style="width:'+Number(px)+'px;height:'+Number(px)+'px;fill:rgba(255,255,255,.9)" shape-rendering="crispEdges">'+cells+'</svg>');
+}
+function avatarHtml(a,grp,px){ if(grp) return '👥';
+  const p=profiles[a];
+  if(p&&p.avatar) return '<img src="'+sanitizeMediaUrl('data:image/jpeg;base64,'+p.avatar)+'" style="width:100%;height:100%;object-fit:cover;border-radius:inherit" alt="">';
+  return identicon(a,px||22); }
+
+// On-chain profile lookup, cached 5 min. Re-renders when a profile first lands (names pop in live).
+async function getProfile(a,force){ if(!a||isGroup(a)) return null;
+  const c=profiles[a]; if(c&&!force&&Date.now()-c.ts<300000) return c;
+  try{ const r=await rpc('profileGet',{address:a});
+    const had=c&&c.display;
+    profiles[a]={display:(r&&r.display)||null,bio:(r&&r.bio)||'',fee_micro:(r&&r.fee_micro)||0,avatar:(r&&r.avatar)||'',ts:Date.now()};
+    if((profiles[a].display||'')!==(had||'')){ renderList(); if(S.sel===a) paintHead(); }
+    return profiles[a];
+  }catch(e){ return c||null; }
+}
+function feeUsdm(mu){ return (mu/1e6).toFixed(mu%1e4===0?2:6).replace(/0+$/,'').replace(/\.$/,''); }
+
+// ── BLOCK / ACCEPT — persisted as letters sealed to MYSELF (chain-restored, cross-device, zero local state).
+function persistBlock(a,on){ rpc('letterSend',{to:S.me,msg:'BLOCK1:'+JSON.stringify({a,on:on?1:0})}).catch(()=>{}); }
+function persistAccept(a){ rpc('letterSend',{to:S.me,msg:'ACC1:'+JSON.stringify({a})}).catch(()=>{}); }
+function setBlocked(a,on){ if(on){S.blocked.add(a); if(S.chats[a]) S.chats[a].request=false;} else S.blocked.delete(a);
+  persistBlock(a,on); renderList(); if(S.sel===a) paintHead(); toast(on?'Blocked — they can no longer reach you':'Unblocked'); }
+function acceptRequest(a){ S.accepted.add(a); if(S.chats[a]) S.chats[a].request=false; persistAccept(a);
+  renderList(); if(S.sel===a){ paintHead(); } }
+
+// Recipient-side DM-fee verification: the stranger's first letter carried a `fee` note-commitment receipt —
+// ask MY OWN wallet whether that exact note landed in MY spendable set with enough value. Trustless: the wire
+// claim proves nothing; the wallet's own scan is the only authority.
+async function verifyFeeAsync(a){ const c=S.chats[a]; if(!c||!c.request||!c.pendingFeeCm) return;
+  try{ const r=await rpc('noteOwned',{cm:c.pendingFeeCm});
+    if(r&&r.owned&&Math.round((r.amount_usdm||0)*1e6)>=S.myFeeMicro){
+      c.request=false; S.accepted.add(a); persistAccept(a);
+      renderList(); if(S.sel===a) paintHead();
+      toast(displayName(a)+' paid your '+feeUsdm(S.myFeeMicro)+' USDm DM fee 💸');
+    }
+  }catch(e){}
+}
+
+const $=s=>document.querySelector(s);
+function toast(m){ const t=$('#toast'); t.textContent=m; t.classList.add('on'); setTimeout(()=>t.classList.remove('on'),2400); }
+function short(a){ return a?(a.slice(0,10)+'…'+a.slice(-6)):''; }
+function avaColor(a){ let h=0; for(const c of (a||'')) h=(h*31+c.charCodeAt(0))>>>0; const g=[[255,122,0],[181,62,0],[255,171,77],[210,90,20],[150,50,10]][h%5]; return `linear-gradient(135deg,rgb(${g[0]},${g[1]},${g[2]}),#2a1405)`; }
+function initial(a){ return (a||'?').replace(/^@/,'').slice(0,2).toUpperCase(); }
+function displayName(a){ const p=profiles[a]; if(p&&p.display) return p.display;
+  const c=S.chats[a]; return (c&&c.name)||('@'+short(a)); }
+function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function hash(s){ let h=0; for(const c of (s||'')) h=(h*131+c.charCodeAt(0))>>>0; return h.toString(36); }
+
+function ensureChat(a,n){ if(!S.chats[a]) S.chats[a]={addr:a,name:n||null,msgs:[],last:0}; if(n) S.chats[a].name=n; return S.chats[a]; }
+function addMsg(a,m){ const c=ensureChat(a); if(c.msgs.some(x=>x.id===m.id)) return false; c.msgs.push(m); c.msgs.sort((p,q)=>p.t-q.t); c.last=Math.max(c.last,m.t); return true; }
+
+// Resolve a @username (via the node) or a raw address to a Letter address. Returns null if unresolvable.
+async function resolveTo(v){ v=(v||'').trim(); if(!v) return null;
+  if(v.startsWith('@')){ const nm=v.slice(1);
+    // Prefer the ON-CHAIN directory (one indexed read, reconstructed from the mesh); fall back to the legacy
+    // handle path during the migration so no one becomes unreachable mid-cutover.
+    for(const path of ['/dir/resolve','/resolve_username']){
+      try{ const r=await rpc('nodeRpc',{path,body:JSON.stringify({name:nm})}); const a=(r&&(r.address||r.result))||null; if(a) return a; }catch(e){}
+    }
+    return null;
+  }
+  if(v.startsWith('cZkxw')||v.length>=40) return v;
+  return null;
+}
+
+// ── GROUPS — PRIVATE by construction, orchestrated CLIENT-SIDE on the SAME authenticated letter primitive.
+//    A group message is sealed PER MEMBER (N separate letters), so the metadata-blind relay and any observer
+//    see only opaque DMs — more private than a shared group key (no cleartext routing tag, no which-group leak).
+//    The roster lives in members' own wallets; only the group OWNER (the seal's authenticated sender) can change
+//    it, and every message is self-describing so a newly-added member auto-joins. No node/consensus change, and
+//    nothing grows in node state — the group state is the user's own, bounded by the groups they are in. ──
+function isGroup(k){ return typeof k==='string' && k.startsWith('grp:'); }
+function newGid(){ let s=''; for(let i=0;i<16;i++) s+=Math.floor(Math.random()*256).toString(16).padStart(2,'0'); return s; }
+function grpEnvelope(g,kind,text){ return 'GRP1:'+JSON.stringify({g:g.gid,n:S.chats['grp:'+g.gid].name,o:g.owner,m:g.members,s:g.seq,k:kind,b:text||'',h:g.handle||''}); }
+function parseGrp(msg){ if(typeof msg!=='string'||!msg.startsWith('GRP1:')) return null; try{ return JSON.parse(msg.slice(5)); }catch(e){ return null; } }
+// Create/update a group's local record. Roster + name changes are authoritative ONLY from the OWNER — and the
+// wallet already authenticated `fromAddr` when it opened the sealed letter, so a forged owner cannot rewrite it.
+function ensureGroup(gid,meta,fromAddr){ const key='grp:'+gid; let c=S.chats[key];
+  if(!c){ c=S.chats[key]={addr:key,name:(meta&&meta.n)||'Group',group:{gid,owner:(meta&&meta.o)||fromAddr||'',members:(meta&&meta.m)||[],seq:0,handle:(meta&&meta.h)||''},msgs:[],last:0}; }
+  const g=c.group;
+  if(meta && meta.o && fromAddr && fromAddr===meta.o && (meta.s||0)>=g.seq){
+    if(meta.n) c.name=meta.n; g.owner=meta.o; if(Array.isArray(meta.m)) g.members=meta.m; g.seq=meta.s||g.seq; if(meta.h!==undefined) g.handle=meta.h;
+  }
+  return c;
+}
+async function createGroup(name,memberInputs,handle){
+  if(!S.me){ toast('Open in the wallet first'); return; }
+  const gid=newGid(), key='grp:'+gid, members=[S.me];
+  for(const v of (memberInputs||[])){ const a=await resolveTo(v); if(a&&!members.includes(a)) members.push(a); }
+  const h=(handle||'').replace(/^@/,'').trim();
+  S.chats[key]={addr:key,name:name||'Group',group:{gid,owner:S.me,members,seq:1,handle:h},msgs:[],last:Date.now()};
+  const env=grpEnvelope(S.chats[key].group,'roster',''); // announce the roster so invited members auto-join
+  for(const mem of members){ if(mem===S.me) continue; try{ await rpc('letterSend',{to:mem,msg:env}); }catch(e){} }
+  // If a discoverable @handle was chosen, register it ON-CHAIN (wallet-signed) so anyone can find + join the group.
+  if(h){ try{ await rpc('dirRegister',{kindGroup:true,key:h,display:name||'Group',topic:''}); toast('Group live · discoverable as @'+h+' 🔒'); }
+         catch(e){ toast('Group created; @handle sign-up failed: '+(e.message||e)); } }
+  closeModal('groupModal'); selectChat(key);
+  if(!h) toast('Group created 🔒');
+}
+async function sendGroup(gid,text){ const c=S.chats['grp:'+gid]; if(!c) return; const g=c.group;
+  addMsg('grp:'+gid,{id:'gout:'+Date.now(),out:true,from:S.me,body:text,pay:null,t:Date.now()}); renderList(); renderMsgs();
+  const env=grpEnvelope(g,'msg',text);
+  for(const mem of g.members){ if(mem===S.me) continue; try{ await rpc('letterSend',{to:mem,msg:env}); }catch(e){ toast('A member is unreachable'); } }
+  rpc('letterSend',{to:S.me,msg:'SENT1:'+JSON.stringify({to:'grp:'+gid,g:gid,n:c.name,m:g.members,h:g.handle||'',k:'msg',b:text})}).catch(()=>{});
+}
+async function addGroupMember(gid,v){ const c=S.chats['grp:'+gid]; if(!c) return; const g=c.group;
+  if(g.owner!==S.me){ toast('Only the group owner can add members'); return; }
+  const a=await resolveTo(v); if(!a){ toast('Could not resolve '+v); return; }
+  if(g.members.includes(a)){ toast('Already a member'); return; }
+  g.members.push(a); g.seq++;
+  const env=grpEnvelope(g,'roster','');
+  for(const mem of g.members){ if(mem===S.me) continue; try{ await rpc('letterSend',{to:mem,msg:env}); }catch(e){} }
+  renderMsgs(); toast('Member added 🔒');
+}
+// Find a discoverable group by its ON-CHAIN @handle and ask to join: resolve the handle to the owner's address
+// (one indexed read on-chain), then seal a join request to the owner. The owner's client auto-admits + broadcasts
+// the new roster (a discoverable group is join-to-read), so the joiner auto-joins the moment the roster arrives.
+async function joinByHandle(handle){ const h=(handle||'').replace(/^@/,'').trim(); if(!h){ return; }
+  let owner=null; try{ const r=await rpc('nodeRpc',{path:'/group/resolve',body:JSON.stringify({handle:h})}); owner=r&&r.owner_addr; }catch(e){}
+  if(!owner){ toast('No group found for @'+h); return; }
+  try{ await rpc('letterSend',{to:owner,msg:'GRP1:'+JSON.stringify({k:'join',h})}); toast('Join request sent to @'+h+' 🔒'); }
+  catch(e){ toast('Could not send join request'); }
+}
+
+// ── MEDIA — photos, videos, GIFs, stickers. Each rides the SAME sealed-letter transport (per-member for groups),
+//    so media is as private as text and carries no local store: the compose UI just calls the letter bridge, which
+//    points at the DA content stream once on-chain inboxes land. Large files chunk in the on-chain phase. ──
+const STICKERS=['🔒','🛡️','🦀','💸','🌐','👻','🔥','⚡','🚀','😎','😂','❤️','👍','🎉','🙏','😅','🤝','👀','💯','✅','🌙','🕵️','📮','✉️','🥳','🤑','🧠','🫡','😤','🤫'];
+function buildStickers(){ const p=$('#stickers'); if(p.childElementCount) return; for(const e of STICKERS){ const d=document.createElement('div'); d.className='s'; d.textContent=e; d.onclick=()=>{ $('#stickers').classList.remove('on'); sendMedia({t:'sticker',e}); }; p.appendChild(d); } }
+function fileToMedia(file){ return new Promise((res,rej)=>{ const r=new FileReader();
+  r.onload=()=>{ const mime=file.type||''; const t=mime.startsWith('video')?'vid':(mime==='image/gif'?'gif':'img'); res({t,mime,name:file.name,d:r.result}); };
+  r.onerror=rej; r.readAsDataURL(file); }); }
+async function doAttach(files){ for(const f of files){
+  if(f.size>20*1024*1024){ toast(f.name+' is over 20MB — trim it down first'); continue; }
+  try{ const md=await fileToMedia(f); await sendMedia(md); }catch(e){ toast('Could not attach '+f.name); } } }
+// ── LARGE-MEDIA CHUNKING — a big photo/video splits into self-describing chunk letters (each rides the same
+//    sealed transport), reassembled by the recipient's wallet: id = a content hash, part i of n. No manifest
+//    server, no size metadata outside the seal — every chunk is one more opaque letter on the wire. ──
+const CHUNK_BYTES=400*1024;
+function packChunks(payload){ const id=hash(payload)+payload.length.toString(36); const n=Math.ceil(payload.length/CHUNK_BYTES);
+  const out=[]; for(let i=0;i<n;i++) out.push('MCHUNK1:'+JSON.stringify({id,i,n})+' '+payload.slice(i*CHUNK_BYTES,(i+1)*CHUNK_BYTES)); return out; }
+function parseChunk(msg){ if(typeof msg!=='string'||!msg.startsWith('MCHUNK1:')) return null;
+  const z=msg.indexOf(' '); if(z<0) return null;
+  try{ const h=JSON.parse(msg.slice(8,z)); return {id:h.id,i:h.i,n:h.n,data:msg.slice(z+1)}; }catch(e){ return null; } }
+// Reassembly buffers, keyed by chunk id; a completed set becomes the original payload and is dropped here.
+const CHUNKS={};
+function takeChunk(c,onWhole){ let b=CHUNKS[c.id]; if(!b) b=CHUNKS[c.id]={n:c.n,parts:{},got:0};
+  if(b.parts[c.i]===undefined){ b.parts[c.i]=c.data; b.got++; }
+  if(b.got>=b.n){ let whole=''; for(let i=0;i<b.n;i++){ if(b.parts[i]===undefined) return; whole+=b.parts[i]; }
+    delete CHUNKS[c.id]; onWhole(whole); } }
+async function sendMedia(media){ if(!S.sel){ toast('Open a chat first'); return; }
+  const local={id:'m'+Date.now()+':'+Math.floor(Math.random()*99999),out:true,from:S.me,body:'',media,pay:null,t:Date.now()};
+  addMsg(S.sel,local); renderList(); renderMsgs();
+  try{
+    const isGrp=isGroup(S.sel);
+    const dmPayload='MEDIA1:'+JSON.stringify(media);
+    const grpPayload=isGrp?('GRP1:'+JSON.stringify({g:S.chats[S.sel].group.gid,n:S.chats[S.sel].name,o:S.chats[S.sel].group.owner,m:S.chats[S.sel].group.members,s:S.chats[S.sel].group.seq,k:'media',md:media})):null;
+    const payload=isGrp?grpPayload:dmPayload;
+    const parts=payload.length>CHUNK_BYTES?packChunks(payload):[payload];
+    if(parts.length>1) toast('Sealing '+parts.length+' chunks…');
+    const targets=isGrp?S.chats[S.sel].group.members.filter(m=>m!==S.me):[S.sel];
+    for(const to of targets){ for(const part of parts){ try{ await rpc('letterSend',{to,msg:part}); }catch(e){ toast('Send failed: '+e.message); return; } } }
+    const gg=isGrp?S.chats[S.sel].group:null;
+    const scp='SENT1:'+JSON.stringify(isGrp?{to:S.sel,g:gg.gid,n:S.chats[S.sel].name,m:gg.members,h:gg.handle||'',k:'media',md:media}:{to:S.sel,k:'media',md:media});
+    for(const part of (scp.length>CHUNK_BYTES?packChunks(scp):[scp])){ rpc('letterSend',{to:S.me,msg:part}).catch(()=>{}); }
+  }catch(e){ toast('Send failed: '+e.message); }
+}
+function mediaHtml(md){ if(!md) return '';
+  if(md.t==='sticker') return `<div class="sticker">${escapeHtml(md.e||'❓')}</div>`;
+  if(md.t==='vid') return `<video src="${sanitizeMediaUrl(md.d)}" controls playsinline preload="metadata"></video>`;
+  return `<img src="${sanitizeMediaUrl(md.d)}" alt="${escapeHtml(md.name||'image')}" loading="lazy">`; }
+
+function renderList(){
+  const q=($('#q').value||'').toLowerCase().trim(), list=$('#list');
+  const want=S.tab==='groups';
+  const arr=Object.values(S.chats)
+    .filter(c=>isGroup(c.addr)===want)
+    .sort((a,b)=>b.last-a.last)
+    .filter(c=>!q||displayName(c.addr).toLowerCase().includes(q)||c.addr.toLowerCase().includes(q));
+  list.innerHTML='';
+  if(want){
+    const nb=document.createElement('div'); nb.className='chat'; nb.style.cssText='justify-content:flex-start;color:var(--acc);font-weight:600';
+    nb.innerHTML=`<div class="ava" style="background:linear-gradient(135deg,var(--acc),var(--accDeep))">＋</div><div class="meta"><div class="name">New group</div><div class="last" style="color:var(--muted)">Private · post-quantum sealed</div></div>`;
+    nb.onclick=()=>openGroupModal(); list.appendChild(nb);
+    if(q.startsWith('@')&&q.length>1){
+      const fb=document.createElement('div'); fb.className='chat'; fb.style.cssText='justify-content:flex-start;color:var(--acc);font-weight:600';
+      fb.innerHTML=`<div class="ava" style="background:linear-gradient(135deg,var(--acc),var(--accDeep))">🔍</div><div class="meta"><div class="name">Find ${escapeHtml(q)}</div><div class="last" style="color:var(--muted)">Discover &amp; join this group on-chain</div></div>`;
+      fb.onclick=()=>joinByHandle(q); list.appendChild(fb);
+    }
+  }
+  if(!arr.length){
+    const e=document.createElement('div'); e.className='empty';
+    e.innerHTML=want?'No groups yet.<br>Tap <b>New group</b> to start one — invite by @username or address.<br><br><span style="color:var(--dim)">Or type a <b>@handle</b> above to find &amp; join a public group on-chain.</span>'
+                    :'No chats yet.<br>Tap <b>✚</b> to start one with a @username or address.';
+    list.appendChild(e); return;
+  }
+  const reqs=arr.filter(c=>c.request&&!S.blocked.has(c.addr)), normal=arr.filter(c=>!c.request);
+  const row=(c)=>{ const last=c.msgs[c.msgs.length-1]; const el=document.createElement('div'); el.className='chat'+(S.sel===c.addr?' sel':'');
+    const grp=isGroup(c.addr);
+    let body;
+    if(!last) body=grp?'Group ready':'New chat';
+    else if(last.pay) body='💸 '+escapeHtml(last.pay)+' USDm';
+    else if(last.media) body=escapeHtml({sticker:(last.media.e||'')+' Sticker',vid:'🎬 Video',gif:'🎞️ GIF',img:'📷 Photo'}[last.media.t]||'📎 Attachment');
+    else body=escapeHtml(last.body||'');
+    const lastTxt=escapeHtml((last&&grp&&last.from&&!last.out?short(last.from)+': ':''))+sanitizeHtml(body);
+    const av=`<div class="ava idico" style="background:${escapeHtml(avaColor(c.addr))}">${avatarHtml(c.addr,grp,22)}</div>`;
+    const blocked=S.blocked.has(c.addr)?'<span class="pill">blocked</span>':'';
+    el.innerHTML=`${av}<div class="meta"><div class="name">${escapeHtml(displayName(c.addr))}${blocked}</div><div class="last">${lastTxt}</div></div>`;
+    el.onclick=()=>selectChat(c.addr); list.appendChild(el);
+    if(!grp) getProfile(c.addr); };
+  if(!want&&reqs.length){ const h=document.createElement('div'); h.className='reqhdr'; h.textContent='Message requests'; list.appendChild(h);
+    for(const c of reqs){ const el=document.createElement('div'); el.className='chat'+(S.sel===c.addr?' sel':'');
+      el.innerHTML=`<div class="ava idico" style="background:${escapeHtml(avaColor(c.addr))}">${avatarHtml(c.addr,false,22)}</div>
+        <div class="meta"><div class="name">${escapeHtml(displayName(c.addr))}</div><div class="last">wants to message you${S.myFeeMicro>0?' · fee unpaid':''}</div></div>
+        <div class="reqact"><button class="btn" data-acc="${escapeHtml(c.addr)}">✓</button><button class="btn" data-blk="${escapeHtml(c.addr)}">🚫</button></div>`;
+      el.onclick=(ev)=>{ const t=ev.target;
+        if(t.dataset&&t.dataset.acc){ acceptRequest(t.dataset.acc); return; }
+        if(t.dataset&&t.dataset.blk){ setBlocked(t.dataset.blk,true); return; }
+        selectChat(c.addr); };
+      list.appendChild(el); getProfile(c.addr); }
+    const h2=document.createElement('div'); h2.className='reqhdr'; h2.textContent='Chats'; list.appendChild(h2);
+  }
+  for(const c of normal) row(c);
+}
+function selectChat(a){ S.sel=a; if(!isGroup(a)) ensureChat(a); $('#welcome').style.display='none'; $('#conv').style.display='flex';
+  paintHead(); if(!isGroup(a)){ getProfile(a).then(()=>{ if(S.sel===a){ paintHead(); updateFeeBar(); } }); }
+  $('#side').classList.add('hide'); renderList(); renderMsgs(); updateFeeBar(); $('#input').focus(); }
+// Header paint — reads the LIVE profile (display+bio), block state, and group vs DM chrome. One function so
+// every state change (profile lands, block toggled, request accepted) repaints identically.
+function paintHead(){ const a=S.sel; if(!a) return; const grp=isGroup(a)?S.chats[a].group:null;
+  const av=$('#cAva'); av.classList.add('idico'); av.style.background=avaColor(a); av.innerHTML=avatarHtml(a,!!grp,26);
+  $('#cName').textContent=displayName(a);
+  if(grp){ const owner=grp.owner===S.me; $('#cSub').innerHTML='<span class="lock">🔒</span> '+Number(grp.members.length)+' member'+(grp.members.length===1?'':'s')+' · sealed per-member';
+    $('#payBtn').style.display='none'; $('#addBtn').style.display=owner?'inline-flex':'none'; $('#menuBtn').style.display='none'; }
+  else { const p=profiles[a]; const bio=p&&p.bio?escapeHtml(p.bio)+' · ':'';
+    const blocked=S.blocked.has(a)?' · <b style="color:#ff6d6d">blocked</b>':'';
+    $('#cSub').innerHTML='<span class="lock">🔒</span> '+bio+escapeHtml(short(a))+blocked;
+    $('#payBtn').style.display='inline-flex'; $('#addBtn').style.display='none'; $('#menuBtn').style.display='inline-flex'; }
+}
+// The context menu: Block/Unblock (+ copy address). Rebuilt on open so it always reflects current state.
+function buildMenu(){ const m=$('#chatMenu'), a=S.sel; if(!a||isGroup(a)){ m.classList.remove('on'); return; }
+  const blocked=S.blocked.has(a);
+  m.innerHTML='<div class="mrow" id="mCopy">📋 Copy address</div>'
+    +(blocked?'<div class="mrow" id="mBlk">✓ Unblock</div>':'<div class="mrow danger" id="mBlk">🚫 Block</div>');
+  $('#mCopy').onclick=()=>{ try{navigator.clipboard.writeText(a);}catch(e){} m.classList.remove('on'); toast('Address copied'); };
+  $('#mBlk').onclick=()=>{ m.classList.remove('on'); setBlocked(a,!blocked); };
+}
+// The bar above the composer: EITHER the sender-side DM-fee prompt (their fee, your choice to pay) OR the
+// recipient-side request bar (accept / block). Hidden in every other state.
+function updateFeeBar(){ const bar=$('#feebar'), a=S.sel; bar.classList.remove('on'); bar.innerHTML=''; if(!a||isGroup(a)) return;
+  const c=S.chats[a]; if(!c) return;
+  if(c.request&&!S.blocked.has(a)){
+    bar.innerHTML='<span>⏳ <b>'+escapeHtml(displayName(a))+'</b> wants to message you'+(S.myFeeMicro>0?' — your '+escapeHtml(feeUsdm(S.myFeeMicro))+' USDm DM fee is unpaid':'')+'.</span>'
+      +'<span class="reqact"><button class="btn" id="fbAcc">✓ Accept</button><button class="btn" id="fbBlk">🚫 Block</button></span>';
+    bar.classList.add('on');
+    $('#fbAcc').onclick=()=>{ acceptRequest(a); updateFeeBar(); };
+    $('#fbBlk').onclick=()=>{ setBlocked(a,true); updateFeeBar(); };
+    return;
+  }
+  const p=profiles[a];
+  const isNew=!c.msgs.some(x=>x.out)&&!c.msgs.some(x=>!x.out);
+  if(p&&p.fee_micro>0&&isNew&&!c.feeCm&&a!==S.me){
+    bar.innerHTML='<span>💸 <b>'+escapeHtml(displayName(a))+'</b> asks <b>'+escapeHtml(feeUsdm(p.fee_micro))+' USDm</b> to accept messages from new contacts.</span>'
+      +'<span class="reqact"><button class="btn pay" id="fbPay">Pay &amp; unlock chat</button></span>';
+    bar.classList.add('on');
+    $('#fbPay').onclick=()=>payDmFee(a,p.fee_micro);
+  }
+}
+// Sender side of the fee gate: a REAL private payment of exactly the recipient's published fee. The wallet
+// returns the recipient note's commitment (`recipient_cm`) — the receipt our first letter carries so THEIR
+// wallet can verify the money truly landed in THEIR OWN spendable set. Trustless on both ends.
+async function payDmFee(a,mu){ const b=$('#fbPay'); if(b){ b.disabled=true; b.textContent='Paying…'; }
+  try{ const r=await rpc('transfer',{to:a,amount:mu/1e6});
+    const cm=(r&&r.recipient_cm)||null;
+    if(!cm) throw new Error('no payment receipt returned');
+    S.chats[a].feeCm=cm;
+    rpc('letterSend',{to:S.me,msg:'SENT1:'+JSON.stringify({to:a,k:'pay',amt:mu/1e6,b:'DM fee',cm:undefined,feeCm:cm})}).catch(()=>{});
+    addMsg(a,{id:'fee:'+Date.now(),out:true,body:'DM fee',pay:feeUsdm(mu),t:Date.now()});
+    renderList(); renderMsgs(); updateFeeBar(); toast('Fee paid — your letters now reach them 🔒');
+  }catch(e){ toast('Fee payment failed: '+e.message); }
+  finally{ if(b){ b.disabled=false; b.textContent='Pay & unlock chat'; } }
+}
+function renderMsgs(){ const c=S.chats[S.sel], box=$('#msgs'); if(!c){box.innerHTML='';return;} box.innerHTML='';
+  const grp=isGroup(S.sel);
+  for(const m of c.msgs){ const row=document.createElement('div'); row.className='row '+(m.out?'out':'in');
+    const time=escapeHtml(new Date(m.t).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}));
+    const who=(grp&&!m.out&&m.from)?`<div style="font-size:11px;font-weight:700;color:var(--acc2);margin-bottom:2px">${escapeHtml(short(m.from))}</div>`:'';
+    if(m.media&&m.media.t==='sticker'){ row.className+=' sticky'; row.innerHTML=`<div class="bubble">${who}<div class="sticker">${escapeHtml(m.media.e||'❓')}</div><div class="t">${time}${m.out?' 🔒':''}</div></div>`; }
+    else if(m.media){ const cap=m.body?`<div class="cap">${escapeHtml(m.body)}</div>`:''; row.innerHTML=`<div class="bubble">${who}${mediaHtml(m.media)}${cap}<div class="t">${time}${m.out?' 🔒':''}</div></div>`; }
+    else if(m.pay) row.innerHTML=`<div class="bubble pay">${who}<div class="paychip">💸 <span class="amt">${escapeHtml(m.pay)} USDm</span></div>${m.body?`<div style="margin-top:4px">${escapeHtml(m.body)}</div>`:''}<div class="t">${time}${m.out?' 🔒':''}</div></div>`;
+    else row.innerHTML=`<div class="bubble">${who}${escapeHtml(m.body)}<div class="t">${time}${m.out?' 🔒':''}</div></div>`;
+    box.appendChild(row); }
+  box.scrollTop=box.scrollHeight; }
+
+async function boot(){
+  try{ const r=await rpc('letterAddress'); S.me=r&&r.address; paintMe(); $('#me').classList.add('on');
+    // AWAITED, not fire-and-forget: my own DM fee must be known BEFORE history replays stranger letters,
+    // or a fresh-device restore would classify every request as an open chat (fee gate silently off).
+    try{ const pr=await getProfile(S.me,true); if(pr){ S.myProfile=pr; S.myFeeMicro=pr.fee_micro||0; paintMe(); } }catch(e){}
+  }
+  catch(e){ const r=(e&&e.message)?String(e.message).slice(0,60):'no bridge'; $('#me').innerHTML='<span class="dot"></span>Open in the wallet · '+escapeHtml(r); $('#me').title=r; }
+  restoreHistory(); // fire-and-forget: the seed-restore walk fills chats as pages land
+  await refresh(); setInterval(refresh,2000);
+}
+function paintMe(){ if(!S.me) return; const nm=(S.myProfile&&S.myProfile.display)||('You · '+short(S.me));
+  $('#me').innerHTML='<span class="dot"></span>'+escapeHtml(nm)+' <span style="opacity:.55;font-size:11px">· profile ▾</span>'; }
+// ── PROFILE EDITOR — publish display/bio/DM-fee to the chain (wallet-signed; only your key can ever write it).
+let _pfAvatar=''; // staged photo b64 for the editor session
+function _pfPaintAva(){ const av=$('#pfAva'); av.style.background=avaColor(S.me);
+  av.innerHTML=_pfAvatar?'<img src="'+sanitizeMediaUrl('data:image/jpeg;base64,'+_pfAvatar)+'" style="width:100%;height:100%;object-fit:cover" alt="">':identicon(S.me,30);
+  $('#pfPhotoDel').style.display=_pfAvatar?'inline-flex':'none'; }
+function openProfile(){ if(!S.me){ toast('Open Letter inside the wallet first'); return; }
+  const pr=S.myProfile||{};
+  _pfAvatar=(pr.avatar)||''; _pfPaintAva();
+  $('#pfName').value=pr.display||''; $('#pfBio').value=pr.bio||'';
+  $('#pfFee').value=pr.fee_micro?String(pr.fee_micro/1e6):''; $('#pfErr').textContent='';
+  openModal('profileModal'); setTimeout(()=>$('#pfName').focus(),60);
+}
+// Downscale the chosen image to a 128px cover-cropped JPEG (~4-10KB) — small enough to ride the signed
+// on-chain entry, sharp enough for every avatar size the app renders.
+function pickProfilePhoto(file){ const img=new Image();
+  img.onload=()=>{ const S128=128, c=document.createElement('canvas'); c.width=S128; c.height=S128;
+    const x=c.getContext('2d'); const m=Math.min(img.width,img.height);
+    x.drawImage(img,(img.width-m)/2,(img.height-m)/2,m,m,0,0,S128,S128);
+    let q=0.82, b64=c.toDataURL('image/jpeg',q).split(',')[1];
+    while(b64.length>23000&&q>0.4){ q-=0.12; b64=c.toDataURL('image/jpeg',q).split(',')[1]; }
+    if(b64.length>23000){ $('#pfErr').textContent='That image will not compress small enough — try another.'; return; }
+    _pfAvatar=b64; _pfPaintAva(); };
+  img.onerror=()=>{ $('#pfErr').textContent='Could not read that image.'; };
+  // data: URL via FileReader — the same read path chat media uses (fileToMedia). The old
+  // URL.createObjectURL preview was refused by the sovereign CSP (img-src 'self' data:, no blob:),
+  // which surfaced as "Could not read that image" on every real photo pick.
+  const r=new FileReader();
+  r.onload=()=>{ img.src=r.result; };
+  r.onerror=()=>{ $('#pfErr').textContent='Could not read that image.'; };
+  r.readAsDataURL(file);
+}
+async function saveProfile(){ const err=$('#pfErr'); err.textContent='';
+  const display=($('#pfName').value||'').trim(), bio=($('#pfBio').value||'').trim();
+  const feeU=parseFloat($('#pfFee').value||'0')||0;
+  if(!display){ err.textContent='Pick a display name'; return; }
+  if(feeU<0){ err.textContent='The fee cannot be negative'; return; }
+  $('#pfSave').disabled=true;
+  try{ await rpc('profileSet',{display,bio,feeMicro:Math.round(feeU*1e6),avatar:_pfAvatar});
+    S.myProfile={display,bio,fee_micro:Math.round(feeU*1e6),avatar:_pfAvatar,ts:Date.now()};
+    profiles[S.me]=S.myProfile; S.myFeeMicro=S.myProfile.fee_micro;
+    paintMe(); closeModal('profileModal'); renderList();
+    toast('Profile published on-chain 🔒'+(S.myFeeMicro>0?' · DM fee '+feeUsdm(S.myFeeMicro)+' USDm':''));
+  }catch(e){ err.textContent=e.message||'Publish failed'; }
+  finally{ $('#pfSave').disabled=false; }
+}
+// ⭐ CHAT HISTORY FROM THE CHAIN — your wallet IS your login: page the on-chain letter columns from the
+// start, open only what is sealed to you (the wallet authenticates every sender), and rebuild the full
+// conversation list exactly like Telegram — on a fresh device, from the 24 words, with NO local storage.
+async function restoreHistory(){ if(!S.me) return;
+  let top=0; try{ const i=await rpc('nodeRpc',{path:'/get_info',body:''}); top=(i&&(i.served_seq||i.height))||0; }catch(e){}
+  let from=0, got=0;
+  while(true){
+    let r=null; try{ r=await rpc('letterHistory',{from}); }catch(e){ break; }
+    const msgs=(r&&r.messages)||[], page=(r&&r.page)||64;
+    let changed=false;
+    for(const m of msgs){ if(routeLetter(m.from,m.msg,'h'+m.ord,Date.now()-1)) changed=true; }
+    got+=msgs.length;
+    if(changed) renderList();
+    from+=page;
+    if(from>top&&msgs.length===0) break;      // past the chain top and this page was empty — done
+    if(from>top+page*4) break;                // safety stop just past the top
+  }
+  if(got>0){ renderList(); if(S.sel) renderMsgs(); toast('History restored from chain · '+got+' letter'+(got===1?'':'s')+' 🔒'); }
+}
+// ONE router for every opened letter — live inbox, chain-history restore, and reassembled chunks all land
+// here, so a payload behaves identically however it arrived. `tag` keeps ids distinct per source; returns
+// true if anything changed.
+function routeLetter(from,msg,tag,ts,inCm){
+  const ch=parseChunk(msg);
+  if(ch){ let changed=false; takeChunk(ch,whole=>{ changed=routeLetter(from,whole,tag+':w',ts)||changed; }); return changed; }
+  // BLOCK / ACCEPT ledger letters — sealed to MYSELF, applied from BOTH live inbox and chain history, so a
+  // block on one device is a block on every device, forever, with zero local storage. Authenticated self-origin.
+  const bl=/^BLOCK1:(.*)$/s.exec(msg||'');
+  if(bl){ if(from!==S.me) return false; let o=null; try{o=JSON.parse(bl[1]);}catch(e){ return false; }
+    if(!o||!o.a) return false;
+    if(o.on){ S.blocked.add(o.a); if(S.chats[o.a]) S.chats[o.a].request=false; } else S.blocked.delete(o.a);
+    return true; }
+  const ac=/^ACC1:(.*)$/s.exec(msg||'');
+  if(ac){ if(from!==S.me) return false; let o=null; try{o=JSON.parse(ac[1]);}catch(e){ return false; }
+    if(!o||!o.a) return false; S.accepted.add(o.a); if(S.chats[o.a]) S.chats[o.a].request=false; return true; }
+  const sc=/^SENT1:(.*)$/s.exec(msg||'');
+  if(sc){ // my own sent-copy (sealed to MYSELF at send time) — the on-chain record of MY side of the chat.
+    if(from!==S.me||!tag.startsWith('h')) return false; // authenticated self-origin, history-restore only
+    let o=null; try{o=JSON.parse(sc[1]);}catch(e){ return false; }
+    if(!o||!o.to) return false;
+    const key=o.g?('grp:'+o.g):o.to;
+    if(o.g&&!S.chats[key]) S.chats[key]={addr:key,name:o.n||'Group',group:{gid:o.g,owner:S.me,members:o.m||[S.me],seq:1,handle:o.h||''},msgs:[],last:Date.now()};
+    if(o.cm) cmNote(sentCms,key,o.cm);
+    if(o.feeCm) ensureChat(key).feeCm=o.feeCm; // the DM-fee receipt survives restore — never double-charged
+    if(o.k==='media'&&o.md) return addMsg(key,{id:'so:'+hash(msg),out:true,body:'',media:o.md,pay:null,t:ts});
+    if(o.k==='pay') return addMsg(key,{id:'sp:'+hash(msg),out:true,body:o.b||'',pay:String(o.amt||''),t:ts});
+    return addMsg(key,{id:'st:'+hash(msg),out:true,body:o.b||'',pay:null,t:ts});
+  }
+  const gp=parseGrp(msg);
+  if(gp&&gp.k==='join'&&gp.h){ // someone found my group by its @handle and wants in — auto-admit (join-to-read)
+    const mine=Object.values(S.chats).find(c=>c.group&&c.group.owner===S.me&&c.group.handle===gp.h);
+    if(mine){ addGroupMember(mine.group.gid, from); return true; }
+    return false;
+  }
+  if(gp&&gp.g){ // a group letter — authenticated sender is `from`; owner-only roster adoption inside ensureGroup
+    ensureGroup(gp.g,gp,from);
+    if(gp.k==='msg') return addMsg('grp:'+gp.g,{id:'g:'+gp.g+':'+from+':'+hash(msg),out:false,from,body:gp.b,pay:null,t:ts});
+    if(gp.k==='media'&&gp.md) return addMsg('grp:'+gp.g,{id:'gm:'+gp.g+':'+from+':'+hash(msg),out:false,from,body:'',media:gp.md,pay:null,t:ts});
+    return true; // roster/control — the group now exists/updated in the list
+  }
+  // ⛔ BLOCKED SENDERS STOP HERE — their DMs (text, media, pay chips) are dropped before they can touch a
+  //    chat. Group letters were already handled above: a block silences the DM lane, exactly like Telegram.
+  if(from!==S.me&&S.blocked.has(from)) return false;
+  const md=/^MEDIA1:(.*)$/s.exec(msg||'');
+  if(md){ let mo=null; try{mo=JSON.parse(md[1]);}catch(e){}
+    return !!(mo&&addMsg(from,{id:'m:'+from+':'+hash(msg),out:false,body:'',media:mo,pay:null,t:ts})); }
+  let body=msg,pay=null; const pm=/^PAY:([0-9.]+)(.*)$/s.exec(msg||''); if(pm){pay=pm[1];body=pm[2];}
+  let feeCmIn=null;
+  const m1=/^MSG1:(.*)$/s.exec(body||'');
+  if(m1){ let o=null; try{o=JSON.parse(m1[1]);}catch(e){}
+    if(o){ body=o.b||''; feeCmIn=o.fee||null;
+      // PROVEN-ACK THREAD MERGE: the sender echoed the content hash of a letter WE sealed to some chat T.
+      // Only T's true owner could hold that hash, so `from` IS T's canonical identity — merge T into it.
+      if(o.ack){ for(const T of Object.keys(sentCms)){ if(T!==from&&sentCms[T]&&sentCms[T].has(o.ack)){
+        const src=S.chats[T], dst=(S.chats[from]=S.chats[from]||{addr:from,name:src&&src.name,msgs:[],last:Date.now()});
+        if(src){ for(const mm of src.msgs){ if(!dst.msgs.some(x=>x.id===mm.id)) dst.msgs.push(mm); }
+          dst.msgs.sort((a,b)=>a.t-b.t); dst.last=Math.max(dst.last||0,src.last||0);
+          (sentCms[from]=sentCms[from]||new Set()); for(const c of (sentCms[T]||[])) sentCms[from].add(c);
+          delete S.chats[T]; delete sentCms[T]; if(S.sel===T) S.sel=from; }
+      } } }
+    }
+  }
+  // STRANGER CLASSIFICATION (recipient side of the DM-fee gate): a first-contact sender lands in Message
+  // Requests when I charge a fee — unless their letter carries a fee receipt my OWN wallet verifies. A paid
+  // PAY chip counts too (the money itself is the credential). No fee set → open DMs, straight to Chats.
+  const known=from===S.me||S.accepted.has(from)||(S.chats[from]&&S.chats[from].msgs.some(x=>x.out&&!String(x.id).startsWith('fee:')));
+  const hit=addMsg(from,{id:'t:'+from+':'+hash(msg),out:false,body,pay,t:ts});
+  if(hit&&!known&&S.myFeeMicro>0&&!isGroup(from)){
+    const c=S.chats[from];
+    if(pay&&parseFloat(pay)*1e6>=S.myFeeMicro){ S.accepted.add(from); persistAccept(from); }
+    else if(!c.request&&!S.accepted.has(from)){ c.request=true; if(feeCmIn){ c.pendingFeeCm=feeCmIn; verifyFeeAsync(from); } }
+    else if(feeCmIn&&c.request){ c.pendingFeeCm=feeCmIn; verifyFeeAsync(from); }
+  }
+  if(hit&&inCm&&S.chats[from]){ cmNote(recvCms,from,inCm); S.chats[from].lastInCm=inCm; }
+  return hit;
+}
+async function refresh(){
+  try{ const r=await rpc('letterInbox'); const msgs=(r&&r.messages)||[]; let changed=false;
+    for(let i=0;i<msgs.length;i++){ if(routeLetter(msgs[i].from,msgs[i].msg,'live',Date.now(),msgs[i].cm)) changed=true; }
+    if(changed){ renderList(); if(S.sel){ renderMsgs(); updateFeeBar(); } }
+  }catch(e){}
+}
+async function doSend(){ const t=$('#input'), body=(t.value||'').trim(); if(!body||!S.sel) return; t.value=''; autoGrow(t);
+  const b=$('#sendBtn'); b.classList.add('sealing');
+  try{
+    if(isGroup(S.sel)){ await sendGroup(S.chats[S.sel].group.gid,body); }
+    else { const c0=S.chats[S.sel];
+      if(S.blocked.has(S.sel)){ toast('You blocked this contact — unblock to write'); $('#sendBtn').classList.remove('sealing'); return; }
+      const p0=profiles[S.sel];
+      if(p0&&p0.fee_micro>0&&c0&&!c0.feeCm&&!c0.msgs.some(x=>!x.out)&&!c0.msgs.some(x=>x.out)&&S.sel!==S.me){
+        t.value=body; updateFeeBar(); toast('They charge a DM fee — pay it above to unlock the chat'); $('#sendBtn').classList.remove('sealing'); return; }
+      addMsg(S.sel,{id:'out:'+Date.now(),out:true,body,pay:null,t:Date.now()}); renderList(); renderMsgs();
+      const ack=(c0&&c0.lastInCm)||null;
+      const env={b:body}; if(ack) env.ack=ack;
+      if(c0&&c0.feeCm&&!c0.msgs.some(x=>!x.out)) env.fee=c0.feeCm; // first-contact letters carry the fee receipt
+      const r=await rpc('letterSend',{to:S.sel,msg:'MSG1:'+JSON.stringify(env)});
+      if(r&&r.cm) cmNote(sentCms,S.sel,r.cm);
+      rpc('letterSend',{to:S.me,msg:'SENT1:'+JSON.stringify({to:S.sel,k:'msg',b:body,cm:(r&&r.cm)||undefined})}).catch(()=>{}); refresh(); }
+  }catch(e){ toast('Send failed: '+e.message); } finally{ b.classList.remove('sealing'); }
+}
+async function doPay(){ const amt=parseFloat($('#payAmt').value), note=($('#payNote').value||'').trim(), err=$('#payErr'); err.textContent='';
+  if(!(amt>0)){ err.textContent='Enter an amount'; return; } $('#payGo').disabled=true;
+  try{ await rpc('transfer',{to:S.sel,amount:amt}); await rpc('letterSend',{to:S.sel,msg:'PAY:'+amt+note});
+    rpc('letterSend',{to:S.me,msg:'SENT1:'+JSON.stringify({to:S.sel,k:'pay',amt:amt,b:note})}).catch(()=>{});
+    addMsg(S.sel,{id:'pay:'+Date.now(),out:true,body:note,pay:String(amt),t:Date.now()}); closeModal('payModal'); renderList(); renderMsgs(); toast('Sent '+amt+' USDm 🔒');
+  }catch(e){ err.textContent=e.message; } finally{ $('#payGo').disabled=false; }
+}
+async function startChat(){ const v=($('#startInput').value||'').trim(), err=$('#startErr'); err.textContent=''; if(!v){ err.textContent='Enter a @username or address'; return; }
+  const name=v.startsWith('@')?v:null;
+  const addr=await resolveTo(v);
+  if(!addr){ err.textContent=name?('No wallet found for '+v):'That is not a valid address or @username'; return; }
+  ensureChat(addr,name); closeModal('startModal'); $('#startInput').value=''; selectChat(addr);
+}
+function openModal(id){ $('#'+id).classList.add('on'); } function closeModal(id){ $('#'+id).classList.remove('on'); }
+function autoGrow(t){ t.style.height='auto'; t.style.height=Math.min(130,t.scrollHeight)+'px'; }
+
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); S.tab=t.dataset.tab; renderList(); });
+$('#q').oninput=()=>{ renderList(); qDrop(); };
+$('#q').addEventListener('keydown',(ev)=>{ const d=$('#qdrop');
+  if(ev.key==='Escape'){ d.classList.remove('on'); return; }
+  const rows=[...d.querySelectorAll('.qrow')]; if(!rows.length) return;
+  let ix=rows.findIndex(r=>r.classList.contains('sel'));
+  if(ev.key==='ArrowDown'){ ev.preventDefault(); ix=Math.min(rows.length-1,ix+1); rows.forEach(r=>r.classList.remove('sel')); rows[ix].classList.add('sel'); }
+  else if(ev.key==='ArrowUp'){ ev.preventDefault(); ix=Math.max(0,ix-1); rows.forEach(r=>r.classList.remove('sel')); rows[ix].classList.add('sel'); }
+  else if(ev.key==='Enter'){ ev.preventDefault(); (rows[ix>=0?ix:0]).click(); }
+});
+document.addEventListener('click',(ev)=>{ if(!ev.target.closest('.search')) $('#qdrop').classList.remove('on'); });
+// The live results panel under the search bar: existing chats match first; an @handle offers an on-chain
+// lookup (names AND groups); a pasted full address offers "start a chat". Everything resolves through the
+// wallet bridge — the node's directory is the only name authority.
+function qDrop(){ const v=($('#q').value||'').trim(), d=$('#qdrop'); d.innerHTML='';
+  if(!v){ d.classList.remove('on'); return; }
+  const vl=v.toLowerCase(); const rows=[];
+  for(const c of Object.values(S.chats)){
+    const nm=displayName(c.addr); if(!(nm.toLowerCase().includes(vl)||c.addr.toLowerCase().includes(vl))) continue;
+    rows.push({av:isGroup(c.addr)?'👥':null,ico:isGroup(c.addr)?null:c.addr,b:nm,s:isGroup(c.addr)?'Group chat':'Chat',act:()=>{ openChat(c.addr); }});
+    if(rows.length>=5) break;
+  }
+  if(v.startsWith('@')&&v.length>1){
+    rows.push({av:'@',b:'Find '+v+' on-chain',s:'Look up this @username in the chain directory',act:async()=>{ const a=await resolveTo(v); if(a){ startChatWith(a,v); } else { toast('No one owns '+v+' yet'); } }});
+    rows.push({av:'👥',b:'Join group '+v,s:'Find this public group by its on-chain handle',act:()=>{ joinByHandle(v); }});
+  }
+  if(!v.startsWith('@')&&v.length>60&&/^[a-zA-Z0-9]+$/.test(v)){
+    rows.push({av:'✉',b:'Start a chat with this address',s:v.slice(0,18)+'… · PQ-sealed',act:()=>{ startChatWith(v,null); }});
+  }
+  if(!rows.length){ d.classList.remove('on'); return; }
+  for(const r of rows){ const el=document.createElement('div'); el.className='qrow';
+    const av=r.ico?('<div class="qa idico">'+identicon(r.ico,18)+'</div>'):('<div class="qa">'+escapeHtml(r.av||'?')+'</div>');
+    el.innerHTML=av+'<div class="qt"><b>'+escapeHtml(r.b)+'</b><span>'+escapeHtml(r.s)+'</span></div>';
+    el.onclick=()=>{ d.classList.remove('on'); $('#q').value=''; renderList(); r.act(); }; d.appendChild(el); }
+  d.classList.add('on'); }
+function openChat(addr){ selectChat(addr); renderList(); }
+function startChatWith(addr,label){ if(!S.chats[addr]) S.chats[addr]={addr,name:label||null,msgs:[],last:Date.now()};
+  openChat(addr); }
+function openGroupModal(){ $('#grpName').value=''; $('#grpMembers').value=''; $('#grpErr').textContent=''; openModal('groupModal'); setTimeout(()=>$('#grpName').focus(),60); }
+$('#startBtn').onclick=()=>{ openModal('startModal'); setTimeout(()=>$('#startInput').focus(),60); };
+$('#newBtn').onclick=()=>{ if(S.tab==='groups'){ openGroupModal(); } else { openModal('startModal'); setTimeout(()=>$('#startInput').focus(),60); } };
+$('#backBtn').onclick=()=>{ $('#side').classList.remove('hide'); };
+$('#grpCancel').onclick=()=>closeModal('groupModal');
+$('#grpGo').onclick=async()=>{ const name=($('#grpName').value||'').trim(); if(!name){ $('#grpErr').textContent='Name your group'; return; }
+  const mems=($('#grpMembers').value||'').split('\n').map(x=>x.trim()).filter(Boolean);
+  const handle=($('#grpHandle').value||'').trim(); $('#grpGo').disabled=true;
+  try{ await createGroup(name,mems,handle); }catch(e){ $('#grpErr').textContent=e.message||'Could not create group'; } finally{ $('#grpGo').disabled=false; } };
+$('#addBtn').onclick=async()=>{ if(!isGroup(S.sel)) return; const v=prompt('Add member — @username or address'); if(v) await addGroupMember(S.chats[S.sel].group.gid,v); };
+$('#startGo').onclick=startChat; $('#startCancel').onclick=()=>closeModal('startModal');
+$('#startInput').addEventListener('keydown',e=>{ if(e.key==='Enter'){e.preventDefault();startChat();} });
+$('#payBtn').onclick=()=>{ $('#payAmt').value=''; $('#payNote').value=''; $('#payErr').textContent=''; openModal('payModal'); setTimeout(()=>$('#payAmt').focus(),60); };
+$('#payGo').onclick=doPay; $('#payCancel').onclick=()=>closeModal('payModal');
+$('#sendBtn').onclick=doSend;
+$('#attachBtn').onclick=()=>$('#fileInput').click();
+$('#fileInput').addEventListener('change',e=>{ const fs=[...e.target.files]; e.target.value=''; if(fs.length) doAttach(fs); });
+const EMOJIS=['😀','😂','😅','😊','😉','😍','🥰','😘','😎','🤩','🥳','😤','😢','😭','😱','🤔','🤫','🫡','😴','🤝','👍','👎','👏','🙏','💪','👀','❤️','🔥','⚡','✨','🎉','💯','✅','❌','💸','🤑','🦀','🔒','🚀','🌙'];
+function insertEmoji(e){ const i=$('#input'); const st=i.selectionStart??i.value.length, en=i.selectionEnd??st; i.value=i.value.slice(0,st)+e+i.value.slice(en); i.selectionStart=i.selectionEnd=st+e.length; i.focus(); i.dispatchEvent(new Event('input',{bubbles:true})); }
+function buildEmojis(){ const p=$('#emojis'); if(p.childElementCount) return; for(const e of EMOJIS){ const d=document.createElement('div'); d.className='s'; d.textContent=e; d.onclick=()=>insertEmoji(e); p.appendChild(d); } }
+$('#emojiBtn').onclick=()=>{ buildEmojis(); $('#emojis').classList.toggle('on'); $('#stickers').classList.remove('on'); };
+$('#stickerBtn').onclick=()=>{ buildStickers(); $('#stickers').classList.toggle('on'); $('#emojis').classList.remove('on'); };
+document.addEventListener('click',e=>{ if(!e.target.closest('#stickers')&&!e.target.closest('#stickerBtn')) $('#stickers').classList.remove('on'); if(!e.target.closest('#emojis')&&!e.target.closest('#emojiBtn')) $('#emojis').classList.remove('on'); });
+$('#input').addEventListener('input',e=>autoGrow(e.target));
+$('#input').addEventListener('keydown',e=>{ if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); doSend(); } });
+$('#me').onclick=openProfile; $('#gearBtn').onclick=openProfile;
+$('#pfSave').onclick=saveProfile; $('#pfCancel').onclick=()=>closeModal('profileModal');
+$('#pfPhoto').onclick=()=>$('#pfFile').click();
+$('#pfPhotoDel').onclick=()=>{ _pfAvatar=''; _pfPaintAva(); };
+$('#pfFile').addEventListener('change',e=>{ const f=e.target.files&&e.target.files[0]; e.target.value=''; if(f) pickProfilePhoto(f); });
+$('#pfCopy').onclick=()=>{ if(S.me){ try{navigator.clipboard.writeText(S.me);}catch(e){} toast('Your Letter address copied'); } };
+$('#menuBtn').onclick=(ev)=>{ ev.stopPropagation(); buildMenu(); $('#chatMenu').classList.toggle('on'); };
+document.addEventListener('click',e=>{ if(!e.target.closest('.menuwrap')) $('#chatMenu').classList.remove('on'); });
+boot();
+</script>
+</body>
+</html>

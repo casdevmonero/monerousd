@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-dir-price"
+description = "Enables the wallet_dir_price command without any pre-configured scope."
+commands.allow = ["wallet_dir_price"]
+
+[[permission]]
+identifier = "deny-wallet-dir-price"
+description = "Denies the wallet_dir_price command without any pre-configured scope."
+commands.deny = ["wallet_dir_price"]

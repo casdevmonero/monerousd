@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-veil-plan"
+description = "Enables the veil_plan command without any pre-configured scope."
+commands.allow = ["veil_plan"]
+
+[[permission]]
+identifier = "deny-veil-plan"
+description = "Denies the veil_plan command without any pre-configured scope."
+commands.deny = ["veil_plan"]

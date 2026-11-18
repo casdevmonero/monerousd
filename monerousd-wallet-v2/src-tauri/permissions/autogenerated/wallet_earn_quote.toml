@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-earn-quote"
+description = "Enables the wallet_earn_quote command without any pre-configured scope."
+commands.allow = ["wallet_earn_quote"]
+
+[[permission]]
+identifier = "deny-wallet-earn-quote"
+description = "Denies the wallet_earn_quote command without any pre-configured scope."
+commands.deny = ["wallet_earn_quote"]

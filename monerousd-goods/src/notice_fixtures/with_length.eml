@@ -1,0 +1,22 @@
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=parcels.example; s=k1; t=1800000500; l=50;
+ h=from:to:subject:date;
+ bh=I56QHUbBcU686T5vXG6Kon2c6gWL6xdL15DrM3HYs1g=;
+ b=LBRtoRiH5SC/NHNjhf/jDfqLbdCyq8tJ4Welevf5AXmPyZQgfuMrVgSwjw3NTEzi
+ blGPEeZQDNQv4sCayBXzU6mXLWvKC0bzR9s8hmQRGDB6w/YDPt60NaTan+kxy2uN
+ RphI6FcP0gQp9f411zJj5J2I/F8/6TAtEvfUpmLpcjVgqrb/2okHPYY/D5f/8547
+ AXCc+QeFOPnsdd4iVZIl2bHhbFNFJqtEdEO7W3Nw0XpVYtY/HjbO2HAEcR46mD3Y
+ /8gCEq5CvGo896PfHMMFCY1OIplzF4otmhSYeLnzABcMCWZJEl3p+jcYf059K+SI
+ 350R1BeRqYivBiD6pU0Znw==
+From: Parcels Example <notify@parcels.example>
+To: orders@shop.example
+Subject: Parcels Example Delivery Notification, Tracking Number 1Z999AA10123456784
+Date: Fri, 15 Jan 2027 09:30:00 -0500
+Message-ID: <20270115143000.1@parcels.example>
+X-Mailer: parcels-notify 4.2
+
+Hello,
+
+Your parcel   was delivered. 
+Thank you.	
+
+

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-pot-buy"
+description = "Enables the wallet_pot_buy command without any pre-configured scope."
+commands.allow = ["wallet_pot_buy"]
+
+[[permission]]
+identifier = "deny-wallet-pot-buy"
+description = "Denies the wallet_pot_buy command without any pre-configured scope."
+commands.deny = ["wallet_pot_buy"]

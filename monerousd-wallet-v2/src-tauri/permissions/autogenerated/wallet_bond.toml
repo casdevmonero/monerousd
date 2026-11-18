@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-bond"
+description = "Enables the wallet_bond command without any pre-configured scope."
+commands.allow = ["wallet_bond"]
+
+[[permission]]
+identifier = "deny-wallet-bond"
+description = "Denies the wallet_bond command without any pre-configured scope."
+commands.deny = ["wallet_bond"]

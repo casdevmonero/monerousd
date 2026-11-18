@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-note-owned"
+description = "Enables the dapp_provider_note_owned command without any pre-configured scope."
+commands.allow = ["dapp_provider_note_owned"]
+
+[[permission]]
+identifier = "deny-dapp-provider-note-owned"
+description = "Denies the dapp_provider_note_owned command without any pre-configured scope."
+commands.deny = ["dapp_provider_note_owned"]

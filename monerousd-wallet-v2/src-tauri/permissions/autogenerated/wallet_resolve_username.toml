@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-resolve-username"
+description = "Enables the wallet_resolve_username command without any pre-configured scope."
+commands.allow = ["wallet_resolve_username"]
+
+[[permission]]
+identifier = "deny-wallet-resolve-username"
+description = "Denies the wallet_resolve_username command without any pre-configured scope."
+commands.deny = ["wallet_resolve_username"]

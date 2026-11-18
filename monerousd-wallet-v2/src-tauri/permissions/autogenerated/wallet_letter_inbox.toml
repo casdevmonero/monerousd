@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-letter-inbox"
+description = "Enables the wallet_letter_inbox command without any pre-configured scope."
+commands.allow = ["wallet_letter_inbox"]
+
+[[permission]]
+identifier = "deny-wallet-letter-inbox"
+description = "Denies the wallet_letter_inbox command without any pre-configured scope."
+commands.deny = ["wallet_letter_inbox"]

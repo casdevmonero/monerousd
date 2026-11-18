@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-earn-positions"
+description = "Enables the wallet_earn_positions command without any pre-configured scope."
+commands.allow = ["wallet_earn_positions"]
+
+[[permission]]
+identifier = "deny-wallet-earn-positions"
+description = "Denies the wallet_earn_positions command without any pre-configured scope."
+commands.deny = ["wallet_earn_positions"]

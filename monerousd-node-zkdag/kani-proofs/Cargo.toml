@@ -1,0 +1,25 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root)
+#
+# §PROOFS (lane b): Kani harnesses over the node's REAL value arithmetic. The source files are path-included,
+# never copied, so a proof here is a proof of the shipping code. Run: scratchpad/kani_value.sh
+[package]
+name = "usdm-kani-proofs"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Standalone: its own workspace, so `cargo kani` compiles only the included value files and what they name. The one dependency is
+# serde's derive: an included file (validator_activity.rs) derives Serialize/Deserialize on its records, and without it this crate
+# did not build at all (MEASURED 2026-11-16: four E0433 `serde` errors, `cargo check` in kani-proofs). No harness reaches serde code.
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ['cfg(kani)', 'cfg(kani_open)'] }

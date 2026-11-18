@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-order-post"
+description = "Enables the dapp_provider_order_post command without any pre-configured scope."
+commands.allow = ["dapp_provider_order_post"]
+
+[[permission]]
+identifier = "deny-dapp-provider-order-post"
+description = "Denies the dapp_provider_order_post command without any pre-configured scope."
+commands.deny = ["dapp_provider_order_post"]

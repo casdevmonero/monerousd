@@ -1,0 +1,218 @@
+{
+  "_comment": "LANE M target set. Each entry names the production files whose CHECKS we want measured, the invariant those checks are supposed to defend, and the functions to rank first. Adding a module here is how the nightly grows; nothing outside this list is ever mutated.",
+  "warm_dir": "~/.cargo-targets/harness/lane-m",
+  "load_gate": {
+    "_comment": "MACHINE DISCIPLINE. A measurement taken under load is void: this project has withdrawn a full day of verdicts to that exact confound, so the engine refuses to measure until the 1-minute load is under the ceiling. The ceiling is the standard; sleep_s only decides how often the machine is re-sampled, and sampling more often only makes it likelier that a genuinely quiet moment is used.",
+    "max_1min": 12.0,
+    "sleep_s": 45,
+    "max_waits": 100
+  },
+  "oracle_extra_files": [
+    "consensus_scenarios.rs",
+    "dex_cross_party_scenarios.rs",
+    "mature_chain_invariants.rs",
+    "block_ingress_door_audit_tests.rs",
+    "family_d_door_audit_tests.rs"
+  ],
+  "cargo": {
+    "features": null,
+    "test_threads": 4,
+    "build_supervision_s": 7200,
+    "pin_supervision_s": 3600
+  },
+  "budgets": {
+    "_comment": "Selection budget, not a chain-state bound: it decides how many mutants one nightly pass affords. Recorded in every manifest so a score is never read as a full census.",
+    "mutants_per_file": 12,
+    "pins_per_mutant": 25
+  },
+  "targets": {
+    "pow": {
+      "files": [
+        "src/pow.rs"
+      ],
+      "invariant": "I-4 FORK CHOICE INTEGRITY (only VERIFIED work moves the tip)",
+      "focus_fns": [
+        "hash_meets_target",
+        "verify_block_pow"
+      ]
+    },
+    "consensus": {
+      "files": [
+        "src/consensus.rs"
+      ],
+      "invariant": "I-4 + I-1 (the admission equality that binds header.work; shape bounds)",
+      "focus_fns": [
+        "validate_contextual",
+        "validate_standalone"
+      ]
+    },
+    "mempool": {
+      "files": [
+        "src/mempool.rs"
+      ],
+      "invariant": "I-2 NO DOUBLE SPEND (refusal by a SET, never by luck)",
+      "focus_fns": [
+        "accept_inner",
+        "nullifier_claim_conflict",
+        "select_for_template",
+        "accept_verified"
+      ]
+    },
+    "chain_object": {
+      "files": [
+        "src/chain_object.rs"
+      ],
+      "invariant": "I-1 CONSERVATION (a namable chain-authorised justifier)",
+      "focus_fns": [
+        "admissible",
+        "wrapper_binds_object"
+      ]
+    },
+    "unspent_notes": {
+      "files": [
+        "src/unspent_notes.rs"
+      ],
+      "invariant": "I-1 CONSERVATION (the unspent accumulator)",
+      "focus_fns": []
+    },
+    "node_tx_doors": {
+      "_comment": "§3.8 — node.rs joins the target set. It was excluded during the closure round (correct file discipline) and leaving it excluded is a permanent blind HALF: B3, B4, C-H1, C-H2, C-H3, C-H4, D-7, E-2, E-3, E-5 and E-7 all live here. AFFORDABILITY IS BY SCOPE, NOT BY TRUNCATION — `focus_only` measures the DOORS this target names (node.rs holds 653 check-bearing sites across 124 check-bearing functions; a 12-per-file budget over all of them is the N-2 defect, a budget silently deciding which door stays defended in file order).",
+      "files": [
+        "src/node.rs"
+      ],
+      "focus_only": true,
+      "invariant": "I-1 + I-2 — the transaction admission doors. Row B3 is this target's calibration: `ingest_tx_prechecked` omitted the `chain_object::admissible` its sibling `ingest_tx` ran.",
+      "focus_fns": [
+        "ingest_tx",
+        "ingest_tx_prechecked",
+        "admit_tx_shared",
+        "nullifier_witnesses_gate",
+        "stage_carried_account_targets"
+      ]
+    },
+    "node_block_doors": {
+      "files": [
+        "src/node.rs"
+      ],
+      "focus_only": true,
+      "invariant": "I-4 FORK CHOICE INTEGRITY — every door a BLOCK enters by. Rows E-8 (the descent door carried merkle and parents and NOT the PoW check) and D-2 (`instant_sync` ran no PoW on carried blocks) are both empty cells of this family's matrix.",
+      "focus_fns": [
+        "ingest_block",
+        "ingest_block_inner",
+        "ingest_block_preverified",
+        "ingest_block_preverified_budgeted",
+        "graft_block_shell_from_trusted_id",
+        "bundle_blocks_admitted",
+        "header_grind_admits",
+        "header_door_admits",
+        "preverify_block"
+      ]
+    },
+    "node_adopt_doors": {
+      "files": [
+        "src/node.rs"
+      ],
+      "focus_only": true,
+      "invariant": "I-4 + I-1 — the DSYNC adopt surface and the sidecar door. C-H2/C-H3 (`adopt_sidecar_row` refuses only an ordinal conflict while recv/del bytes reach the fold sink) and A3/A5 (fields riding the proof unbound) live here; the binding half is enumerated build-free by tools/harness/bind/enumerate.py.",
+      "focus_fns": [
+        "instant_sync",
+        "adopt_sidecar_row",
+        "adopt_unspent_note_root",
+        "accept_fetched_record",
+        "accept_fetched_record_run",
+        "accept_fetched_root_run",
+        "apply_backfilled_notes",
+        "graft_admitted_notes",
+        "apply_grafted_block_carry",
+        "graft_unfolded_carry"
+      ]
+    },
+    "node_runtime_pages": {
+      "files": [
+        "src/node_runtime.rs"
+      ],
+      "focus_only": true,
+      "invariant": "I-6(c) + I-1 — the page-application loops. Row C-H1 is this target's calibration: `pump_parked_page` offers every entry to `accept_fetched_record`, counts the verdict, and then applies the WHOLE page. Found by M3's verdict-dataflow pass, not by a mutant — there is no check there to break.",
+      "focus_fns": [
+        "pump_parked_page",
+        "on_sidecar_page",
+        "on_roots_run",
+        "on_block_page"
+      ]
+    }
+  },
+  "door_families": {
+    "_comment": "§3.7/M2 — THE DOOR TABLE. A family is one class of object and every door it enters by. `doors.py` also GENERATES families from name siblings (`ingest_tx` / `ingest_tx_prechecked`), so a door added with a familiar suffix joins its family with nobody editing this file; the entries below are the families whose members do NOT share a name, which a generator cannot see. An EMPTY CELL is the finding; a FILLED cell is where M2 injects.",
+    "tx_admission": {
+      "files": [
+        "src/node.rs"
+      ],
+      "doors": [
+        "ingest_tx",
+        "ingest_tx_prechecked"
+      ],
+      "calibration": "B3 — against src/node.rs.preDoorAudit-20260907 this family MUST report the empty cell `ingest_tx_prechecked !-> admissible`, and MUST report none against the live tree. MEASURED 2026-09-08: it does both.",
+      "checks": [
+        "wrapper_binds_object",
+        "nullifier_witnesses_gate",
+        "admissible",
+        "accept_verified"
+      ]
+    },
+    "block_ingress": {
+      "files": [
+        "src/node.rs"
+      ],
+      "doors": [
+        "ingest_block",
+        "graft_block_shell_from_trusted_id",
+        "graft_wanted_block_shell",
+        "bundle_blocks_admitted",
+        "instant_sync"
+      ],
+      "_doors_comment": "⛔⛔ A DOOR TABLE THAT NAMES ONLY TODAY'S SPELLING CANNOT REPRODUCE YESTERDAY'S HOLE — measured 2026-09-08, and it is the reason two calibration rows read NO against a generator that answers them both. `--at preDescentLane-20260907` reported NOTHING for this family because the descent door was called `graft_wanted_block_shell` then and `graft_block_shell_from_trusted_id` was the rename the FIX introduced: the family evaluated to one door, and one door has no siblings to be missing a check against. Pointed at the historical name the SAME generator prints `graft_wanted_block_shell !-> verify_block_pow` on the pre-fix tree — E-8's exact cell, the design's stated self-proof. The wrapper still exists, so naming it here costs nothing and the row re-measures forever. `instant_sync` is the same omission for D-2: not a member of any declared family and not a name-sibling of anything, so the adopt door's PoW column was a cell nobody could look at. MEASURED both directions: pre-fix `instant_sync !-> verify_block_pow, !-> preverify_block` with no cell the other way; live, those two persist while `ingest_block !-> header_grind_admits / header_door_admits / hash_meets_target / bundle_blocks_admitted` appear — the fix is visible AS the reversal. THE RULE THIS ENCODES: a door is retired from this table by DELETING THE FUNCTION, never by renaming it, because the table is the only thing that remembers a door existed.",
+      "calibration": "E-8 — the descent door's missing PoW check is an empty cell of this row. MEASURED 2026-09-08: `mutate.py matrix --target node_block_doors --at preDescentLane-20260907 --expect-empty-cells 'graft_wanted_block_shell!->verify_block_pow'` -> CALIBRATION HELD. D-2 is the same column at the adopt door and re-measures with `--expect-empty-cells 'instant_sync!->verify_block_pow'` at the same point.",
+      "checks": [
+        "preverify_block",
+        "validate_contextual",
+        "header_grind_admits",
+        "header_door_admits",
+        "header_work_is_bound",
+        "verify_block_pow",
+        "hash_meets_target",
+        "admissible"
+      ],
+      "_checks_comment": "The columns are what the BLOCK CLASS requires, declared. Without them the row reports every way a bundle-admission door differs from a full ingest (14 cells, 13 of them legitimate) and buries the one that matters. E-8 is the `verify_block_pow`/`hash_meets_target` column; D-2 is the same column at the adopt door."
+    },
+    "graft_seam": {
+      "files": [
+        "src/node.rs"
+      ],
+      "doors": [
+        "ingest_block_preverified_budgeted",
+        "apply_grafted_block_carry",
+        "graft_unfolded_carry"
+      ],
+      "calibration": "B4 / E-2 — the graft-side loop that applies without the filter its sibling uses.",
+      "checks": [
+        "graft_admitted_notes",
+        "admissible",
+        "verify_carried_bond_tx",
+        "note_row_hint_mismatch"
+      ]
+    }
+  },
+  "_warm_dir_note": "Lane-scoped on purpose: another lane already uses ~/.cargo-targets/harness itself as a cargo target directory, and two lanes writing debug/ and deps/ into one directory is a collision waiting to be diagnosed as something else. This engine keeps its clone, its build dir and its results under one subdirectory it owns.",
+  "_calibration": {
+    "_comment": "THE HARNESS'S OWN STANDARD (docs/harness-design.md Part D): a capability is not built until it REPRODUCES a known-missed calibration row. Every line below was MEASURED 2026-09-08 and is the command that re-measures it. A capability whose command stops reproducing its row has regressed, whatever else is green.",
+    "_comparator_note": "⛔ `--expect-empty-cells` COMPARES EXACTLY, in both directions, as of 2026-09-08. It used to be a CONTAINMENT test while `--help` promised an exact one, which made every negative control in this block a tautology (∅ ⊆ anything). The commands below therefore name the WHOLE measured declared set, not just the row's own cell — that is the point: a cell that appears because the tree grew a new door difference now FAILS the calibration instead of hiding inside a passing run. When a command fails on an unexpected cell, adjudicate that cell and add it here, or close it. Never delete a cell from these lists to make a run green.",
+    "B3 · check-elision on one path (M2 / the door matrix)": "mutate.py matrix --target node_tx_doors --at preDoorAudit-20260907 --expect-empty-cells 'apply_grafted_block_carry!->note_row_hint_mismatch,graft_block_shell_from_trusted_id!->admissible,graft_block_shell_from_trusted_id!->preverify_block,graft_block_shell_from_trusted_id!->verify_block_pow,graft_unfolded_carry!->verify_carried_bond_tx,graft_wanted_block_shell!->admissible,graft_wanted_block_shell!->preverify_block,graft_wanted_block_shell!->verify_block_pow,ingest_block!->hash_meets_target,ingest_tx_prechecked!->accept_verified,ingest_tx_prechecked!->admissible,instant_sync!->hash_meets_target,instant_sync!->preverify_block,instant_sync!->verify_block_pow'   ->  CALIBRATION HELD (exit 0), MEASURED 2026-09-08. B3's own cell is `ingest_tx_prechecked!->admissible`; it is ABSENT from the live tree's set, which is the half that proves the instrument is trustworthy in both directions.",
+    "E-8 · the descent door's missing PoW check (the design's stated self-proof)": "mutate.py matrix --target node_block_doors --at preDescentLane-20260907 --expect-empty-cells 'apply_grafted_block_carry!->note_row_hint_mismatch,graft_unfolded_carry!->verify_carried_bond_tx,graft_wanted_block_shell!->admissible,graft_wanted_block_shell!->preverify_block,graft_wanted_block_shell!->verify_block_pow,ingest_tx_prechecked!->accept_verified,ingest_tx_prechecked!->admissible,instant_sync!->preverify_block,instant_sync!->verify_block_pow'   ->  CALIBRATION HELD (exit 0), MEASURED 2026-09-08. E-8's own cell is `graft_wanted_block_shell!->verify_block_pow`. ⛔ THIS COMMAND REPORTED NOTHING AT ALL until the door table learned the door's HISTORICAL name — see `door_families.block_ingress._doors_comment`.",
+    "D-2 · instant_sync ran no PoW on the blocks it carried": "the same pre-fix command above also measures `instant_sync!->verify_block_pow` and `instant_sync!->preverify_block`. On the LIVE tree those two persist while `ingest_block!->header_grind_admits / header_door_admits / hash_meets_target / bundle_blocks_admitted` appear — the adopt door now runs the header-only half of the PoW rule by a route `ingest_block` does not take, so THE FIX IS VISIBLE AS THE REVERSAL rather than as an empty row. Adjudicating that reversal is what tells D-2 apart from a door that simply stopped checking.",
+    "C-H1 · refusal computed then discarded (M3 find half)": "mutate.py dataflow --target node_runtime_pages   ->  [HIGH] src/node_runtime.rs:3665 pump_parked_page() `accept_fetched_record` -> consumed only by a counter. Reproduced on the LIVE tree: this row is still OPEN. A second HIGH row came with it, unasked: :3854 on_sidecar_page() `adopt_sidecar_row`, the same shape at the sidecar door (C-H2's neighbourhood).",
+    "B2 · set-membership write deleted (M4)": "mutate.py plan --target mempool   ->  src/mempool.rs@488:M4_membership_write_deleted deletes `self.spent.insert(*nf, id)` in `register_nullifier_claims`, naming `nullifier_claim_conflict` as the refusal that consults the store. ⭐ THIS ALSO CLOSES REPORT FINDING N-2 FOR B2: the row was previously reachable only at --max-mutants 200, and it is now selected inside the SHIPPED budget of 12.",
+    "A3/A5 · binding field ablation (M8, the DEFEND half)": "python3 tools/harness/bind/../mutate/mutate.py is not the tool here — M8 is a selection: it emits src/sync.rs@467/@468/@469 ablating `blue_work`, `anchor_blue_work` and `anchor_ordinal`, the three fields the 2026-09-07 fix added. The FIND half (fields never folded at all) is tools/harness/bind/enumerate.py.",
+    "A3/A5 · ACTED not-subset-of BOUND (lane X enumeration, the FIND half)": "tools/harness/bind/enumerate.py --subject sync_bundle --at preHoleClose2-20260907 --expect-findings blue_work,anchor_blue_work,anchor_ordinal   ->  CALIBRATION HELD in 2.0s, no build, no attack. Negative control: the same command without --at and --expect-findings '' -> CALIBRATION HELD (empty).",
+    "D-7 · unclaimed, but the site is now selected": "mutate.py plan --target node_tx_doors   ->  src/node.rs@1873:M4_membership_write_deleted deletes the `self.pending_tags.insert(..)` write that row D-7 exists to force. Selection is not a verdict and this row is NOT claimed as caught: D-7 needs the per-WRITER census oracle (§3.4), which this lane did not build."
+  }
+}

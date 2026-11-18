@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-profile-set"
+description = "Enables the dapp_provider_profile_set command without any pre-configured scope."
+commands.allow = ["dapp_provider_profile_set"]
+
+[[permission]]
+identifier = "deny-dapp-provider-profile-set"
+description = "Denies the dapp_provider_profile_set command without any pre-configured scope."
+commands.deny = ["dapp_provider_profile_set"]

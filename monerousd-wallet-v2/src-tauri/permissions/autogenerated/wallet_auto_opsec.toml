@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-auto-opsec"
+description = "Enables the wallet_auto_opsec command without any pre-configured scope."
+commands.allow = ["wallet_auto_opsec"]
+
+[[permission]]
+identifier = "deny-wallet-auto-opsec"
+description = "Denies the wallet_auto_opsec command without any pre-configured scope."
+commands.deny = ["wallet_auto_opsec"]

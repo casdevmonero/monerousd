@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-veil-assemble"
+description = "Enables the veil_assemble command without any pre-configured scope."
+commands.allow = ["veil_assemble"]
+
+[[permission]]
+identifier = "deny-veil-assemble"
+description = "Denies the veil_assemble command without any pre-configured scope."
+commands.deny = ["veil_assemble"]

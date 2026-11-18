@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-reload"
+description = "Enables the dapp_reload command without any pre-configured scope."
+commands.allow = ["dapp_reload"]
+
+[[permission]]
+identifier = "deny-dapp-reload"
+description = "Denies the dapp_reload command without any pre-configured scope."
+commands.deny = ["dapp_reload"]

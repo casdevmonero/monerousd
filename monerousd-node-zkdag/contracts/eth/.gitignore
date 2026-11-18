@@ -1,0 +1,3 @@
+# forge writes these when the contract is compiled or tested in place; neither is source
+out/
+cache/

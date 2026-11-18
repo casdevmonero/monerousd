@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-biometric-auth"
+description = "Enables the wallet_biometric_auth command without any pre-configured scope."
+commands.allow = ["wallet_biometric_auth"]
+
+[[permission]]
+identifier = "deny-wallet-biometric-auth"
+description = "Denies the wallet_biometric_auth command without any pre-configured scope."
+commands.deny = ["wallet_biometric_auth"]

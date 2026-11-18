@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-view-seed"
+description = "Enables the wallet_view_seed command without any pre-configured scope."
+commands.allow = ["wallet_view_seed"]
+
+[[permission]]
+identifier = "deny-wallet-view-seed"
+description = "Denies the wallet_view_seed command without any pre-configured scope."
+commands.deny = ["wallet_view_seed"]

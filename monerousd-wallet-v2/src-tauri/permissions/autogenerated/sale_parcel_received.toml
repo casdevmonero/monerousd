@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sale-parcel-received"
+description = "Enables the sale_parcel_received command without any pre-configured scope."
+commands.allow = ["sale_parcel_received"]
+
+[[permission]]
+identifier = "deny-sale-parcel-received"
+description = "Denies the sale_parcel_received command without any pre-configured scope."
+commands.deny = ["sale_parcel_received"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-delegations"
+description = "Enables the wallet_delegations command without any pre-configured scope."
+commands.allow = ["wallet_delegations"]
+
+[[permission]]
+identifier = "deny-wallet-delegations"
+description = "Denies the wallet_delegations command without any pre-configured scope."
+commands.deny = ["wallet_delegations"]

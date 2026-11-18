@@ -1,0 +1,45 @@
+{
+  "_comment": "Tier-1 fallback (shipped-with-wallet). Mirrored from the release pipeline at build time. The chain-anchored overlay served via /v1/sites/installers.monerousd.org/manifest replaces this whenever the site-updater detects a newer SITE_PUBLISH on the USDm chain. The wallet's checkSovereignUpgrade(currentVersion) compares manifest.version semver-style — same-or-older returns upgradeAvailable=false, newer returns upgradeAvailable=true.",
+  "version": "1.2.176",
+  "channel": "stable",
+  "publishedAt": "2026-04-25T05:30:00.000Z",
+  "rootHash": null,
+  "minWalletVersion": "1.2.160",
+  "platforms": [
+    {
+      "platform": "macOS",
+      "arch": "arm64",
+      "file": "Monero USD Wallet-1.2.176-arm64.dmg",
+      "size": null,
+      "sha256": null
+    },
+    {
+      "platform": "macOS",
+      "arch": "x64",
+      "file": "Monero USD Wallet-1.2.176.dmg",
+      "size": null,
+      "sha256": null
+    },
+    {
+      "platform": "Windows",
+      "arch": "x64",
+      "file": "Monero USD Wallet Setup 1.2.176.exe",
+      "size": null,
+      "sha256": null
+    },
+    {
+      "platform": "Linux",
+      "arch": "x64",
+      "file": "Monero USD Wallet-1.2.176.AppImage",
+      "size": null,
+      "sha256": null
+    },
+    {
+      "platform": "Linux",
+      "arch": "x64",
+      "file": "monero-usd-wallet_1.2.176_amd64.deb",
+      "size": null,
+      "sha256": null
+    }
+  ]
+}

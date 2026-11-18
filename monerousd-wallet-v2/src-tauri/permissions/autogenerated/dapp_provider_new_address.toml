@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-new-address"
+description = "Enables the dapp_provider_new_address command without any pre-configured scope."
+commands.allow = ["dapp_provider_new_address"]
+
+[[permission]]
+identifier = "deny-dapp-provider-new-address"
+description = "Denies the dapp_provider_new_address command without any pre-configured scope."
+commands.deny = ["dapp_provider_new_address"]

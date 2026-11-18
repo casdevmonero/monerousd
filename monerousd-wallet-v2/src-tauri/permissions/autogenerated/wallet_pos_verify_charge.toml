@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-pos-verify-charge"
+description = "Enables the wallet_pos_verify_charge command without any pre-configured scope."
+commands.allow = ["wallet_pos_verify_charge"]
+
+[[permission]]
+identifier = "deny-wallet-pos-verify-charge"
+description = "Denies the wallet_pos_verify_charge command without any pre-configured scope."
+commands.deny = ["wallet_pos_verify_charge"]

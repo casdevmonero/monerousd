@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<!--
+   Copyright (c) 2026, The MoneroUSD Protocol
+
+   This file is an original work of the MoneroUSD Protocol — a post-quantum,
+   GHOSTDAG block-DAG, zero-knowledge confidential-value protocol. It is NOT part
+   of the Monero Project. Licensed under the Apache License, Version 2.0
+   (SPDX-License-Identifier: Apache-2.0); see the LICENSE and NOTICE files at the
+   repository root.
+-->
+
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MoneroUSD Installers · Sovereign</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+  <!-- sov-offline-cache-installed -->
+  <script src="js/offline-cache.js"></script>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <div class="logo">M</div>
+      <h1>MoneroUSD Installers</h1>
+      <p class="lede">Sovereign binary distribution &mdash; an off&#x2011;DNS upgrade path
+      for every installed MoneroUSD wallet. No registrar pressure, no edge
+      kill switch, no <code>update.monerousd.org</code> dependency.</p>
+      <div class="badges">
+        <span class="badge badge--verified">Verified</span>
+        <span class="badge badge--t1">Shipped with wallet</span>
+        <span class="badge badge--t2">Chain-anchored</span>
+      </div>
+    </header>
+
+    <section class="section">
+      <h2>How it works</h2>
+      <ol>
+        <li>The release pipeline publishes installer artefacts +
+          a signed <code>SHA256SUMS</code> manifest to this sovereign
+          domain via <code>SITE_PUBLISH</code> on the USDm chain.</li>
+        <li>Every installed wallet runs <code>services/site-updater.js</code>
+          which polls <code>/v1/sites/installers.monerousd.org</code> for
+          the latest <code>rootHash</code>.</li>
+        <li>When a new version is detected, the wallet downloads the
+          installer over the indexer (or BitTorrent fallback) and verifies
+          it against the on-chain hash before offering to upgrade.</li>
+        <li>The user approves the upgrade in a familiar approval modal
+          &mdash; same flow as <code>SITE_PUBLISH</code> /
+          <code>TOKEN_CREATE</code>.</li>
+      </ol>
+      <p class="hint">A first-time install still needs the regular
+      <code>update.monerousd.org</code> path (you have to download the
+      wallet binary somewhere). But once the wallet is installed, every
+      subsequent upgrade can flow through this chain-anchored channel
+      &mdash; closing the OTA single-point-of-failure.</p>
+    </section>
+
+    <section class="section">
+      <h2>Latest release</h2>
+      <div class="release" id="release">
+        <div class="release-row"><span>Version</span><strong id="rel-version">&mdash;</strong></div>
+        <div class="release-row"><span>Channel</span><strong id="rel-channel">stable</strong></div>
+        <div class="release-row"><span>Published</span><strong id="rel-published">&mdash;</strong></div>
+        <div class="release-row"><span>Root hash</span><strong id="rel-roothash"><code>&mdash;</code></strong></div>
+      </div>
+      <h3>Platforms</h3>
+      <table class="platforms" id="platforms">
+        <thead><tr><th>Platform</th><th>Arch</th><th>Size</th><th>SHA-256</th></tr></thead>
+        <tbody id="platforms-body">
+          <tr><td colspan="4" class="muted">Loading manifest&hellip;</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">Verify any download manually:
+        <code>shasum -a 256 &lt;file&gt;</code> against the value above.
+        The wallet's <code>site-updater</code> automates this; the column
+        is shown for transparency.</p>
+    </section>
+
+    <section class="section">
+      <h2>Architecture invariants</h2>
+      <ul class="invariants">
+        <li><strong>SW-1:</strong> every byte served from this bundle is
+          SHA-256 verified against the on-chain <code>rootHash</code> before
+          render. Hash mismatch &rArr; T1 fallback to the wallet's bundled copy.</li>
+        <li><strong>SW-3:</strong> served only from <code>127.0.0.1:27752</code>
+          &mdash; never reachable from the network.</li>
+        <li><strong>SW-4:</strong> only the official publisher key can update
+          this domain. Hostile actors can&rsquo;t spoof a fake installer.</li>
+        <li><strong>SW-19:</strong> the bond + update fees route 100% to the
+          protocol reserve via <code>chargeBond('reserve')</code>. The
+          installers domain itself is verified, so first-publish bond was
+          paid by the official publisher account at registration.</li>
+      </ul>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

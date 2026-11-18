@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-purchase-refund"
+description = "Enables the purchase_refund command without any pre-configured scope."
+commands.allow = ["purchase_refund"]
+
+[[permission]]
+identifier = "deny-purchase-refund"
+description = "Denies the purchase_refund command without any pre-configured scope."
+commands.deny = ["purchase_refund"]

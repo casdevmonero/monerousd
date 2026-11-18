@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-delegate-sat"
+description = "Enables the wallet_delegate_sat command without any pre-configured scope."
+commands.allow = ["wallet_delegate_sat"]
+
+[[permission]]
+identifier = "deny-wallet-delegate-sat"
+description = "Denies the wallet_delegate_sat command without any pre-configured scope."
+commands.deny = ["wallet_delegate_sat"]

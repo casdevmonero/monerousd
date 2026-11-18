@@ -1,0 +1,4 @@
+{
+  "about": "The mail keys of the carriers whose signed delivery notices this wallet accepts as proof of delivery, and the wording each carrier's own 'delivered' subject line uses. A key here lets a notice it signed release a buyer's payment, so an entry is added only at release time, by the release's builders, from the carrier's own published key (scripts/carrier-keys.py asks three independent resolvers and writes an entry only when all three agree) and after a live notice from that carrier has been read against its wording rule. This lane ships the list EMPTY on purpose: no carrier's key has been confirmed that way yet, and a wallet with an empty list accepts no delivery proof.",
+  "carriers": []
+}

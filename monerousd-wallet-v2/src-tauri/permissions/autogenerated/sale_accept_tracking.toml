@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sale-accept-tracking"
+description = "Enables the sale_accept_tracking command without any pre-configured scope."
+commands.allow = ["sale_accept_tracking"]
+
+[[permission]]
+identifier = "deny-sale-accept-tracking"
+description = "Denies the sale_accept_tracking command without any pre-configured scope."
+commands.deny = ["sale_accept_tracking"]

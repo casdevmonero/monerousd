@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sale-offer-download"
+description = "Enables the sale_offer_download command without any pre-configured scope."
+commands.allow = ["sale_offer_download"]
+
+[[permission]]
+identifier = "deny-sale-offer-download"
+description = "Denies the sale_offer_download command without any pre-configured scope."
+commands.deny = ["sale_offer_download"]

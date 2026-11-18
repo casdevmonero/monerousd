@@ -1,0 +1,19 @@
+From: Parcel Co <notify@parcelco.example>
+To: orders+7f3a@cornershop.example
+Subject: Parcel Co Update: Package Delivered,
+ Tracking Number 1Z999AA10123456784
+Date: Tue, 10 Nov 2026 14:03:22 +0000
+Message-ID: <771.20261110@parcelco.example>
+MIME-Version: 1.0
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=mail.parcelco.example; s=test1;
+ t=1794319402; h=from:to:subject:date:message-id:mime-version;
+ bh=47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=;
+ b=Ubb7w4rIZ6YRqPAWX5RscGZTUj2oOUpDmU38HyQAT/09/Y2RKaBi3J59xU12
+ k9HjXz8OsYpOaCZ6ZYaSjCrhUpxfOCfKhmqICRYIIpHlg+4nuVekkKsdgyhr
+ oKp3y1CTWvcrrYRxryXuFp9bi5BWwjor7x9k6WmXO4FLSavgvF7ZvZrJLsew
+ 3nQz6qoay13gvyT5U2ABwdvegfsoAgUxPioLCkRNIJAVUJz6oxDsNVuj8QFm
+ eRxUBls1mPBpNUGvFp7pHCrgcOyHhAMi6riAz6Nol10KgkRUXGSfOdKD+92p
+ MXxeeRArghl7RSNZuk0KhGbIWgrKmzKNr02huCPoBQ==
+Content-Type: text/plain
+
+Your package was delivered.

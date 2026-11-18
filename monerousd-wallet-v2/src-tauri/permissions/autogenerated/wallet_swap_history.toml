@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-swap-history"
+description = "Enables the wallet_swap_history command without any pre-configured scope."
+commands.allow = ["wallet_swap_history"]
+
+[[permission]]
+identifier = "deny-wallet-swap-history"
+description = "Denies the wallet_swap_history command without any pre-configured scope."
+commands.deny = ["wallet_swap_history"]

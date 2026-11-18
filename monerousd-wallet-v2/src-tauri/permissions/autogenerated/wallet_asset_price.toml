@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-asset-price"
+description = "Enables the wallet_asset_price command without any pre-configured scope."
+commands.allow = ["wallet_asset_price"]
+
+[[permission]]
+identifier = "deny-wallet-asset-price"
+description = "Denies the wallet_asset_price command without any pre-configured scope."
+commands.deny = ["wallet_asset_price"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-generate"
+description = "Enables the wallet_generate command without any pre-configured scope."
+commands.allow = ["wallet_generate"]
+
+[[permission]]
+identifier = "deny-wallet-generate"
+description = "Denies the wallet_generate command without any pre-configured scope."
+commands.deny = ["wallet_generate"]

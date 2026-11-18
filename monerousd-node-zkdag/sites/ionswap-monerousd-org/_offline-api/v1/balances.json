@@ -1,0 +1,5 @@
+{
+  "_offline": true,
+  "_note": "Sovereign offline fallback — indexer unreachable. The local wallet still knows USDm balances via wallet-rpc; wrapped + custom-token balances will appear when an indexer is reachable again.",
+  "balances": {}
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-height"
+description = "Enables the dapp_provider_height command without any pre-configured scope."
+commands.allow = ["dapp_provider_height"]
+
+[[permission]]
+identifier = "deny-dapp-provider-height"
+description = "Denies the dapp_provider_height command without any pre-configured scope."
+commands.deny = ["dapp_provider_height"]

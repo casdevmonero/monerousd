@@ -1,0 +1,47 @@
+[package]
+name = "p3-dft"
+description = "A collection of discrete Fourier transform (DFT) implementations for finite fields."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+parallel = ["p3-maybe-rayon/parallel"]
+
+[dependencies]
+p3-field.workspace = true
+p3-matrix.workspace = true
+p3-maybe-rayon.workspace = true
+p3-util.workspace = true
+# ⭐ link 80 (2026-10-21): DIRECT rayon for `Radix2DFTSmallBatch`'s butterfly layers only (`radix_2_small_batch.rs`) —
+# every parallel chunk is an in-place butterfly block over its own rows, so the evaluations are the serial ones on any
+# pool; pinned by the sumcheck crate's DB-371 identity pins (streamed = dense codeword) and the decider's
+# `a_parallel_prove_is_byte_identical_to_a_one_thread_prove`. MEASURED (`sample`, the 256-insert band slice prove,
+# night/link80-par2-sample.txt): the serial sub-coset DFTs were 335 of the commit's 3,247 samples. The other DFTs stay
+# on the shim.
+rayon.workspace = true
+
+itertools.workspace = true
+spin.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+p3-baby-bear = { path = "../baby-bear" }
+p3-goldilocks = { path = "../goldilocks" }
+p3-mersenne-31 = { path = "../mersenne-31" }
+p3-monty-31 = { path = "../monty-31" }
+
+criterion.workspace = true
+proptest.workspace = true
+rand.workspace = true
+
+[[bench]]
+name = "fft"
+harness = false
+
+[lints]
+workspace = true

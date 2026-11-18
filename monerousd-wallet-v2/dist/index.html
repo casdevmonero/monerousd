@@ -1,0 +1,981 @@
+<!doctype html>
+<!-- Copyright (c) 2026, The MoneroUSD Protocol. SPDX-License-Identifier: Apache-2.0. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>MoneroUSD Wallet</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20256%20256'%3E%3Ccircle%20cx='128'%20cy='128'%20r='124'%20fill='%230d0d10'/%3E%3Cpolygon%20points='62,178%2062,88%20128,154%20194,88%20194,178%20176,178%20176,118%20128,166%2080,118%2080,178'%20fill='%23f5851a'/%3E%3Crect%20x='42'%20y='162'%20width='38'%20height='16'%20rx='2'%20fill='%23f5851a'/%3E%3Crect%20x='176'%20y='162'%20width='38'%20height='16'%20rx='2'%20fill='%23f5851a'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="pages/sovereign.css" />
+</head>
+<body>
+  <div class="ambient"></div>
+
+  <!-- Deep-space backdrop — PERSISTENT across the welcome / create / restore onboarding screens (a body-level fixed
+       canvas, not confined to one screen). Full scientifically-coloured planet flythrough (Mars, Earth, Jupiter,
+       Saturn's rings, Neptune, Uranus) on Welcome; the sparkling starfield PERSISTS (calm, stars-only) on the Create
+       + Restore screens so they keep the space ambiance. Painted by WelcomeSpace in app.js; hidden once you enter the
+       wallet home; freezes to one static frame under prefers-reduced-motion. Ref: the Explorer live DAG solar view. -->
+  <canvas class="welcome-space" id="welcomeSpace" aria-hidden="true"></canvas>
+  <div class="space-scrim" id="spaceScrim" aria-hidden="true"></div>
+
+  <!-- ============================ WELCOME ============================ -->
+  <main class="welcome" id="screen-welcome" data-screen>
+    <div class="welcome-card">
+      <div class="brand-mark" aria-hidden="true" data-usdm-logo></div>
+
+      <div class="wordmark">MoneroUSD</div>
+      <div class="tagline">The first post-quantum private stablecoin wallet</div>
+
+      <div class="net-label">NETWORK</div>
+      <div class="net-toggle" id="netToggle" role="tablist">
+        <button data-net="mainnet" role="tab"><span class="dot"></span>Mainnet</button>
+        <button data-net="testnet" class="active" role="tab"><span class="dot"></span>Testnet</button>
+      </div>
+
+      <div class="status-line" id="statusLine">Auto · finding the canonical PQ chain<span class="blink">…</span></div>
+
+      <div class="actions">
+        <button class="btn btn-primary" id="btnCreate">
+          <span>Create new wallet<span class="sub">Generate a fresh post-quantum seed</span></span>
+        </button>
+        <button class="btn btn-ghost" id="btnRestore">
+          <span class="ic">↻</span>
+          <span class="txt"><b>Restore from seed</b><span>Import an existing wallet</span></span>
+        </button>
+      </div>
+
+      <div class="pq-badge">
+        <span class="shield">◈</span> <b>ML-KEM + ML-DSA</b> · zero-knowledge · O(1) verified
+      </div>
+    </div>
+  </main>
+
+  <!-- ============================ CREATE ============================ -->
+  <main class="welcome hidden" id="screen-create" data-screen>
+    <div class="sheet">
+      <div class="sheet-head">
+        <button class="icon-btn" data-back aria-label="Back">←</button>
+        <h2>Create a new wallet</h2>
+      </div>
+      <p class="sheet-sub">A fresh post-quantum seed is drawn from your device's secure RNG — never a fixed or
+        pre-derived key. It controls your ML-DSA spend key and ML-KEM scan key.</p>
+      <pre class="seed-box hidden" id="createSeed"></pre>
+      <button class="btn btn-primary full" id="btnDoGenerate">Generate seed</button>
+      <div class="msg" id="createMsg"></div>
+      <button class="btn btn-primary full hidden" id="btnContinueCreate">I've written it down — open wallet</button>
+    </div>
+  </main>
+
+  <!-- ============================ RESTORE ============================ -->
+  <main class="welcome hidden" id="screen-restore" data-screen>
+    <div class="sheet">
+      <div class="sheet-head">
+        <button class="icon-btn" data-back aria-label="Back">←</button>
+        <h2>Restore from seed</h2>
+      </div>
+      <p class="sheet-sub">Paste your recovery seed. Your keys are derived locally in the app and your scan key
+        NEVER leaves this device — not even to your own node. Your notes are recovered locally, so no operator
+        ever sees which notes are yours.</p>
+      <label class="field-label">Recovery seed or master key</label>
+      <textarea class="field seed-input" id="restoreSeed" rows="4" spellcheck="false" autocapitalize="none" autocorrect="off" autocomplete="off"
+        placeholder="Your 24 words, or your 72-character master key…"></textarea>
+      <button class="btn btn-primary full" id="btnDoRestore">Restore wallet</button>
+      <div class="msg" id="restoreMsg"></div>
+    </div>
+  </main>
+
+  <!-- ============================ HOME (desktop two-pane app) ============================ -->
+  <main class="app hidden" id="screen-home" data-screen>
+    <!-- Mobile top bar (≤720px only): hamburger opens the full menu; the bottom bar keeps just the 3 primaries. -->
+    <div class="mobile-topbar" id="mobileTopbar">
+      <button class="mobile-hamburger" id="mobileMenuBtn" aria-label="Open menu" title="Menu">
+        <span></span><span></span><span></span>
+      </button>
+      <div class="mobile-topbar-brand"><span class="m-mini" data-usdm-logo></span><span class="mtb-name">MoneroUSD</span></div>
+      <div class="mobile-topbar-status">
+        <button class="mtb-net" id="mtbNet" aria-haspopup="menu" aria-expanded="false" title="Switch network">
+          <span class="mtb-dot"></span><span id="mtbNetLabel">testnet</span><span class="mtb-caret">▾</span>
+        </button>
+        <span class="mtb-block" id="mtbBlock">block —</span>
+        <div class="mtb-net-menu" id="mtbNetMenu" role="menu" hidden>
+          <button role="menuitem" data-net="mainnet"><span class="mtb-dot"></span>Mainnet</button>
+          <button role="menuitem" data-net="testnet"><span class="mtb-dot"></span>Testnet</button>
+        </div>
+      </div>
+    </div>
+    <!-- Slide-in drawer holding every view (populated from #nav) — the bottom bar shows only Wallet · Buy/Sell · Browser. -->
+    <div class="mobile-drawer" id="mobileDrawer" hidden>
+      <nav class="mobile-drawer-panel" id="mobileDrawerPanel" aria-label="All sections"></nav>
+    </div>
+
+    <!-- Persistent left sidebar: brand + nav + live node status + logout. -->
+    <aside class="sidebar">
+      <div class="brand-mini"><span class="m-mini" data-usdm-logo></span><span>MoneroUSD</span></div>
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-view="wallet"><span class="nav-ic">◈</span>Wallet</button>
+        <button class="nav-item" data-view="send"><span class="nav-ic">↑</span>Pay</button>
+        <button class="nav-item" data-view="receive"><span class="nav-ic">↓</span>Receive</button>
+        <button class="nav-item" data-view="buy"><span class="nav-ic">$</span><span class="nav-lbl">Buy</span></button>
+        <button class="nav-item" data-view="merchant"><span class="nav-ic">▣</span>Merchant</button>
+        <button class="nav-item" data-view="activity"><span class="nav-ic">≡</span>Activity</button>
+        <button class="nav-item" data-view="earn"><span class="nav-ic">◆</span>Earn</button>
+        <button class="nav-item" data-view="borrow"><span class="nav-ic">⇄</span>Borrow</button>
+        <button class="nav-item" data-view="governance"><span class="nav-ic">⚖</span>Governance</button>
+        <button class="nav-item" data-view="browser"><span class="nav-ic">⊞</span>Browser</button>
+        <button class="nav-item" data-view="settings"><span class="nav-ic">⚙</span>Settings</button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="status-line small" id="homeStatus">·</div>
+        <button class="btn-logout" id="btnLogout"
+          title="Log out — wipe your post-quantum keys from memory and return to the welcome screen. Your node keeps running.">
+          <span class="lo-ic" aria-hidden="true">⏻</span><span>Logout</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Wide content area: exactly one view is active at a time (the nav switches it). -->
+    <section class="content">
+      <!-- One line, in the page's own flow so it never covers anything; tap for the details, ✕ to hide it until something changes. -->
+      <div class="network-notice" id="networkNotice" role="status" hidden>
+        <button class="nn-main" id="networkNoticeMore" aria-expanded="false"><span class="nn-dot" aria-hidden="true"></span><span class="nn-text" id="networkNoticeText"></span></button>
+        <button class="nn-close" id="networkNoticeClose" aria-label="Hide this notice">✕</button>
+        <div class="nn-detail" id="networkNoticeDetail" hidden></div>
+      </div>
+
+      <!-- WALLET (default): the balance hero + quick actions + a recent-activity peek. -->
+      <div class="view active" data-view="wallet">
+        <div class="view-head"><h1>Wallet</h1><div class="view-sub" id="homeConn">·</div></div>
+        <!-- An update three builders attest on the chain, offered where the owner looks first. One tap fetches it over
+             Tor from peers and checks it; installing is a second, explicit tap. Hidden when there is none. -->
+        <button type="button" class="update-banner" id="updateBanner" hidden>
+          <span class="ub-dot" aria-hidden="true"></span>
+          <span class="ub-text" id="updateBannerText">Update available</span>
+          <span class="ub-go">Get it ›</span>
+        </button>
+        <section class="balance-card">
+          <div class="balance-label">Total balance</div>
+          <div class="balance-amount" id="homeBalance">—</div>
+          <div class="balance-sub" id="homeBalanceSub">USDm · read live from your node</div>
+          <div class="balance-actions">
+            <button class="chip chip-primary" id="btnAddMoney" title="One private Bitcoin address — the wallet mixes and deposits whatever arrives">Add money with Bitcoin</button>
+            <button class="chip chip-primary" data-goto="send">Send</button>
+            <button class="chip" data-goto="receive">Receive</button>
+            <button class="chip" data-goto="buy" data-buymode="buy">Buy</button>
+            <button class="chip" data-goto="buy" data-buymode="sell">Sell</button>
+            <button class="chip" id="btnRefresh">↻ Refresh</button>
+          </div>
+        </section>
+        <!-- Every other asset this wallet holds (SAT, tokens, NFTs): one row each, drawn from the wallet's own
+             spendable notes on every refresh, so an asset is here while it is held and gone when it is not. Hidden
+             when there is none. -->
+        <section class="card held-assets" id="heldAssetsCard" hidden>
+          <div class="mx-side-head"><div class="field-label">Your assets</div><span class="mx-live"><i></i>live</span></div>
+          <div id="heldAssets" class="held-assets-list"></div>
+        </section>
+        <!-- Money set aside for something this wallet is buying: one row each, with its one action. Hidden when
+             there is none. -->
+        <section class="card mx-held" id="heldCard" hidden>
+          <div class="mx-side-head"><div class="field-label">Purchases in escrow</div><span class="mx-live"><i></i>live</span></div>
+          <div id="goodsPurchases" class="goods-list"></div>
+          <div class="card-note mx-say" id="goodsBuyerNews"></div>
+        </section>
+        <div class="panel-head"><span>Recent activity</span><button class="link-btn" data-goto="activity">View all →</button></div>
+        <div class="activity-list" id="walletActivityPeek"><div class="activity-empty">Scanning your notes…</div></div>
+      </div>
+
+      <!-- SEND: prove a real confidential PQ transfer locally (4-gate WHIR carrier) + broadcast from your node. -->
+      <div class="view" data-view="send">
+        <div class="view-head"><h1>Pay</h1><div class="view-sub">One-touch confidential payments · pay an address or charge at checkout</div></div>
+        <!-- MonerousD debit card — the live balance + this wallet's @username handle. Also the Apple-Pay-style
+             tap surface: after Face ID it slides forward and shows the NFC "hold near reader" overlay. -->
+        <section class="debit-card" id="debitCard">
+          <div class="dc-top">
+            <div class="dc-brand"><span class="dc-logo" data-usdm-logo></span> MoneroUSD</div>
+            <div class="dc-chip"></div>
+          </div>
+          <div>
+            <div class="dc-bal-label">Balance</div>
+            <div><span class="dc-bal" id="dcBal">—</span><span class="dc-bal-cur">USDm</span></div>
+          </div>
+          <div class="dc-bottom">
+            <div class="dc-holder" id="dcHolder"><span class="muted">@</span>—</div>
+            <div class="dc-net">Post-Quantum</div>
+          </div>
+          <!-- Apple-Pay-style NFC "ready to tap" overlay — revealed after Face ID unlocks the card for an in-person tap. -->
+          <div class="dc-nfc" id="dcNfc" aria-hidden="true">
+            <div class="dc-nfc-ico" aria-hidden="true"><svg viewBox="0 0 24 24" width="38" height="38" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M6 8.4a7 7 0 0 1 0 7.2"/><path d="M9.6 6.5a11 11 0 0 1 0 11"/><path d="M13.2 4.6a15 15 0 0 1 0 14.8"/></svg></div>
+            <div class="dc-nfc-label" id="dcNfcLabel">Hold near reader</div>
+            <div class="dc-nfc-sub" id="dcNfcSub">Face&nbsp;ID&nbsp;✓&nbsp;·&nbsp;post-quantum</div>
+          </div>
+        </section>
+
+        <!-- PAY IN PERSON, first under the card (user 2026-11-10): tap → Face ID → the card lifts to the centre of the
+             screen over a dimmed wallet with the "hold near reader" prompt. -->
+        <button class="tap-inline tap-top" id="btnTapStart">
+          <span class="tap-inline-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6.4 9a6 6 0 0 1 0 6"/><path d="M9.7 7.2a10 10 0 0 1 0 9.6"/><path d="M13 5.4a14 14 0 0 1 0 13.2"/></svg></span>
+          <span class="tap-inline-tx"><b>Pay in person</b><small>Tap to pay — hold near the reader</small></span>
+          <span class="tap-inline-go" aria-hidden="true">›</span>
+        </button>
+
+        <!-- Compact @username claimer directly under the card — a real ML-DSA-owned, tradeable CHAIN ASSET
+             (sellable on the Explorer once the browser tab ships). Slim by design. -->
+        <div class="uname" id="usernamePanel">
+          <div class="uname-row">
+            <span class="uname-at">@</span>
+            <input class="uname-input" id="nameInput" type="text" spellcheck="false" placeholder="claim your @username" />
+            <button class="btn btn-primary uname-btn" id="btnClaimName">Claim</button>
+          </div>
+          <div class="uname-foot">
+            <span class="uname-note">A tradeable chain asset — sellable on the Explorer soon.</span>
+            <span class="uname-owned" id="myUsernameBox" style="display:none">—</span>
+          </div>
+          <div class="send-status uname-status" id="nameStatus"></div>
+        </div>
+
+        <!-- Pay / POS (in-person checkout) merged under the card. -->
+        <div class="seg">
+          <button class="seg-btn active" id="segPay" data-mode="pay">Pay</button>
+          <button class="seg-btn" id="segRequest" data-mode="request">POS</button>
+        </div>
+
+        <!-- PAY: send to a @username or PQ address, authorized by Touch ID / Face ID. -->
+        <section class="card" id="payPanel">
+          <div class="field-label">Pay to</div>
+          <textarea class="addr-input" id="sendTo" rows="2" spellcheck="false" placeholder="@username, address, or a payment link"></textarea>
+          <div class="field-label">Amount (USDm)</div>
+          <select class="amt-input" id="sendAsset" aria-label="Asset to send">
+            <option value="USDM">USDm</option>
+            <option value="SAT">SAT · Satoshi</option>
+          </select>
+          <input class="amt-input" id="sendAmount" type="number" min="0" step="0.00000001" placeholder="0.00" />
+          <button class="btn btn-primary full" id="btnSend">Send</button>
+          <div class="send-status" id="sendStatus"></div>
+          <div id="goodsOfferBox" style="display:none">
+            <div class="goods-sentence" id="goodsOfferSentence"></div>
+            <input class="addr-input" id="goodsRelay" type="text" autocomplete="off" spellcheck="false" placeholder="Pickup relay @username (optional)" hidden />
+            <button class="btn btn-primary full" id="btnGoodsPay">Pay</button>
+          </div>
+          <div class="card-note mx-say" id="goodsLinkStatus"></div>
+          <div class="card-note">Authorized with Touch ID / Face ID, then proved locally (4-gate WHIR carrier bound
+            to the live frontier, both output notes bound so nothing can inflate) and broadcast to your own node.
+            Pay anyone by <b>@username</b>. The scan &amp; spend keys never leave this device.</div>
+        </section>
+
+        <!-- Apple-Pay-style present: on "Pay in person" the #debitCard FLIP-animates from its slot into #payCardSlot
+             (center screen) over this wallet-dimmed backdrop; Cancel FLIPs it back and fades the backdrop out. -->
+        <div class="pay-overlay" id="payOverlay" hidden>
+          <div class="pay-overlay-inner">
+            <div class="pay-overlay-slot" id="payCardSlot"></div>
+            <div class="pay-msg" id="payMsg"></div>
+            <button class="pay-cancel" id="btnPayCancel">Cancel</button>
+          </div>
+        </div>
+
+        <!-- POS — our OWN private post-quantum tap-to-pay terminal (Apple-Pay / Stripe analog, NOT a QR code).
+             Enter the sale amount → an ML-DSA-signed charge → the payer holds their phone near, Face ID, done. This
+             checkout then watches the chain live for the confidential note and flips to ✓ Paid. -->
+        <section class="card pos-card" id="requestPanel" style="display:none">
+          <!-- Entry: the merchant keys in the sale amount. -->
+          <div id="posEntry">
+            <div class="card-note" id="posFeeNote">POS fee 0.5% of each payment you receive here (card networks charge 2–3%), paid with your other app fees once a week.</div>
+            <!-- Charge first: key in the sale amount (or build it by tapping products below) → an ML-DSA-signed charge. -->
+            <div class="field-label">Amount to charge (USDm)</div>
+            <input class="amt-input pos-amt-input" id="reqAmount" type="number" min="0" step="0.00000001" placeholder="0.00" />
+            <button class="btn btn-primary full" id="btnRequest">Charge</button>
+            <div class="card-note">A private post-quantum <b>tap-to-pay</b> terminal — like Apple&nbsp;Pay / Stripe,
+              but no card network. The charge is <b>ML-DSA-signed to you</b>, so the amount and destination can't be
+              altered mid-tap; the payer holds their phone near, unlocks Face&nbsp;ID, and a confidential PQ note
+              lands here. Your scan key never leaves this device.</div>
+
+            <!-- MERCHANT product catalog — its OWN section below the charge. Add items (name + price + photo) once;
+                 tap an item to add its price to the running sale (which fills the amount above). Its own scroll, so a
+                 merchant can add as many products as they want. Stored on THIS device (merchant-local); survives restarts. -->
+            <div class="pos-catalog">
+              <div class="pos-cat-head">
+                <span class="ac-title">Products</span>
+                <button class="btn-link pos-cat-toggle" id="btnPosAddToggle">+ Add product</button>
+              </div>
+              <div class="pos-add-row" id="posAddRow" hidden>
+                <button class="pos-add-photo" id="btnPosAddPhoto" type="button" title="Add a photo">
+                  <img class="pos-add-photo-img" id="posAddPhotoPreview" alt="" hidden />
+                  <span class="pos-add-photo-plus" id="posAddPhotoPlus">＋<small>photo</small></span>
+                </button>
+                <input class="pos-add-photo-file" id="posAddPhotoFile" type="file" accept="image/*" hidden />
+                <div class="pos-add-fields">
+                  <input class="addr-input pos-add-name" id="posAddName" type="text" spellcheck="false" placeholder="Product name" />
+                  <input class="amt-input pos-add-price" id="posAddPrice" type="number" min="0" step="0.01" placeholder="Price (USDm)" />
+                  <button class="btn btn-primary pos-add-btn" id="btnPosAdd">Add product</button>
+                </div>
+              </div>
+              <div class="pos-products-scroll">
+                <div class="pos-products" id="posProducts"></div>
+                <div class="pos-cat-empty" id="posCatEmpty">No products yet — add your items so buyers are charged the exact price automatically.</div>
+              </div>
+              <div class="pos-cart" id="posCart" hidden>
+                <span class="pos-cart-label">Sale total</span><span class="pos-cart-total" id="posCartTotal">0.00 USDm</span>
+                <button class="btn-link pos-cart-clear" id="btnPosCartClear">clear</button>
+              </div>
+            </div>
+
+            <!-- The PAYER "Pay in person" flow lives on the Pay segment now (paying is a buyer action) — see payPanel. -->
+
+          </div>
+          <!-- Terminal: the live tap-to-pay screen shown after Charge. -->
+          <div id="posTerminal" class="pos-terminal" style="display:none">
+            <div class="pos-amount"><span id="posAmount">0.00</span><span class="pos-amount-cur">USDm</span></div>
+            <div class="pos-merchant" id="posMerchant">to —</div>
+            <div class="pos-tap" id="posTap">
+              <div class="pos-tap-ring"><div class="pos-tap-ico">📲</div></div>
+              <div class="pos-tap-label">Hold your phone near to pay</div>
+              <div class="pos-tap-sub">Post-quantum&nbsp;·&nbsp;Face&nbsp;ID</div>
+            </div>
+            <div class="pos-status" id="posStatus">Waiting for tap…</div>
+            <div class="pos-expiry" id="posExpiry"></div>
+            <div class="pos-actions">
+              <button class="btn btn-ghost full" id="btnPosCancel">Cancel charge</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- RECEIVE: the PQ receive address + copy. -->
+      <div class="view" data-view="receive">
+        <div class="view-head"><h1>Receive</h1><div class="view-sub">Your post-quantum receive address</div></div>
+        <section class="card rc">
+          <!-- Who to pay (user 2026-11-10): the @username when this wallet has claimed one, then the address it stands
+               for. With no name yet, one line leads to claiming one. -->
+          <div class="rc-name" id="recvName" hidden>
+            <div class="field-label">Your username</div>
+            <div class="rc-name-row"><span class="rc-at" id="recvUsername">@—</span><button type="button" class="chip" id="btnCopyUsername">Copy</button></div>
+            <div class="card-note">Your name on the chain: your shop links and your site carry it. Paying by name is not switched on yet, so give payers the address below.</div>
+          </div>
+          <button type="button" class="link-btn rc-claim" id="recvClaimName" hidden>Claim a @username for your shop links and your site ›</button>
+          <div class="field-label">Your address</div>
+          <div class="recv-qr" id="recvQr" title="Scan to pay this wallet"></div>
+          <pre class="addr-box" id="homeAddress">—</pre>
+          <button class="btn btn-primary full" id="btnCopyAddr">Copy address</button>
+          <div class="card-note">Share this address to receive USDm. Each payment lands as a confidential PQ note
+            only your scan key can detect — the key never leaves this wallet.</div>
+        </section>
+      </div>
+
+      <!-- MERCHANT: getting paid for goods and services. Named Merchant, never Sell: selling USDm for Bitcoin or
+           Monero is Cash out. One form makes a sale; one list shows the sales; the online shop is a third thing. -->
+      <div class="view" data-view="merchant">
+        <div class="view-head"><h1>Merchant</h1><div class="view-sub">Accept payments · no card fees, no chargebacks</div></div>
+
+        <section class="mx-hero">
+          <div class="mx-hero-copy">
+            <div class="mx-eyebrow"><i class="mx-dot"></i>MonerousD for business</div>
+            <h2>Get paid.<br /><span>Keep all of it.</span></h2>
+            <p>Money moves from your customer's wallet straight to yours. No card company in the middle, no account to open, and a payment can never be taken back from you.</p>
+          </div>
+          <div class="mx-hero-art" aria-hidden="true">
+            <div class="mx-receipt mx-receipt-back"></div>
+            <div class="mx-receipt">
+              <div class="mx-receipt-top"><span>Order 1042</span><span class="mx-pill good">Paid</span></div>
+              <div class="mx-receipt-amt">$48.00</div>
+              <div class="mx-receipt-line"><span>Network fee</span><b>$0.001</b></div>
+              <div class="mx-receipt-line"><span>Card company</span><b>none</b></div>
+              <div class="mx-receipt-line"><span>Can be reversed</span><b>never</b></div>
+              <div class="mx-receipt-foot"><i class="mx-dot"></i>In your wallet</div>
+            </div>
+          </div>
+        </section>
+
+        <div class="mx-grid">
+          <div class="mx-main">
+            <section class="card mx-panel mx-newsale">
+              <div class="mx-panel-head"><h3>New sale</h3></div>
+              <div class="mx-fields">
+                <label class="mx-field"><span class="field-label">Description</span>
+                  <input class="amt-input" id="mxTitle" type="text" maxlength="60" placeholder="Bicycle" /></label>
+                <label class="mx-field"><span class="field-label">Price (USD)</span>
+                  <input class="amt-input" id="mxPrice" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" /></label>
+              </div>
+              <div class="mx-choice" role="radiogroup" aria-label="Payment type">
+                <button type="button" class="mx-opt active" data-how="held" role="radio" aria-checked="true">
+                  <b>Protected purchase</b>
+                  <span>Payment is held in escrow and released to you on delivery.</span>
+                </button>
+                <button type="button" class="mx-opt" data-how="now" role="radio" aria-checked="false">
+                  <b>In person</b>
+                  <span>Tap to pay at the counter. Settles in seconds.</span>
+                </button>
+                <button type="button" class="mx-opt" data-how="every" role="radio" aria-checked="false">
+                  <b>Subscription</b>
+                  <span>A recurring payment. The subscriber can cancel any time.</span>
+                </button>
+                <button type="button" class="mx-opt" data-how="file" role="radio" aria-checked="false">
+                  <b>Digital download</b>
+                  <span>The buyer pays and receives the file automatically.</span>
+                </button>
+              </div>
+              <div class="mx-how-note" id="mxHowNote">Payment is held in escrow and released to you on delivery.</div>
+              <label class="mx-field" id="mxFileRow" hidden><span class="field-label">File</span>
+                <input class="amt-input mx-file" id="mxFile" type="file" /></label>
+              <label class="mx-field" id="mxEveryRow" hidden><span class="field-label">Billing period</span>
+                <select class="amt-input" id="mxEvery">
+                  <option value="168">Weekly</option>
+                  <option value="720" selected>Monthly</option>
+                  <option value="8760">Yearly</option>
+                </select></label>
+              <label class="mx-field" id="mxDaysRow"><span class="field-label">Delivery deadline</span>
+                <select class="amt-input" id="mxDays">
+                  <option value="24">1 day</option>
+                  <option value="72" selected>3 days</option>
+                  <option value="168">1 week</option>
+                  <option value="336">2 weeks</option>
+                  <option value="720">30 days</option>
+                </select></label>
+              <details class="mx-more" id="mxMore">
+                <summary>More options</summary>
+                <div class="mx-fields">
+                  <label class="mx-field"><span class="field-label">Deposit (USD)</span>
+                    <input class="amt-input" id="mxDeposit" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" /></label>
+                  <label class="mx-field"><span class="field-label">Delivery bond (USD)</span>
+                    <input class="amt-input" id="mxBond" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" /></label>
+                </div>
+                <div class="card-note m-help">A deposit is paid to you at the order and is not refundable; the rest is held in escrow. A delivery bond is your own money, locked beside the buyer's: it returns to you when the buyer confirms receipt and goes to the buyer if you do not deliver.</div>
+              </details>
+              <button class="btn btn-primary full" id="btnMxCreate">Create sale</button>
+              <div id="mxLinkBox" class="mx-linkbox" style="display:none">
+                <b id="mxLinkTitle">Payment link</b>
+                <span>The buyer opens it, reviews the price and pays. This page updates when the payment is in escrow.</span>
+                <div class="mx-linkrow">
+                  <button class="btn btn-primary" id="btnMxShare">Share link</button>
+                  <button class="btn btn-ghost" id="btnMxCopy">Copy link</button>
+                </div>
+                <textarea class="addr-input" id="mxLink" rows="2" readonly></textarea>
+                <button class="btn btn-ghost full" id="btnMxAnother">New sale</button>
+              </div>
+              <div class="card-note mx-say" id="mxStatus"></div>
+            </section>
+
+            <section class="card mx-panel mx-sales">
+              <div class="mx-side-head"><div class="field-label">Your sales</div><span class="mx-live"><i></i>live</span></div>
+              <div id="goodsSales" class="goods-list">—</div>
+              <div class="card-note mx-say" id="goodsSellerNews"></div>
+            </section>
+
+            <section class="card mx-panel mx-tools">
+              <div class="settings-row" id="mxRelayRow"><span class="settings-k">Pickup relay</span><span class="settings-v" id="mxRelayState">off</span>
+                <button type="button" class="chip" id="mxRelayToggle">Turn on</button></div>
+              <div id="mxPickups" class="goods-list"></div>
+              <div class="card-note m-help">As a pickup relay you hold parcels for buyers and lock a bond worth each parcel while you hold it. The bond returns to you at pickup.</div>
+              <div class="card-note mx-say" id="mxToolsStatus"></div>
+            </section>
+          </div>
+
+          <aside class="mx-side">
+            <section class="card mx-panel mx-online">
+              <div class="mx-panel-head">
+                <h3>Take MonerousD in an online shop</h3>
+                <p>Run the MonerousD checkout helper beside this wallet. Your shop shows one Pay button and is told the moment the money arrives.</p>
+              </div>
+              <div class="mx-platforms">
+                <details class="mx-platform">
+                  <summary><span class="mx-platform-ic">W</span><b>WooCommerce</b><i>3 steps</i></summary>
+                  <ol><li>Add the <code>monerousd-gateway</code> plugin and switch it on.</li>
+                    <li>Under Payments, enter your checkout key.</li>
+                    <li>Done. Paid orders are marked paid by themselves.</li></ol>
+                </details>
+                <details class="mx-platform">
+                  <summary><span class="mx-platform-ic">S</span><b>Shopify</b><i>5 steps</i></summary>
+                  <ol><li>Create a custom app with order access and copy its token into the helper.</li>
+                    <li>Add a manual payment method named MonerousD.</li>
+                    <li>Give the helper's pay page a web address.</li>
+                    <li>Paste the Pay button into your order email.</li>
+                    <li>Done. The helper marks each order paid in Shopify.</li></ol>
+                </details>
+                <details class="mx-platform">
+                  <summary><span class="mx-platform-ic">◇</span><b>Any other website</b><i>1 link</i></summary>
+                  <ol><li>List your items and prices in the helper.</li>
+                    <li>Link to the helper's pay page from any page, email or message.</li></ol>
+                </details>
+              </div>
+            </section>
+            <section class="card mx-compare">
+              <div class="field-label">What a $100 sale costs you</div>
+              <div class="mx-bar-row"><span>Card companies</span><div class="mx-bar"><i style="width:100%"></i></div><b>$2.90</b></div>
+              <div class="mx-bar-row"><span>MonerousD, customer here</span><div class="mx-bar"><i class="mid" style="width:17.2%"></i></div><b>$0.50</b></div>
+              <div class="mx-bar-row"><span>MonerousD, link or online</span><div class="mx-bar"><i class="good" style="width:0.6%"></i></div><b>$0.001</b></div>
+            </section>
+          </aside>
+        </div>
+      </div>
+
+      <!-- ACTIVITY: the wallet's received PQ notes (local ML-KEM decap; scan key stays local). -->
+      <div class="view" data-view="activity">
+        <div class="view-head"><h1>Activity</h1><div class="view-sub">Sent &amp; received · read live, never cached</div></div>
+        <div class="activity-list" id="activityList"><div class="activity-empty">Open to scan…</div></div>
+      </div>
+
+      <!-- EARN: stake USDm to earn a share of network fees. Validator/bond + votes now live in Governance. -->
+      <div class="view" data-view="earn">
+        <div class="view-head"><h1>Earn</h1><div class="view-sub">Stake USDm · earn a share of the network fees</div></div>
+        <section class="card action-card hidden" id="potCard">
+          <div class="ac-head"><span class="ac-title">SAT at the repayment floor</span><span class="send-avail" id="potAvail">Pot: —</span></div>
+          <input class="amt-input" id="potAmount" type="number" min="0" step="0.01" placeholder="USDm to spend" />
+          <button class="btn btn-primary full" id="btnPotBuy">Buy SAT</button>
+          <div class="send-status" id="potStatus"></div>
+          <div class="card-note" id="potNote">After a custody theft, the thief's slashed SAT is sold here at half its 30-day low; every USDm paid is retired, restoring the reserve.</div>
+        </section>
+        <div class="stat-hero">
+          <div class="stat-card"><div class="stat-ic stat-ic-earn">◆</div><div class="stat-val" id="earnStaked">—</div><div class="stat-lbl">Your stake</div><div class="stat-lbl bal-pending" id="earnStakePending"></div></div>
+          <div class="stat-card"><div class="stat-ic stat-ic-earn">↑</div><div class="stat-val" id="earnApr">—</div><div class="stat-lbl">Live APR</div></div>
+          <div class="stat-card"><div class="stat-ic stat-ic-earn">$</div><div class="stat-val" id="earnYieldUsd">—</div><div class="stat-lbl">Your yield</div></div>
+        </div>
+        <section class="card action-card">
+          <div class="ac-head"><span class="ac-title">Stake USDm</span><span class="send-avail" id="stakeAvail">Spendable: —</span></div>
+          <input class="amt-input" id="stakeAmount" type="number" min="0" step="0.00000001" placeholder="0.00" />
+          <button class="btn btn-primary full" id="btnStake">Stake</button>
+          <div class="send-status" id="stakeStatus"></div>
+          <div class="reward-row" id="rewardRow">
+            <div class="reward-info"><span class="reward-lbl">Claimable reward</span><span class="reward-val" id="earnClaimable">0.00 USDm</span></div>
+            <button class="btn btn-primary reward-claim" id="btnClaimReward" disabled>Claim</button>
+            <button class="btn reward-claim" id="btnUnstake" disabled>Unstake</button>
+          </div>
+          <div class="send-status" id="claimStatus"></div>
+          <div class="card-note">Your stake is private: nobody sees how much you stake, when you started, or which claim is
+            yours. Rewards are paid from the network fees the stakers' pool collects — never newly minted. Unstake any time.</div>
+        </section>
+        <div class="cta-link" data-goto="governance" role="button" tabindex="0">
+          <div class="cta-ic">🛡</div>
+          <div class="cta-txt"><b>Secure the network &amp; earn a vote</b><span>Bond USDm to become a validator — now in Governance →</span></div>
+          <div class="cta-arrow">→</div>
+        </div>
+      </div>
+
+      <!-- BORROW (§BR-4): USDm against the user's Bitcoin — one debt unit per loan, 2 % a year, repaid any time. -->
+      <div class="view" data-view="borrow">
+        <div class="view-head"><h1>Borrow</h1><div class="view-sub">USDm against your Bitcoin · 2% a year · repay any time</div></div>
+        <section class="card action-card">
+          <div class="ac-head"><span class="ac-title">Borrow USDm</span><span class="send-avail" id="borrowPrice">BTC: —</span></div>
+          <!-- The amount is TYPED (user 2026-11-10: "the borrow section doesnt let you enter any amount"). Loans come in
+               standard sizes, so what is typed settles on the nearest one, said under the box; the sizes are also one
+               tap each. The select is the wallet's own record of the chosen size and is never shown. -->
+          <label class="field-lbl" for="borrowAmount">How much (USDm)</label>
+          <input class="amt-input" id="borrowAmount" type="number" min="0" step="1" inputmode="decimal" placeholder="1000" autocomplete="off" />
+          <div class="bw-sizes" id="borrowSizes" role="group" aria-label="Standard loan sizes"></div>
+          <div class="card-note bw-note" id="borrowSizeNote"></div>
+          <select id="borrowSize" hidden aria-hidden="true" tabindex="-1"></select>
+          <label class="field-lbl" for="borrowBand">How safe</label>
+          <select class="amt-input" id="borrowBand"></select>
+          <div class="card-note" id="borrowQuote"></div>
+          <button class="btn btn-primary full" id="btnBorrow">Borrow</button>
+          <div class="send-status" id="borrowStatus"></div>
+          <div id="borrowDeposit"></div>
+          <div class="card-note">Your loan is private: the chain sees that a loan of this size exists at this price band, never
+            who holds it. Your Bitcoin stays in the bonded custody until you repay; if Bitcoin falls below the liquidation price it
+            repays the loan instead and you keep the USDm.</div>
+        </section>
+        <div class="panel-head"><span>Your loans</span></div>
+        <section class="card" id="borrowPositions"><div class="settings-empty">No loans yet.</div></section>
+      </div>
+
+      <!-- GOVERNANCE: become a validator (bond/unbond) + the live validator set + bicameral parameter votes. -->
+      <div class="view" data-view="governance">
+        <div class="view-head"><h1>Governance</h1><div class="view-sub">Become a validator · bicameral parameter votes · live on-chain</div></div>
+        <div class="stat-hero">
+          <div class="stat-card"><div class="stat-ic stat-ic-gov">🛡</div><div class="stat-val" id="govReqBondHero">—</div><div class="stat-lbl" id="govReqBondLbl">Required bond (live)</div></div>
+          <div class="stat-card"><div class="stat-ic stat-ic-gov">◈</div><div class="stat-val" id="govValidators">—</div><div class="stat-lbl">Validators</div></div>
+          <div class="stat-card"><div class="stat-ic stat-ic-gov">⚖</div><div class="stat-val" id="govMyWeight">—</div><div class="stat-lbl">Chamber weight</div></div>
+        </div>
+        <div class="panel-head"><span>Become a validator</span></div>
+        <!-- ONE validator section (user 2026-11-10): the validator set, live, as a chart; the one-tap bond; this
+             node's status once it validates; and, folded away, the amount for someone who wants to choose it, what
+             is done with rewards, and the network's own figures. Every id here is the one the wallet already fills. -->
+        <section class="card action-card vx" id="becomeValidatorCard">
+          <div class="vx-chart" id="vxChart">
+            <div class="vx-chart-head">
+              <div>
+                <div class="vx-chart-big" id="vxCount">—</div>
+                <div class="vx-chart-sub" id="vxSub">Reading the validator set…</div>
+              </div>
+              <span class="mx-live" id="vxLive"><i></i>live</span>
+            </div>
+            <div class="vx-plot" id="vxPlot" role="img" aria-label="Bonded SAT of each validator"></div>
+            <div class="vx-legend">
+              <span><i class="vx-key vx-key-me"></i>this wallet's node</span>
+              <span><i class="vx-key"></i>other validators</span>
+              <span class="vx-legend-r" id="vxShare"></span>
+            </div>
+          </div>
+          <div class="ac-head"><span class="ac-title">Run a validator: one tap, then nothing</span><span class="send-avail" id="bondAvail">Spendable: —</span></div>
+          <div class="settings-rows vx-terms">
+            <div class="settings-row"><span class="settings-k">Bond</span><span class="settings-v" id="bvBond">your largest SAT note · network fee $0.00</span></div>
+            <div class="settings-row"><span class="settings-k">This computer</span><span class="settings-v">stays on and online — it validates by itself</span></div>
+            <div class="settings-row"><span class="settings-k">Earns</span><span class="settings-v">the bonders' share of every network fee, at its uptime</span></div>
+            <div class="settings-row"><span class="settings-k">Leaving</span><span class="settings-v">21 days · seven days offline retires it, nothing burned</span></div>
+            <div class="settings-row"><span class="settings-k">If it cheats</span><span class="settings-v">its own bond is burned; delegators' SAT only if it helps steal</span></div>
+          </div>
+          <button class="btn btn-primary full" id="btnBecomeValidator">Become a validator</button>
+          <div class="send-status" id="bvStatus"></div>
+          <div class="settings-rows vx-status" id="validatorStatusCard" hidden>
+            <div class="settings-row"><span class="settings-k">Uptime</span><span class="settings-v" id="vsUptime">—</span></div>
+            <div class="settings-row"><span class="settings-k">This hour</span><span class="settings-v" id="vsDrawn">—</span></div>
+            <div class="settings-row"><span class="settings-k">Earned, ready to claim</span><span class="settings-v" id="vsEarned">—</span></div>
+            <div class="settings-row keep-awake-row"><span class="settings-k">Keep this computer awake while validating</span><span class="settings-v" id="keepAwakeState">off</span>
+              <button type="button" class="chip" id="keepAwakeToggle">Turn on</button></div>
+          </div>
+          <details class="vx-more">
+            <summary>Choose the amount, or unbond</summary>
+            <input class="amt-input" id="bondAmount" type="number" min="0" step="0.00000001" placeholder="0.00 SAT" aria-label="SAT to bond" />
+            <div class="vx-two">
+              <button class="btn btn-primary" id="btnBond">Bond this amount</button>
+              <button class="btn btn-ghost" id="btnUnbond">Unbond</button>
+            </div>
+            <div class="send-status" id="bondStatus"></div>
+            <div class="stake-terms"><span class="st-lock" id="govReqBond">🛡 Required bond: —</span><span class="st-apr" id="govBridgeTvl">Bridge TVL: —</span></div>
+          </details>
+          <details class="vx-more">
+            <summary>Rewards</summary>
+            <div class="stake-terms"><span class="st-lock" id="satRewardLine">⛏ Mining rewards → this wallet: —</span><span class="st-apr" id="satCustodyLine">Custody weight: —</span></div>
+            <div class="stake-terms"><span class="st-lock" id="minerPoolLine">⛏ Miner pool: —</span></div>
+            <div class="settings-row bond-rewards-row"><span class="settings-k">Bond my rewards</span><span class="settings-v" id="bondRewardsState">off</span>
+              <button type="button" class="chip" id="bondRewardsToggle">Turn on</button></div>
+            <div class="card-note" id="bondRewardsHint">Off: the SAT your node mines lands in your spendable balance. On: each reward goes straight into your custody bond (unbonding takes 21 days).</div>
+            <div class="settings-row rewards-btc-row"><span class="settings-k">Take my rewards in Bitcoin</span><span class="settings-v" id="rewardsBtcState">off</span>
+              <button type="button" class="chip" id="rewardsBtcToggle">Turn on</button></div>
+            <div class="card-note" id="rewardsBtcHint">Off: rewards stay USDm. On: once your rewards reach one payout piece, they are cashed out privately to your Bitcoin vault.</div>
+            <div class="settings-row remix-row"><span class="settings-k">Remix to widen private rounds</span><span class="settings-v" id="remixState">off</span>
+              <button type="button" class="chip" id="remixToggle">Turn on</button></div>
+            <div class="card-note" id="remixHint">Off. On: Bitcoin in your vault keeps joining private rounds alongside users, so every round is larger. Paid through the bonders' share; Bitcoin network fees apply.</div>
+          </details>
+          <details class="vx-more">
+            <summary>The network's figures</summary>
+            <div class="settings-rows" id="earnRows"><div class="settings-empty">Reading the validator set…</div></div>
+          </details>
+          <div class="card-note">Bonding locks SAT (Satoshi, the native token your node mines to this wallet) as your
+            validator weight and turns this node into a validator (permissionless-by-bond) — the same full node with
+            the added role. One bond asset, like THORChain's RUNE: SAT is not a claim on the reserve it secures, so a
+            takeover has to buy it outright. Your SAT weighs both the reserve's custody tally and finality. Holding SAT
+            is the default — bonding is your choice, and the bond stays yours: the carrier welds your public weight to
+            the value you lock (no over-claim), one note per bond, and your spend key never leaves this device. USDm
+            earns through staking and liquidity instead.</div>
+        </section>
+        <div class="panel-head"><span>Delegate SAT</span></div>
+        <section class="card action-card" id="delegateCard">
+          <div class="ac-head"><span class="ac-title">Earn with your SAT without running a validator</span><span class="send-avail" id="delegateAvail">Validators: —</span></div>
+          <input class="amt-input" id="delegateAmount" type="number" min="0" step="0.00000001" placeholder="0.00 SAT" aria-label="SAT to delegate" />
+          <input class="amt-input" id="delegateValidator" type="text" placeholder="Validator id (optional — any validator if empty)" aria-label="Validator id" />
+          <button class="btn btn-primary full" id="btnDelegate">Delegate</button>
+          <button class="btn btn-ghost full" id="btnUndelegate">Undelegate all</button>
+          <div class="send-status" id="delegateStatus"></div>
+          <div class="card-note" id="delegateList">You have no delegated SAT.</div>
+          <div class="card-note" id="delegateValidators"></div>
+          <div class="card-note">Delegating adds your SAT to a validator's custody weight and earns the bonders' share of every
+            network fee. The validator never holds your SAT: it stays a note only you can spend back. Undelegating takes 21 days,
+            then your SAT returns to your balance by itself. You earn at your validator's uptime, and the wallet moves you off one
+            that goes quiet. If it double-signs or deals a bad key, only its own bond is burned and your SAT comes back; if it helps
+            steal from the reserve, the SAT delegated to it is lost with it — spreading across validators is the default.</div>
+        </section>
+        <div class="panel-head"><span>Votes</span></div>
+        <!-- Proposals first (each with the two chambers' progress toward two thirds), proposing folded under them. -->
+        <section class="card gv" id="govVotesCard">
+          <div class="gv-head">
+            <div class="ac-title">Proposals</div>
+            <div class="gv-sub">A change passes when two thirds of the validators and two thirds of the miners vote for it.</div>
+          </div>
+          <div class="gv-list" id="govRows"><div class="settings-empty">Reading proposals…</div></div>
+          <div class="send-status" id="propStatus"></div>
+          <details class="vx-more gv-new" id="govProposeCard">
+            <summary>Propose a change</summary>
+            <div class="gov-propose">
+              <select class="amt-input" id="propKind" aria-label="What to change">
+                <option value="dag_width">DAG width</option>
+                <option value="target_spacing_ms">Target spacing (ms)</option>
+                <option value="mint_ratio_bps">Mint collateral ratio (bps)</option>
+                <option value="stake_reward_apr_bps">Staking APR (bps)</option>
+                <option value="stake_lock_blocks">Stake lock (blocks)</option>
+                <option value="withdraw_fee_min_bps">Withdraw fee floor (bps)</option>
+                <option value="withdraw_fee_max_bps">Withdraw fee ceiling (bps)</option>
+              </select>
+              <input class="amt-input" id="propValue" type="number" min="0" step="1" placeholder="New value, e.g. 64" aria-label="New value" />
+            </div>
+            <button class="btn btn-primary full" id="btnPropose">Create proposal</button>
+          </details>
+          <div class="card-note">Your validator-chamber vote weight = your bonded stake; each vote is ML-DSA
+            signed by your spend key (which never leaves this device). A proposal enacts only when BOTH chambers
+            (miners &perp; validators) reach 2/3 — anti-capture by design.</div>
+        </section>
+      </div>
+
+      <!-- BUY/SELL: mint USDm (deposit BTC/XMR) OR burn USDm (release BTC/XMR) via the ≥150% PQ-FROST PSM reserve. -->
+      <div class="view" data-view="buy">
+        <div class="view-head"><h1 id="buySellTitle">Buy USDm</h1><div class="view-sub" id="buySellSub">Atomic swap · send BTC or XMR, get USDm</div></div>
+        <section class="card buy-card">
+          <!-- Buy = mint (deposit → USDm) · Sell = burn (USDm → deposit released). One toggle, both directions. -->
+          <div class="seg buy-mode-seg" id="buyModeSeg">
+            <button class="seg-btn active" data-mode="buy">Buy</button>
+            <button class="seg-btn" data-mode="sell">Sell</button>
+            <button class="seg-btn" data-mode="sat">Trade SAT</button>
+            <button class="seg-btn" data-mode="earn">Earn</button>
+          </div>
+          <!-- ⭐ EARN: deposit SAT into a pool and earn its trading fees; withdraw your share and your income at any Earn batch. -->
+          <div id="earnForm" class="hidden">
+            <div class="seg buy-seg" id="earnCoinSeg" role="group" aria-label="Which pool">
+              <button class="seg-btn active" data-coin="BTC"><span class="buy-asset-mark">₿</span> SAT / Bitcoin</button>
+              <button class="seg-btn" data-coin="XMR"><span class="buy-asset-mark">ɱ</span> SAT / Monero</button>
+            </div>
+            <div class="buy-amount-field">
+              <span class="buy-amount-label">You deposit</span>
+              <input class="buy-amount-input" id="earnAmount" type="number" min="0" step="0.0001" placeholder="0.00" />
+              <span class="buy-amount-unit">SAT</span>
+            </div>
+            <div class="buy-receive" id="earnReceive">Enter how much SAT to deposit to see what it earns.</div>
+            <button class="btn btn-primary full buy-go" id="btnEarnGo">Deposit SAT</button>
+            <div class="settings-rows buy-rows" id="earnRows"></div>
+            <div class="field-label earn-head">Your positions</div>
+            <div class="settings-rows buy-rows" id="earnPositionRows"><div class="settings-empty">No positions yet. A deposit becomes one once its batch clears.</div></div>
+            <div class="card-note buy-note">Half of a deposit is sold for the pool's coin in the next batch; the rest joins the pool with it, so your share earns every trade's fee. Withdraw any time: it pays out at the pool's next Earn batch (one in every eight), your share in SAT and the coin plus the income it earned. The chain shows only each batch's price — never who deposited, how much, or when.</div>
+          </div>
+          <div id="satForm" class="hidden">
+            <div class="seg buy-seg" id="satCoinSeg" role="group" aria-label="Which pool">
+              <button class="seg-btn active" data-coin="BTC"><span class="buy-asset-mark">₿</span> SAT / Bitcoin</button>
+              <button class="seg-btn" data-coin="XMR"><span class="buy-asset-mark">ɱ</span> SAT / Monero</button>
+            </div>
+            <div class="sat-chart" id="satChart">
+              <div class="sat-chart-head">
+                <div>
+                  <div class="sat-chart-price" id="satChartPrice">—</div>
+                  <div class="sat-chart-sub" id="satChartSub">Reading the pool…</div>
+                </div>
+                <div class="seg sat-chart-unit" id="satUnitSeg" role="group" aria-label="Price unit">
+                  <button class="seg-btn active" data-unit="USD">USD</button>
+                  <button class="seg-btn" data-unit="COIN" id="satUnitCoin">BTC</button>
+                </div>
+              </div>
+              <div class="sat-chart-plot" id="satChartPlot" tabindex="0" role="img" aria-label="SAT price over time"></div>
+              <div class="sat-chart-ranges" id="satRangeSeg" role="group" aria-label="Time range">
+                <button class="sat-range" data-range="3600">1H</button>
+                <button class="sat-range active" data-range="86400">1D</button>
+                <button class="sat-range" data-range="604800">1W</button>
+                <button class="sat-range" data-range="2592000">1M</button>
+                <button class="sat-range" data-range="31536000">1Y</button>
+                <button class="sat-range" data-range="0">ALL</button>
+              </div>
+              <details class="sat-chart-table"><summary>Price table</summary><div id="satChartTable"></div></details>
+            </div>
+            <div class="seg buy-seg" id="satSideSeg" role="group" aria-label="Buy or sell SAT">
+              <button class="seg-btn active" data-side="buy">Buy SAT</button>
+              <button class="seg-btn" data-side="sell">Sell SAT</button>
+            </div>
+            <div class="buy-amount-field">
+              <span class="buy-amount-label" id="satAmountLabel">You deposit</span>
+              <input class="buy-amount-input" id="satAmount" type="number" min="0" step="0.01" placeholder="0.00" />
+              <span class="buy-amount-unit" id="satAmountUnit">USD</span>
+              <button class="buy-unit-toggle" id="satUnitToggle" type="button" title="Switch between entering dollars or the coin">⇅</button>
+            </div>
+            <div class="buy-receive" id="satReceive">Enter an amount to see what you'll receive.</div>
+            <textarea class="addr-input hidden" id="satPayout" rows="2" spellcheck="false" placeholder="Your Bitcoin address to receive the coin"></textarea>
+            <div id="buySatMaxRow">
+              <div class="field-label">Maximum price</div>
+              <select class="amt-input" id="buySatMax" aria-label="The most this order will pay per SAT">
+                <option value="0">Up to 2% above the last price</option>
+                <option value="1" selected>Up to 10% above the last price</option>
+                <option value="2">Up to 50% above the last price</option>
+                <option value="3">No maximum</option>
+              </select>
+              <div class="card-note">Protects this order only — the SAT price itself has no ceiling. Above your maximum the order does not fill and your coin comes back in full.</div>
+            </div>
+            <button class="btn btn-primary full buy-go" id="btnSatGo">Buy SAT</button>
+            <div class="settings-rows buy-rows hidden" id="satOrderRows"></div>
+            <div class="settings-rows buy-rows" id="satRows"></div>
+            <div class="card-note buy-note">Anyone can buy or sell at any time against the pool. Every trade in a batch gets the one price the batch clears at; the chain shows only that price, never who traded or how much.</div>
+          </div>
+          <div id="buyForm">
+            <div class="buy-amount-field">
+              <span class="buy-amount-label">You deposit</span>
+              <input class="buy-amount-input" id="buyAmount" type="number" min="0" step="0.01" placeholder="0.00" />
+              <span class="buy-amount-unit" id="buyAmountUnit">USD</span>
+              <button class="buy-unit-toggle" id="buyUnitToggle" type="button" title="Switch between entering a USD amount or a crypto amount">⇅</button>
+            </div>
+            <div class="buy-receive" id="buyReceiveCalc">Enter a deposit amount to see how much USDm you'll receive.</div>
+            <div class="field-label buy-paywith">Pay with</div>
+            <div class="seg buy-seg" id="buyAssetSeg">
+              <button class="seg-btn active" data-asset="BTC"><span class="buy-asset-mark">₿</span> Bitcoin</button>
+              <button class="seg-btn" data-asset="XMR"><span class="buy-asset-mark">ɱ</span> Monero</button>
+            </div>
+            <div class="field-label buy-paywith">You get</div>
+            <div class="seg buy-seg" id="buyGetSeg">
+              <button class="seg-btn active" data-get="USDM">USDm</button>
+              <button class="seg-btn" data-get="COIN" id="buyGetCoin">Monero</button>
+            </div>
+            <textarea class="addr-input hidden" id="buyPayoutAddr" rows="2" spellcheck="false" placeholder="Your Monero address to receive the swap"></textarea>
+            <button class="btn btn-primary full buy-go" id="btnBuyQuote">Generate swap address</button>
+            <div class="settings-rows buy-rows" id="buyRows"><div class="settings-empty">Enter an amount — you'll get a reserve deposit address to send your crypto to.</div></div>
+            <div class="card-note hidden" id="addMoneyCosts"></div>
+            <div class="card-note buy-note">Your crypto goes to a <b>PQ-FROST reserve</b> no single party controls — a
+              threshold quorum of bonded validators. USDm mints to your wallet automatically when your deposit confirms.
+              Backed <span id="buyBackingBadge">150%</span>, governance-set. Nothing is charged beyond what you swap.</div>
+          </div>
+          <div id="sellForm" class="hidden">
+            <div class="buy-amount-field">
+              <span class="buy-amount-label">You sell</span>
+              <input class="buy-amount-input" id="sellAmount" type="number" min="0" step="0.00000001" placeholder="0.00" />
+              <span class="buy-amount-unit">USDm</span>
+            </div>
+            <div class="buy-receive" id="sellReceiveCalc">Enter a USDm amount to see how much crypto you'll receive.</div>
+            <div class="field-label buy-paywith">Receive</div>
+            <div class="seg buy-seg" id="sellAssetSeg">
+              <button class="seg-btn active" data-asset="BTC"><span class="buy-asset-mark">₿</span> Bitcoin</button>
+              <button class="seg-btn" data-asset="XMR"><span class="buy-asset-mark">ɱ</span> Monero</button>
+            </div>
+            <div class="field-label">Pay to</div>
+            <div class="seg buy-seg" id="sellDestSeg">
+              <button class="seg-btn active" data-dest="vault" title="A fresh address of this wallet's own Bitcoin vault for every piece — never reused">My vault (fresh addresses)</button>
+              <button class="seg-btn" data-dest="outside">An outside address</button>
+            </div>
+            <textarea class="addr-input hidden" id="sellPayoutAddr" rows="2" spellcheck="false" placeholder="Your BTC address to receive the payout (reusing an address links your pieces)"></textarea>
+            <div class="buy-toggle auto-opsec-row" id="sellOpsecRow"><span class="auto-opsec-state" id="sellOpsecState">Auto-OPSEC: on</span>
+              <button type="button" class="chip" id="sellOpsecToggle">Turn off</button>
+              <span class="buy-toggle-hint" id="sellOpsecHint">Each piece pays in a random batch within 24 hours, among many same-size payouts, to a fresh address — automatically.</span></div>
+            <button class="btn btn-primary full buy-go" id="btnSellUsdm">Cash out</button>
+            <div class="settings-rows buy-rows" id="sellRows"></div>
+            <div id="cashOutPlans" class="cashout-plans"></div>
+            <div class="card-note buy-note">Cashing out <b>burns</b> your USDm in standard-size pieces (a real PQ nullifier
+              spend per piece, ML-DSA signed on this device) and the <b>PQ-FROST reserve quorum</b> pays each piece to its
+              own fresh address in a random batch — no single party controls it, nothing links your pieces to your deposit,
+              and the USDm supply falls by exactly what you cash out. Anything below the smallest piece stays USDm.</div>
+          </div>
+        </section>
+        <div id="swapHistory" class="swap-history"></div>
+      </div>
+
+      <!-- BROWSER / LAUNCHPAD — the MoneroUSD Launchpad, IMPORTED verbatim from the old pre-greenfield wallet
+           (build-1261/renderer, user-authorized 2026-07-18): same browser-card chrome + launchpad hero + verified-dApp
+           card grid. Only the BACKEND is swapped to the node's WHIR-only PQ tech — the apps are served node-first by
+           this wallet's OWN node (sovereign hosting), clearnet is the fallback. Design unchanged. -->
+      <div class="view" data-view="browser">
+        <div class="browser-card">
+          <div class="browser-bar">
+            <span class="browser-status-dot" id="browserStatusDot"></span>
+            <button class="browser-btn" id="browserBack" title="Back" aria-label="Back">&#8592;</button>
+            <button class="browser-btn" id="browserForward" title="Forward" aria-label="Forward">&#8594;</button>
+            <button class="browser-btn" id="browserReload" title="Reload" aria-label="Reload">&#x21bb;</button>
+            <button class="browser-btn browser-btn-sov-home" id="browserSovHome" title="Sovereign — search the Veil">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6l8-4z"/>
+                <path d="M9 12l2 2 4-4"/>
+              </svg>
+              <span class="browser-btn-home-label">Sovereign</span>
+            </button>
+            <button class="browser-btn browser-btn-home" id="browserHome" title="Home — MoneroUSD Launchpad">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M3 10l9-7 9 7v10a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-5h-2v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V10z"/>
+              </svg>
+              <span class="browser-btn-home-label">Launchpad</span>
+            </button>
+            <input class="browser-url input" id="browserUrl" type="text" aria-label="Address"
+                   title="Enter an address or a .mud name" placeholder="Launchpad" inputmode="url" enterkeyhint="go"
+                   spellcheck="false" autocomplete="off" autocapitalize="off" />
+            <button class="btn btn-primary btn-sm" id="browserGo">Go</button>
+            <span class="browser-badge" id="browserConnBadge" hidden>Connected</span>
+          </div>
+          <div class="browser-viewport" id="browserViewport"></div>
+        </div>
+      </div>
+
+      <!-- SETTINGS: live wallet + node facts (never cached) + the real key-wiping Lock. -->
+      <div class="view" data-view="settings">
+        <div class="view-head"><h1>Settings</h1><div class="view-sub">Wallet &amp; node · read fresh from the core</div></div>
+        <section class="card">
+          <div class="settings-rows" id="settingsRows"><div class="settings-empty">Loading…</div></div>
+          <div class="settings-row auto-opsec-row"><span class="settings-k">Auto-OPSEC</span><span class="settings-v" id="settingsOpsecState">on</span>
+            <button type="button" class="chip" id="settingsOpsecToggle">Turn off</button></div>
+          <div class="settings-row" id="settingsNetworkRow"><span class="settings-k">Network</span><span class="settings-v" id="settingsNetworkState">Automatic</span>
+            <span class="seg" id="settingsNetworkSeg">
+              <button type="button" class="seg-btn active" data-network="auto" title="Uses Tor and our own network, and moves between them by itself">Automatic</button>
+              <button type="button" class="seg-btn" data-network="tor">Tor only</button>
+              <button type="button" class="seg-btn" data-network="own">Our network only</button>
+            </span></div>
+          <div class="settings-row"><span class="settings-k">Support the team</span><span class="settings-v" id="settingsSupportState">off</span>
+            <button type="button" class="chip" id="settingsSupportToggle">Turn on</button></div>
+          <div class="card-note">Optional: adds 0.10% to each send you make ($0.10 on $100) to fund MonerousD's development.
+            Paid privately with the wallet's other fees once a week — nothing on chain shows you opted in. Stays as you set it.</div>
+          <!-- SITE HOSTING (MonerousD Veil): what this wallet's own node holds for the network's sites, against its budget. -->
+          <div class="settings-row"><span class="settings-k">Site hosting</span><span class="settings-v" id="settingsVeilHost">—</span></div>
+          <!-- PROOF OF INCOME (user 2026-11-10): one switch. On: what this wallet was paid and holds, live, and a proof
+               of it whenever its owner asks. Off: the app never asks the core for either. -->
+          <div class="settings-row"><span class="settings-k">Proof of income</span><span class="settings-v" id="settingsIncomeState">off</span>
+            <button type="button" class="chip" id="settingsIncomeToggle">Turn on</button></div>
+          <div class="income-box" id="incomeBox" hidden>
+            <div class="income-top">
+              <div class="income-sum"><b id="incomeTotal">$0.00</b><span id="incomeCount">received and held</span></div>
+              <button type="button" class="btn btn-primary" id="btnIncomeProof">Get proof</button>
+            </div>
+            <div class="income-latest" id="incomeLatest"></div>
+            <div class="income-form" id="incomeForm" hidden>
+              <input class="amt-input" id="incomeContext" type="text" maxlength="80" placeholder="Who it is for, in their words (Loan application 7781)" />
+              <input class="amt-input" id="incomeVerifierKey" type="text" spellcheck="false" placeholder="Their verifier key. Leave empty and anyone can check it." />
+              <button type="button" class="btn btn-primary full" id="btnIncomeMake">Create proof and copy it</button>
+            </div>
+            <div class="card-note" id="incomeStatus"></div>
+            <details class="income-check">
+              <summary>Check a proof someone sent you</summary>
+              <input class="amt-input" id="incomeLabel" type="text" maxlength="60" placeholder="A name for who you are checking" />
+              <button type="button" class="btn btn-ghost full" id="btnIncomeKey">Create my verifier key for them and copy it</button>
+              <textarea class="addr-input" id="incomeToCheck" rows="2" spellcheck="false" placeholder="Paste their proof"></textarea>
+              <button type="button" class="btn btn-ghost full" id="btnIncomeCheck">Check it</button>
+              <div class="card-note" id="incomeCheckStatus"></div>
+            </details>
+          </div>
+          <div class="card-note m-help" id="settingsIncomeNote">Off unless you turn it on, and off again each time the wallet opens. While it is on, this wallet works out what you
+            were paid and still hold, and can make a proof of it. That costs some privacy: whoever you give a proof to learns those amounts.
+            While it is off, nothing about your income is worked out at all.</div>
+          <button class="btn btn-ghost full" id="btnViewSeed">View recovery seed</button>
+          <div id="viewSeedBox" class="hidden" style="margin:8px 0; padding:10px; border:1px solid var(--warn); border-radius:8px; font-family:monospace; word-break:break-word; user-select:all;"></div>
+          <button class="btn btn-ghost full" id="btnLock">Lock wallet</button>
+        </section>
+        <!-- §BR-10: updates — offered only when three independent builders attest one release; always the user's choice. -->
+        <div class="panel-head"><span>Updates</span></div>
+        <section class="card" id="updateCard">
+          <div class="settings-row"><span class="settings-k">This wallet</span><span class="settings-v" id="updateState">checking…</span></div>
+          <div class="card-note" id="updateNotes"></div>
+          <div class="card-note" id="updateRules"></div>
+          <button class="btn full hidden" id="btnDownloadRelease">Download over Tor</button>
+          <button class="btn full hidden" id="btnOpenRelease">Open installer</button>
+          <button class="btn btn-ghost full hidden" id="btnVerifyRelease">Check a downloaded release</button>
+          <div class="send-status" id="updateStatus"></div>
+        </section>
+        <!-- DB-329 step 3: this seed's devices — each device writes its change in its own slot, so two devices never
+             link each other's payments. Adds happen on the FIRST device (slot 0); the new device claims the slot. -->
+        <div class="panel-head"><span>Devices on this seed</span></div>
+        <section class="card">
+          <div class="settings-rows" id="deviceSlotRows"><div class="settings-empty">Loading…</div></div>
+          <button class="btn btn-ghost full" id="btnAddDevice">Add a device</button>
+          <div class="send-status" id="addDeviceStatus"></div>
+          <div class="card-note">To use this seed on a second phone or computer at the same time, press
+            <b>Add a device</b> here on your first device, wait until it confirms, then restore the seed on the new
+            device: it claims its own slot, so the two devices never link each other's payments. Restoring the seed
+            with no add waiting makes that device your <b>primary</b>; do not keep using this seed on the old primary
+            device after that.</div>
+        </section>
+        <div class="panel-head"><span>Verify all funds (sound scan)</span></div>
+        <section class="card">
+          <button class="btn btn-primary full" id="btnVerifyFunds">Verify all funds</button>
+          <pre class="addr-box" id="verifyFundsOut" style="display:none">—</pre>
+          <div class="card-note">Your everyday balance is a fast preview that trusts each note's detection clue to
+            skip work. This runs the <b>authoritative</b> scan: it decapsulates every served note locally and
+            ignores the clue, so no corrupted or withheld clue — from a sender or a node — can hide a note you own.
+            Your scan key never leaves this device.</div>
+        </section>
+      </div>
+
+    </section>
+  </main>
+
+  <!-- Sovereign, the MonerousD Veil browser and publisher (pages/sovereign.js). Loaded before app.js so
+       window.initSovereignHostingPage exists when the launchpad's Sovereign tile is clicked. -->
+  <script src="pages/sovereign.js"></script>
+  <script src="goods.js"></script>
+  <script src="app.js"></script>
+  <script src="mobile.js"></script>
+  <script src="motion.js"></script>
+  <script src="gov.js"></script>
+</body>
+</html>

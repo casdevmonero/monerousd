@@ -1,0 +1,311 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root)
+#
+# usdmd-node — the MonerousD GREENFIELD node. ZK + PoUW + GHOSTDAG-DAG shape, PQ base layer,
+# libp2p onion "iron mesh" transport. Reuses the crown-jewel Rust crates we already own
+# (pqpool = STARK/decider/AIRs, libp2p_ffi = onion mesh); it does NOT depend on the Monero
+# C++ cryptonote_core / levin daemon — that monolith is left behind (it was the drift source).
+[package]
+name = "usdmd-node"
+version = "0.1.0"
+edition = "2021"
+# Pin the toolchain floor so the MSRV-aware resolver (see .cargo/config.toml) auto-selects dependency versions
+# that build on our rustc 1.89 — arti 0.43's onion-SERVICE tree otherwise pulls deps that demand rustc 1.90.
+rust-version = "1.89"
+description = "MonerousD node: a post-quantum, private GHOSTDAG block-DAG with WHIR proofs, a Poseidon2 proof-of-useful-work kernel and Tor v3 onion transport."
+license = "Apache-2.0"
+
+# ⭐ THE NODE'S WORKSPACE (node split stage B, lane dcash 2026-11-11): this package and the ledger crate it depends on (ledger/,
+# whose sources are this crate's src/ files compiled in place). Every other crate under this directory keeps its own build:
+# the vendored Plonky3 workspace, the census derive macro, the fuzz crate, the Kani proofs and the models.
+[workspace]
+members = ["ledger"]
+exclude = ["vendor", "node-census-derive", "fuzz", "kani-proofs", "models"]
+
+[lib]
+name = "usdmd_node"
+path = "src/lib.rs"
+
+[[bin]]
+name = "usdmd-node"
+path = "src/main.rs"
+
+# Live-mesh TX flood (#14): grinds each carrier's #72 stamp (blake3) and POSTs real PQ carriers into a live
+# node's /submit_pq_tx, measuring the true sustained admission rate. Pure blake3 + std::net (no heavy features).
+[[bin]]
+name = "tx_flood"
+path = "src/bin/tx_flood.rs"
+
+# The real-node checks' signer: prints what an operator or a watchtower would post, signed with a node's own seat key.
+[[bin]]
+name = "net_signer"
+path = "src/bin/net_signer.rs"
+
+# The Ethereum vault adapter against a real Ethereum virtual machine: the check scratchpad/net/eth_vault.py raises a local
+# chain (Foundry's anvil) and this deploys the vault, deposits, pays, attacks and hands over through the node's own code.
+[[bin]]
+name = "eth_vault_check"
+path = "src/bin/eth_vault_check.rs"
+
+# Attacks a running node's mix layer as a real neighbour would: scripts/mix/mix_attacks.py reads the node's own refusals.
+[[bin]]
+name = "mix_attack"
+path = "src/bin/mix_attack.rs"
+required-features = ["arti-onion"]
+
+[features]
+# DEFAULT = the UNIVERSAL node — ONE wire protocol on EVERY device (user 2026-07-14: "the merge must happen
+# automatically on two separate devices"). The mesh transport is the arti Tor v3 `.onion` CellTransport —
+# fixed-size PQ-authed cells + #29 DSYNC verify-once adopt — the SAME code path the phone's in-process node
+# rides, so a desktop daemon and a phone auto-join and CONVERGE by construction. The classical libp2p FFI
+# overlay (multistream/gossipsub) is RETIRED from the default: it was a SECOND, incompatible wire protocol
+# (borrowed classical p2p) that made cross-device merge impossible — a desktop on libp2p and a phone on cells
+# could never exchange a block, and uniform cells are also the traffic-shape-private wire (no negotiation
+# fingerprint, no peer-id metadata). ZK verify is the pure-Rust `usdm-decider` WHIR light decider — ONE
+# canonical construction on EVERY device (desktop daemon, desktop wallet in-process, iPhone in-process), so a
+# proof served by ANY node verifies on EVERY node. The retired pqpool STARK-era FFI (`libpqpool_ffi.dylib`) is
+# DELETED — never linked, never reachable (user 2026-07-14: "stark is retired and monerousd should be 100
+# percent whir"). `pq-randomx` is likewise the DEFAULT PoUW kernel on every device (pure-Rust Poseidon2 — no
+# librandomx.a, no C++ RandomX cache/dataset RAM): desktop and phone grind + verify the IDENTICAL puzzle, a
+# consensus precondition for cross-device convergence. Chain identity is genesis/consensus, not transport: a
+# datadir-resumed node continues the SAME chain over the cell wire.
+default = ["arti-onion", "pins-core", "pins-node", "pins-harness"]
+# TEST FAMILIES (2026-10-22, scratchpad/refactor/gate_tests.py): the test mass is 51 % of the crate; a pin run
+# builds only its family (`--no-default-features --features arti-onion,<family>`); a plain `cargo test` builds all.
+pins-core = ["usdm-ledger/pins-core"]
+pins-node = ["usdm-ledger/pins-node"]
+pins-harness = ["usdm-ledger/pins-harness"]
+# `bridge-test-oracle` — DEV/TEST ONLY (never in a shipped release): exposes `btc_watch::inject_confirmed_for_test`
+# so the Buy-USDm mint gate can be driven e2e WITHOUT sending real BTC/XMR (no funds-loss risk). The deposit-
+# confirmation gate itself stays REAL; this only supplies the confirmation the live on-chain watcher would read.
+# Off by default, so a production build has no free-mint bypass.
+bridge-test-oracle = ["usdm-ledger/bridge-test-oracle"]
+# `bench-routes` — DEV/BENCH ONLY (never in a shipped release): the three on-demand measurement routes
+# (`/xsender_recursive_settle`, `/settled_tps_bench`, `/admission_drop_bench`). Each runs seconds of proving or a re-verify
+# of the whole mempool on an UNAUTHENTICATED GET, so on a public node one request per second is a CPU-exhaustion door.
+# Off by default: a shipped node answers them 404. The measurements themselves stay (the scripts build with this feature,
+# and the decider's `xsender_recursive_settle` bin measures the settle side standalone).
+bench-routes = []
+# `libp2p-onion-ffi` — link the prebuilt `libp2p_ffi` cdylib (the REAL Tor .onion gossip mesh,
+# onion_transport::OnionTransport). Default-ON for the native node. With it OFF (pure-Rust / iOS) the in-process
+# node peers over the wallet's embedded arti Tor — onion-only preserved on BOTH paths, only the impl differs.
+libp2p-onion-ffi = []
+# SHARED-KERNEL PQ-PoUW (docs/POUW_SHARED_KERNEL_DESIGN.md): a memory-hard PoW hash whose ONLY compute
+# primitive is the prover's OWN Poseidon2-KoalaBear permutation (pure Rust, no FFI, no JIT → iOS-safe). Mining
+# hardware == proving hardware: a Poseidon2 speedup wins more blocks AND proves WHIR faster. This is now the
+# SOLE PoW puzzle (`crate::pow_pq_kernel`, deps `p3-koala-bear`/`p3-symmetric` non-optional) — the classical C
+# RandomX fallback + its `pq-randomx` feature were REMOVED (user 2026-07-14: "remove the classical pow fallback").
+# `arti-onion` — the PURE-RUST Tor v3 .onion mesh transport (arti 0.43). Each node HOSTS its OWN onion service
+# (its dialable `.onion`) AND dials peers' `.onion` services, moving fixed-size CELL_SIZE cells over Tor streams:
+# the iOS-safe, C-dylib-free replacement for `libp2p-onion-ffi`, so a phone/desktop node JOINS THE REAL MESH
+# (never a loopback island). Onion-only preserved by construction — the wire is a Tor v3 `.onion`, never an IP.
+arti-onion = ["dep:arti-client", "dep:tor-hsservice", "dep:tor-cell", "dep:tor-proto", "dep:tor-rtcompat", "dep:tokio", "dep:futures", "dep:safelog", "dep:tracing", "dep:tracing-subscriber"]
+
+# ⭐⭐⭐ THE ALLOCATOR IS A DELIBERATE CHOICE, NOT A DEFAULT (2026-09-16, §CR).
+#
+# ⛔⛔⛔ MEASURED: a producing node's resident set climbed to 426 MB at height 428 and sawtoothed
+# 130-490 MB, while its own `/ram_census` accounted for under 10 MB. `vmmap -summary` named the holder:
+# `MALLOC_LARGE (empty)` — 274 MB of virtual, **227.7 MB RESIDENT**, across 33 regions. "(empty)" is
+# vmmap's word for pages the allocator has FREED and not returned to the OS. The node's chain state is
+# O(1)-bounded; what was not bounded was the system allocator's retention of the WHIR prover's large
+# per-block traces.
+#
+# jemalloc purges dirty pages on a decay timer with a background thread, which is exactly the behaviour
+# libmalloc's large-allocation cache does not have. Every serious node picks its allocator for this
+# reason (Bitcoin Core, Firefox, Solana) — borrowed shape, not a new idea. It changes no consensus rule,
+# no wire format and no gate: it changes when freed pages go back to the operating system.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
+
+[dependencies]
+# the ledger crate (node split stage B): its features follow this crate's, never its own defaults
+usdm-ledger = { path = "ledger", default-features = false }
+zeroize = { version = "1", features = ["derive"] }  # wipe secret key material (OMR clue secret)
+# socket2: SO_REUSEADDR on the loopback RPC bind so a RESTARTED node RECLAIMS its own port from a
+# TIME_WAIT socket a just-killed prior instance left behind (std TcpListener does not set it → the node
+# used to see its port as "busy" and silently DRIFT to the next port + a DIFFERENT snapshot/onion — a
+# self-inflicted chain-identity fork on restart). A genuinely LIVE second listener still fails the bind
+# (SO_REUSEADDR ≠ SO_REUSEPORT), so a real second node still auto-selects — only stale sockets are reclaimed.
+socket2 = "0.5"
+# blake3: fast, PQ-safe content hash for block ids / merkle / state roots. NOT the PoUW hash
+# (that is RandomX + the #73 non-outsourceable bind, computed in the consensus layer, brick 6).
+blake3 = "1"
+# Keccak-256 (original padding, NOT NIST SHA3) — the 4-byte checksum in the PQ stealth-address codec
+# (crate::address). Matches the wallet's @noble keccak_256 so a node-served epoch address decodes byte-for-byte.
+sha3 = "0.10"
+# secp256k1 (RustCrypto, pure-Rust) — the EXTERNAL Bitcoin bridge-custody curve for the Buy-USDm taproot
+# deposit address AND, since DB-121 (2026-09-20), the reserve CUSTODY SIGNER: a taproot output is spendable by
+# Bitcoin's own BIP-340 signature and nothing else, so each bonded custodian node signs the payout leg with its
+# own key (`crate::btc_tx`, k-of-n `OP_CHECKSIGADD` — independent signatures, no signing session). Used ONLY at
+# the external bridge endpoint (crate::bridge / crate::btc_tx), NEVER in the MonerousD post-quantum base layer.
+k256 = { version = "0.13", default-features = false, features = ["arithmetic", "schnorr", "ecdsa"] } # CLASSICAL-CRYPTO-EXEMPT: Bitcoin's own BIP-340 signature is the ONLY thing that spends the BTC reserve, and Ethereum's own signature the only thing its vault contract can check (src/eth_vault.rs) — a foreign chain admits no post-quantum primitive (user 2026-09-20: external chain work that only allows classical crypto)
+# SHA-256 — the BIP340/341 taproot tagged-hash tweaks for the deposit address (bridge endpoint only).
+sha2 = "0.10"
+# §22 6: hash160 for the bundled Bitcoin watcher's sender scripts (foreign-chain data; rust-bitcoin's audited hash crate)
+bitcoin_hashes = "0.14"
+# The EXTERNAL Monero (CryptoNote) bridge-custody curve — the four-pillar standard's SOLE external-bridge carve-out
+# (the exact analog of k256 for the BTC leg). The MonerousD base layer / consensus / wallet stay 100% post-quantum;
+# this curve appears ONLY at crate::bridge to node-compute a TRUSTLESS t-of-n key-aggregate Monero reserve address.
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc"] } # CLASSICAL-CRYPTO-EXEMPT / CLASSICAL-BRIDGE-ENDPOINT: Ed25519 external Monero bridge-custody curve; base layer stays post-quantum
+# CLASSICAL-BRIDGE-ENDPOINT: HTTP client for the BTC/XMR deposit WATCHER — each validator INDEPENDENTLY reads
+# the external chain's PUBLIC confirmed-balance data (Esplora API) for the reserve address, so USDm mints ONLY
+# after a real on-chain deposit confirms. `socks-proxy` lets the query egress over Tor (MONEROUSD_TOR_SOCKS) so
+# the bridge watch is private too. No key, no classical crypto in the MonerousD base layer — read-only chain data.
+# T1 (2026-10-28): NO TLS stack behind ureq — every ureq caller is loopback (Bitcoin Core / monerod on this machine, the
+# regtest journey) or an `.onion` over the Tor SOCKS proxy (the Esplora onions in btc_watch); a clearnet https host is refused
+# at each caller, so the TLS feature only ever offered a path the design forbids.
+ureq = { version = "2", default-features = false, features = ["json", "socks-proxy"] }
+# THE ONE TLS CRYPTO PROVIDER (lane funds-brb29, 2026-11-01). MEASURED on a real-process journey (usdmd_journey_tapjoin_58648
+# n0/node.log): the onion thread panicked in rustls 0.23.42 `crypto/mod.rs:249` — "Could not automatically determine the
+# process-level CryptoProvider from Rustls crate features" — because the lock graph enables NEITHER `ring` nor `aws-lc-rs`
+# on rustls (arti's own `rustls` feature no longer selects one), so no node could publish its onion and every live journey
+# failed "0 of 2 nodes published an onion within 600 s". ring is the one provider (no aws-lc-rs: no C/asm build, one
+# implementation), installed explicitly at process start (`arti_transport::install_tls_provider`) — never left to feature
+# unification. Not a pillar: TLS here is Tor's transport layer, inside onion circuits.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# Parse the Esplora address JSON (chain_stats.funded_txo_sum) at the bridge watcher. Already in the tree via
+# ureq's `json` feature; named directly here so btc_watch can read the confirmed-sats field.
+serde_json = "1"
+pqcrypto-mldsa = "0.1.2"
+pqcrypto-mlkem = "0.1.1"
+# FIPS 203 SEEDED keygen (KeyGen_internal(d, z)): a seed-provisioned validator derives its custody ML-KEM from its
+# seed-derived vote key on the node, so no decapsulation key ever crosses the wire (validator::provision_identity).
+# Inside the wallet workspace this resolves to the vendored, API-identical copy ([patch.crates-io]).
+fips203 = "0.4"
+pqcrypto-traits = "0.3.5"
+serde = { version = "1", features = ["derive"] }
+# postcard: the compact, no_std-friendly wire format the rest of MonerousD uses (parity). Serializes
+# the #29 DSYNC SyncBundle for onion transport; a corrupt/truncated frame fails-closed to None.
+postcard = { version = "1", features = ["use-std"] }
+thiserror = "1"
+# SHARED-KERNEL PQ-PoW (feature `pq-randomx`, the default): the prover's OWN Poseidon2-KoalaBear permutation,
+# as pure-Rust path deps (the SAME crates usdm-decider proves with — no cdylib, fast compile).
+p3-koala-bear = { path = "vendor/Plonky3/koala-bear" }
+# p3-field is UNCONDITIONAL: the always-on `whir_decider` module (the node's one proof surface) uses its
+# field traits directly, independent of the PoUW-kernel feature.
+p3-field = { path = "vendor/Plonky3/field" }
+p3-symmetric = { path = "vendor/Plonky3/symmetric" }
+# usdm-decider: the pure-Rust WHIR light decider + the task-#144 cross-sender recursive verifier — THE node's
+# one-and-only proof engine (whole-chain adopt gate, direct spend gate, coinbase pow-bind), on every device.
+usdm-decider = { path = "vendor/Plonky3/usdm-decider" }
+# usdm-agg: the level aggregate's proof tree on the SSA row (docs/LEVEL-AGGREGATE-SPEC-20261115.md §13), called from
+# src/agg_root.rs only — leaves, merges and the native root check over payments' statements.
+usdm-agg = { path = "vendor/Plonky3/usdm-agg" }
+
+# PURE-RUST Tor v3 .onion mesh transport (feature `arti-onion`, src/arti_transport.rs). arti hosts our onion
+# service + dials peers' `.onion` — no C dylib, cross-compiles to iOS. Optional so the default (FFI) build stays
+# lean; all crates are one arti-0.43 release so versions resolve together.
+# T1 (2026-10-28): Tor's link layer needs a TLS implementation (OR connections are TLS to relays — the onion overlay's own
+# substrate, never a clearnet service). rustls, pulled by the Tor stack ALONE: the hole scanner walks the lock graph and proves it.
+arti-client = { version = "0.43.0", default-features = false, features = ["tokio", "rustls", "onion-service-client", "onion-service-service"], optional = true }
+tor-hsservice = { version = "0.43.0", optional = true }
+# ⛔ TOR MUST NOT BE A BLACK BOX. arti reports circuit / guard / intro-point / descriptor-upload failures through
+# `tracing`, and with NO subscriber installed every one of them was DISCARDED — which is why a 900s onion stall
+# was unattributable for weeks and I burned whole runs guessing at it. Optional + tied to the same feature as
+# arti, so a build without onion transport pulls neither.
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], optional = true }
+tor-cell = { version = "0.43.0", optional = true }
+tor-proto = { version = "0.43.0", optional = true }
+libc = "0.2"
+# lane d 2026-10-27: every OS call the node makes goes through `oscall` by a SAFE wrapper crate — no `unsafe` in the
+# shipping tree (the hole scanner's memory-unsafe class). nix: fd path / dup2 / umask / thread clock / syslog / kill;
+# signal-hook: the TERM flag (sigaction via signal-hook-registry, the registry tokio's own signal driver uses);
+# memory-stats: the resident set. cons: three locked crates; nothing at run time.
+signal-hook = "0.4"
+memory-stats = "1.2"
+tor-rtcompat = { version = "0.43.0", features = ["tokio", "rustls"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "io-util", "macros", "time", "net"], optional = true }
+futures = { version = "0.3", optional = true }
+# arti's safe-logging: HsId (our .onion) renders via DisplayRedacted::display_unredacted (no std Display).
+safelog = { version = "0.8", optional = true }
+
+[dev-dependencies]
+# this crate's TESTS see the ledger's test hooks (what was `cfg(test)` in its production code); a release build never does
+usdm-ledger = { path = "ledger", default-features = false, features = ["test-hooks"] }
+# The confidential-solvency WHIR prover — the PSM bridge e2e harness (tests/psm_bridge_e2e.rs) builds REAL
+# peg-in / peg-out carriers with it and drives them through the LIVE node RPC over real loopback HTTP, so the
+# harness exercises the SAME prove→verify path the live custodian orchestrator uses (no mock, no shortcut). It is
+# already a normal dependency (path below); naming it here lets the integration-test crate call the prover directly.
+# `test-support` (2026-09-30, lane-review K1): exposes `prover_fingerprint::prover_source_digest`, the ONE key the node's
+# certificate fixture cache and the decider's prove cache share. Cargo unifies the feature into TEST builds only; no
+# production binary carries the module.
+usdm-decider = { path = "vendor/Plonky3/usdm-decider", features = ["test-support"] }
+# DB-402 R2: the `Node` field census is DERIVED from the struct (test builds only; no production binary carries it).
+node-census-derive = { path = "node-census-derive" }
+# REPLAYABLE NETSIM (lane b 2026-10-24): the PQ C RNG asks a simulated node's seeded stream first
+# (`budget_clock::sim_entropy_fill`); the [patch] below makes the vendored copy the only one. Test builds only call it.
+pqcrypto-internals = "0.2.11"
+
+# ── Dev-profile DEPENDENCY optimization (test-for-production, no strip) ───────────────────────────────────────
+# The WHIR proving crates (usdm-decider + its Plonky3 `p3-*` field/hash deps) are ~45× slower unoptimized: a
+# 256-row nullifier BLOCK carrier proves in ~0.9s at opt-3 but ~45s at opt-0. Optimizing ONLY the DEPENDENCIES
+# (usdmd-node itself stays opt-0 for fast incremental iteration + debuggability) makes `cargo test` run the REAL
+# prove at release speed — so the convergence/produce tests exercise the FULL production nullifier proof (no
+# strip, no mock, no skip-verify, no difficulty-1), not a debug-crippled one. Build-time knob only; the emitted
+# dependency code is byte-identical to release. Honors [[feedback_test_for_production]] + [[feedback_no_thermal_crash_capped_builds]].
+[profile.dev.package."*"]
+opt-level = 3
+# The node crate's OWN hot crypto — the memory-hard PQ-PoUW Poseidon2 kernel (`pow_pq_kernel`, ~35k permutations +
+# a 2MB pad per hash) and the Poseidon frontier/nullifier trees — is opt-0 at `dev` default, which the `package."*"`
+# rule above (dependencies only) does not cover. Measured: one PQ-PoUW hash is 31ms at opt-3 but 867ms at opt-0 (27×),
+# so a convergence test grinding real PoW every block crawls. opt-1 recovers most of the arithmetic speed at a modest
+# compile cost, keeping `cargo test` honest (REAL memory-hard PoW, no difficulty-1 / no strip) AND runnable.
+[profile.dev]
+opt-level = 1
+
+# ⭐⭐⭐ FAST + ACCURATE PINS (user 2026-10-05: "the test/proving of your work should be fast and accurate"; "the long tests are
+# the bug"). MEASURED 2026-10-05 (scratchpad/job-cost.tsv, every node-crate batch that day): a `--release` pin batch spent
+# 328–651 s REBUILDING usdmd-node after a one-line edit and 2–250 s RUNNING its pins (03:33: build 351 s, run 2 s). `release`
+# turns incremental compilation OFF, so every edit recompiled all 216k lines at opt-3.
+# `pin` keeps RELEASE SEMANTICS — debug-assertions OFF and overflow-checks OFF, the code paths production runs (the prover's
+# censuses still run on demand: MONEROUSD_PROVER_ASSERTS=1) — and changes only how the binary is built:
+#   - incremental = true — ⛔ NOT IN EFFECT: `.cargo/config.toml` `[build] incremental = false` (2026-09-11, the disk fill)
+#     overrides it for every profile; MEASURED 2026-11-11, the lanes' pin/incremental dirs held 0 B. An edit rebuilds whole crates;
+#     the node split (usdm-ledger) and the node crate's opt-level 0 are what keep that rebuild short;
+#   - codegen-units = 256: finer reuse and parallel codegen;
+#   - usdm-ledger at opt-level 1 (it holds the PQ-PoUW kernel; the file's own measurement above: opt-1 recovers most of its
+#     opt-3 speed), usdmd-node at opt-level 0 (measured 2026-11-11, below), every DEPENDENCY (usdm-decider, Plonky3, the PQ crates)
+#     at release opt-3, built once and reused.
+# Use: `cargo test --profile pin --lib <filters>` (lane_run.sh profile `pin`). Release stays the production build.
+[profile.pin]
+# MEASURED 2026-10-22 (scratchpad/refactor/compile-probe-ltooff.log): `inherits = "release"` kept cargo's default thin-LOCAL
+# LTO across the 256 codegen units, so every one-line edit re-linked the crate's LTO graph (-Ztime-passes: LLVM_thinlto 102 s,
+# finish_ongoing_codegen 101 s, codegen_crate 86 s per edit). lto = "off": a one-line node.rs edit rebuilds in 106 s instead of
+# 243 s, cold 310 s instead of 714 s, peak RSS 1.69 GB instead of 2.07 GB. Test-build speed only: the release profile is unchanged.
+lto = "off"
+inherits = "release"
+incremental = true
+codegen-units = 256
+
+# ⭐ NODE SPLIT, MEASURED 2026-11-11 (lane dcash, scratchpad levers.sh, 3 cores, one edit in node/value.rs): the node crate's
+# own rebuild is 85 % LLVM code generation (its front end is ~35 s of it). At opt-level 1 it took 198 s; at opt-level 0, 62 s.
+# The reason it was opt-level 1 — the PQ-PoUW kernel and the Poseidon trees — now lives in the ledger crate, which keeps
+# opt-level 1, and the prover is usdm-decider at opt 3; five node pins that prove and fold ran as fast or faster on the opt-0
+# binary (6.6 s vs 7.3 s, 2.5 vs 2.9, 3.6 vs 3.8, 2.0 vs 2.7). Semantics are the profile's (debug-assertions and overflow
+# checks off either way). (Incremental on measured 22 s, but costs 1.5 GB of disk per lane per build shape: not taken.)
+[profile.pin.package.usdmd-node]
+opt-level = 0
+# the ledger crate: the chain's hot crypto (the PoUW kernel: 31 ms per hash at opt 3, 867 ms at opt 0) — opt-level 1
+[profile.pin.package.usdm-ledger]
+opt-level = 1
+
+# The PSM bridge e2e drives the REAL peg-in mint gate without sending real BTC/XMR, which needs the dev-only
+# `bridge-test-oracle` confirmation injector (`btc_watch::inject_confirmed_for_test` — compiled out of production).
+# Declaring the requirement here makes plain `cargo check/test --all-targets` skip the target instead of failing
+# featureless; the e2e itself runs UNCHANGED via `cargo test --features bridge-test-oracle --test psm_bridge_e2e`.
+[[test]]
+name = "psm_bridge_e2e"
+required-features = ["bridge-test-oracle"]
+
+# The vendored pqcrypto-internals: upstream 0.2.11 plus one seam (`set_entropy_source`) no node binary calls.
+[patch.crates-io]
+pqcrypto-internals = { path = "vendor/pqcrypto-internals" }
+# arti's tor-netdir 0.43.0 with ONE change (vendor/tor-netdir/src/weight.rs, "MONEROUSD PATCH"): a consensus with no
+# bandwidth-weights line weights every position 1.0 (C tor's rule), not 1/10000 — upstream made every V2Dir relay weigh zero, and
+# a node with fresh Tor state could not publish its onion while the Tor network's consensus lacked the line (2026-11-15, 18:00 UTC on).
+tor-netdir = { path = "vendor/tor-netdir" }
+
+# lane speed5 2026-11-18: `nix` is Unix-only (it compiles empty on Windows); `oscall` gates its calls on cfg(unix).
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["fs", "process", "signal", "syslog", "time", "user"] }

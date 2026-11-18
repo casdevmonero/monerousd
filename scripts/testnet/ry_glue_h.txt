@@ -1,0 +1,10 @@
+
+// ── Confidential Reserve-Yield coinbase (hiding/ZK; reward bound HIDDEN in cm_b) ──
+// Verify a serialized hiding/ZK Reserve-Yield coinbase proof. publics = 128 bytes
+// (cm_S_new | cm_S_old | note_cm | cm_b, 4-byte LE each). false if unlinked/malformed/invalid.
+bool reserve_yield_verify(const std::vector<uint8_t> &proof,
+                          const std::vector<uint8_t> &publics,
+                          uint32_t k, uint64_t modulus);
+
+// Zero-marshaling self-test: prove + verify a Reserve-Yield draw internally. false if unlinked.
+bool reserve_yield_selftest(uint32_t k, uint64_t modulus, uint64_t b, uint64_t x);

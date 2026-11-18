@@ -1,0 +1,19 @@
+# The MoneroUSD bridge's Ethereum vault (docs/BRIDGE-MORE-COINS-SPEC-20261110.md, section 3.1).
+# `forge test` from this folder compiles src/IonVault.sol with the compiler pinned below and runs test/IonVault.t.sol
+# (the contract's own refusals) and test/Vectors.t.sol (the values the node's mirror, src/eth_vault.rs, must reproduce
+# byte for byte).
+#
+# bytecode_hash = "none" and cbor_metadata = false: the compiler appends no hash of the source text to the bytecode, so
+# the forwarder's creation code (and with it every deposit address, which is a CREATE2 address over that code's hash)
+# depends on the code alone. A reworded comment in the source can then never move a deposit address.
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+cache_path = "cache"
+solc = "0.8.26"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+bytecode_hash = "none"
+cbor_metadata = false

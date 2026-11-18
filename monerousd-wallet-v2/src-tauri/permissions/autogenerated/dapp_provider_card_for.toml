@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-card-for"
+description = "Enables the dapp_provider_card_for command without any pre-configured scope."
+commands.allow = ["dapp_provider_card_for"]
+
+[[permission]]
+identifier = "deny-dapp-provider-card-for"
+description = "Denies the dapp_provider_card_for command without any pre-configured scope."
+commands.deny = ["dapp_provider_card_for"]

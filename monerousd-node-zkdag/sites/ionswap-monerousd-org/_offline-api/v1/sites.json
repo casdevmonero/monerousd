@@ -1,0 +1,5 @@
+{
+  "_offline": true,
+  "_note": "Sovereign offline fallback — site registry unreachable. The bundled directory at /assets/_registry.json contains the wallet-shipped allowlist (monerousd.org, ionswap.monerousd.org, explorer.monerousd.org).",
+  "sites": []
+}

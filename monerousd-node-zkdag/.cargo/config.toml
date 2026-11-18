@@ -1,0 +1,16 @@
+# MSRV-aware dependency resolution (Cargo 1.84+). With `[package] rust-version = "1.89"`, the resolver picks
+# dependency versions that BUILD on rustc 1.89 instead of the newest (which arti 0.43's onion-service tree pins
+# to rustc 1.90). This fixes the whole class at once — no per-dep --precise whack-a-mole.
+[resolver]
+incompatible-rust-versions = "fallback"
+
+# ⛔ INCREMENTAL COMPILATION OFF — THE DISK FILL THAT KEPT RECURRING (user-authorized 2026-09-11).
+# MEASURED: `target/debug/incremental` regrew to ~7 GB on every test-rebuild cycle and cargo never
+# garbage-collects it; with `target/debug/deps` at 26 GB the machine hit 117 MB free mid-run, twice in
+# one week. It was NOT the tests growing (harness temp dirs measured 9 MB after the 9/8 RAII fix) — it
+# was this cache. Incremental is a compile-latency tradeoff for edit-run loops; the cost here is paid in
+# disk every rebuild and the benefit is small against a 30 s+ link. Off, for every profile.
+# If `target/debug/deps` still climbs (stale artifact hashes after dep/flag changes), the remedy is a
+# periodic `cargo clean` — that directory is not bounded by this setting.
+[build]
+incremental = false

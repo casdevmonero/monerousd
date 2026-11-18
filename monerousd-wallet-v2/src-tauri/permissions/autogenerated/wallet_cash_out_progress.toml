@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-cash-out-progress"
+description = "Enables the wallet_cash_out_progress command without any pre-configured scope."
+commands.allow = ["wallet_cash_out_progress"]
+
+[[permission]]
+identifier = "deny-wallet-cash-out-progress"
+description = "Denies the wallet_cash_out_progress command without any pre-configured scope."
+commands.deny = ["wallet_cash_out_progress"]

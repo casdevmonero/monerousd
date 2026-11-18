@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sale-deposits"
+description = "Enables the sale_deposits command without any pre-configured scope."
+commands.allow = ["sale_deposits"]
+
+[[permission]]
+identifier = "deny-sale-deposits"
+description = "Denies the sale_deposits command without any pre-configured scope."
+commands.deny = ["sale_deposits"]

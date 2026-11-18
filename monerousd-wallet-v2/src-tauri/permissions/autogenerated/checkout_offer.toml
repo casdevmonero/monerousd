@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-checkout-offer"
+description = "Enables the checkout_offer command without any pre-configured scope."
+commands.allow = ["checkout_offer"]
+
+[[permission]]
+identifier = "deny-checkout-offer"
+description = "Denies the checkout_offer command without any pre-configured scope."
+commands.deny = ["checkout_offer"]

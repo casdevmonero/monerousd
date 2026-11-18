@@ -1,0 +1,91 @@
+# Protocol: MonerousD — THE DECODE-DOOR FUZZ TARGETS (B1 (ii), 2026-10-22): one libFuzzer target per production decoder
+# of outside bytes (`usdmd_node::decode_doors`). Build + bounded run: scratchpad/verify/fuzz_doors.sh (nightly, `-s none`).
+# The corpus under corpus/<target>/ is kept; a crash input under artifacts/<target>/ becomes a committed RED-first pin
+# (the in-process replay `harness::fuzz::decode_doors_tests` reads both).
+[package]
+name = "usdmd-node-fuzz"
+version = "0.0.0"
+license = "Apache-2.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.usdmd-node]
+path = ".."
+default-features = false
+features = ["arti-onion"]
+
+[[bin]]
+name = "json_value"
+path = "fuzz_targets/json_value.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot_file"
+path = "fuzz_targets/snapshot_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "name_registry_file"
+path = "fuzz_targets/name_registry_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tor_guards_doc"
+path = "fuzz_targets/tor_guards_doc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "compressed_copath_vec"
+path = "fuzz_targets/compressed_copath_vec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mix_packet"
+path = "fuzz_targets/mix_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mix_record"
+path = "fuzz_targets/mix_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mix_frame"
+path = "fuzz_targets/mix_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mix_inner"
+path = "fuzz_targets/mix_inner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mix_carrier"
+path = "fuzz_targets/mix_carrier.rs"
+test = false
+doc = false
+bench = false

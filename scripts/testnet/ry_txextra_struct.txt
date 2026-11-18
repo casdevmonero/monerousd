@@ -1,0 +1,22 @@
+
+  // 0x2E — Confidential Reserve-Yield coinbase carrier (coinbase only). Abolish-the-total
+  // emission: the block reward is a hidden draw r from a confidential surplus S, proven by a
+  // ReserveYield STARK (pqpool ReserveYieldCoinbaseAir). NO AGC curve, NO public emission.
+  //   publics  : 128 bytes = cm_S_new(32) | cm_S_old(32) | note_cm(32) | cm_b(32), 4-byte-LE F each.
+  //   proof    : postcard-serialized hiding/ZK STARK proof (pqpool_reserve_yield_*; ~45 KB, PRUNABLE).
+  //   enc_note : ML-KEM ct(1088) + AEAD(value|asset|pk_d|rho|rcm) to the miner's PQ stealth addr,
+  //              so the miner-wallet opens + later spends (#66) the reward note. note_cm here ==
+  //              the PQ note's commitment == publics' note_cm (CRY-3 byte-equality binding).
+  // The daemon (v >= HF_VERSION_RESERVE_YIELD) parses + verifies via reserve_yield_verify and threads
+  // cm_S_new into the block. INERT pre-activation. Keeps v32 confidential coinbase for old blocks.
+  struct tx_extra_reserve_yield             // 0x2E
+  {
+    std::string publics;   // 128 bytes
+    std::string proof;     // RY postcard STARK proof
+    std::string enc_note;  // ML-KEM ct + AEAD note (miner-only)
+    BEGIN_SERIALIZE()
+      FIELD(publics)
+      FIELD(proof)
+      FIELD(enc_note)
+    END_SERIALIZE()
+  };

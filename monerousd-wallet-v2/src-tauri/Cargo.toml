@@ -1,0 +1,181 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root)
+[package]
+name = "monerousd-wallet-v2"
+default-run = "monerousd-wallet-v2"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "MoneroUSD Wallet V2 — the first post-quantum private stablecoin desktop wallet (clean-room, Tauri)."
+
+[lib]
+name = "monerousd_wallet_v2_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "ui-harness"
+path = "src/bin/ui-harness.rs"
+required-features = ["ui-harness"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+# Interop PROOF only (not shipped): the node's exact PQ crates, to assert the wallet's fips203/204 keys +
+# signatures verify/encapsulate under pqcrypto (PQClean) — i.e. the node will accept the wallet's spends/notes.
+pqcrypto-mldsa = "0.1.2"
+pqcrypto-mlkem = "0.1.1"
+pqcrypto-traits = "0.3.5"
+# UI pin harness only (`src/ui_pins.rs`, never shipped — resolver 2 keeps dev-dependency features out of the app
+# build): `tauri::test`'s mock runtime dispatches the shipped command list with the desktop app's argument binding.
+tauri = { version = "2", features = ["unstable", "test"] }
+
+[dependencies]
+# lane d 2026-10-27: the launchd domain needs the real uid — through nix's safe wrapper, not an inline libc extern.
+nix = { version = "0.31", features = ["user"] }
+# `unstable` enables Window::add_child / get_webview — the EMBEDDED child-webview API. This renders each dApp as
+# a TRUE inline top-level browsing context (like the old Electron <webview>), positioned relative to the window
+# over #browserViewport — NOT a CSP-blocked <iframe>, NOT a floating child window. Requires `use tauri::Manager`.
+tauri = { version = "2", features = ["unstable"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Compact binary serde for the membership-witness book cold-restore (the book holds PoseidonSpendFrontier, whose
+# serde is byte-shaped — JSON can't round-trip it). Same crate the node snapshot uses. Free (MIT/Apache).
+postcard = { version = "1", features = ["alloc"] }
+# T1 (2026-10-28): no TLS stack in the wallet — every call is to the user's own node on loopback or over the Tor SOCKS
+# proxy to an onion; the one clearnet fetch (mempool.space prices) is gone (the node's certified price mark serves it).
+ureq = { version = "2", default-features = false, features = ["json", "socks-proxy"] }
+dirs = "5"
+# Cross-platform system-browser open for EXTERNAL http(s) links (bridge block-explorer views only). Works on
+# macOS/Linux/Windows AND iOS/Android (mobile has no subprocess to spawn), so `wallet_open_url` is one call with
+# no per-OS cfg — and it compiles for aarch64-apple-ios where `std::process::Command` has no opener.
+webbrowser = "1"
+# PQ wallet crypto (clean-room, self-contained — NO old-wallet code). ML-DSA-65 (spend) + ML-KEM-768 (scan)
+# via the FIPS-final RustCrypto crates, which expose DETERMINISTIC seed-based keygen (so restore-from-seed
+# reproduces the exact keys) and byte-interoperate with the node's pqcrypto (PQClean) by the FIPS 203/204 spec.
+fips204 = "0.4"        # ML-DSA-65 signatures (spend key) — seeded keygen
+fips203 = "0.4"        # ML-KEM-768 KEM (scan key)         — seeded keygen
+blake3 = "1"           # b = blake3(spend_pk), matching the node's Hash32
+sha3 = "0.10"          # keccak256 address checksum, matching crate::address
+# QR: render a SCANNABLE deposit QR (BIP21 `bitcoin:` / `monero:` URI) as an inline SVG — CSP-safe (no external
+# asset / no CDN), so the Buy swap card shows a real phone-scannable QR of the reserve deposit address.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+bip39 = "2"            # 24-word recovery phrase over the fresh-random 32-byte root seed
+rand = "0.8"           # fresh CSPRNG entropy for a new wallet
+hex = "0.4"
+zeroize = { version = "1", features = ["derive"] }  # wipe secret key material from memory
+rayon = "1"            # parallelize the per-note ML-KEM decap across cores (independent work → sub-1s scan)
+# THE SEND ENGINE — the trustless (NO-trusted-setup) WHIR light decider, reused as an IN-PROCESS LIBRARY.
+# We link the SMALL `usdm-decider` crate (NOT the pqpool circuit.rs monolith): it depends ONLY on
+# p3-whir/KoalaBear, so it is a fast, constant, small-RAM compile — and it exposes the DIRECT (row-local)
+# engine "Send/Swap/token-create/… ride": `prove_air_direct_light_decider_bytes` turns a witness straight
+# into a trustless WHIR carrier, `verify_air_direct_light_decider_bytes` checks it. WHIR is trustless BY
+# DESIGN (transparent, hashless, no ceremony, no toxic waste); the wallet proves + self-verifies in-process.
+usdm-decider = { path = "../../monerousd-node-zkdag/vendor/Plonky3/usdm-decider" }
+# The greenfield node, linked as a PURE-RUST library (no C dylibs) so the phone runs its OWN in-process node:
+# `usdmd_node::serve::run_in_process(port, gpc)` on a bg thread binds loopback RPC. The pure-Rust Poseidon2
+# PoUW kernel + WHIR verify are now ALWAYS-ON in usdmd-node (the classical RandomX fallback + its former
+# `pq-randomx` feature were REMOVED 2026-07-14), so we select only `arti-onion` (no librandomx.a / no
+# pqpool_ffi / no libp2p_ffi) → cross-compiles to aarch64-apple-ios.
+usdmd-node = { path = "../../monerousd-node-zkdag", default-features = false, features = ["arti-onion"] }
+p3-field = { path = "../../monerousd-node-zkdag/vendor/Plonky3/field" }        # KoalaBear F for the witness
+p3-koala-bear = { path = "../../monerousd-node-zkdag/vendor/Plonky3/koala-bear" }  # the decider's field
+# T1 (2026-10-28): Tor's own link layer needs a TLS implementation (OR connections are TLS to relays — the onion overlay's
+# substrate, never a clearnet service); rustls is pulled by the Tor stack ALONE, which the hole scanner proves onion-only.
+arti-client = { version = "0.43.0", features = ["tokio", "rustls", "onion-service-client"] }
+tor-rtcompat = { version = "0.43.0", features = ["tokio", "rustls"] }
+# The Tor stack's directory client decompresses with liblzma (tor-dirclient → async-compression → liblzma). Without
+# `static`, liblzma-sys links whatever pkg-config finds (on this build machine /opt/homebrew/opt/xz/lib/liblzma.5.dylib),
+# and the shipped app fails to launch on any Mac without Homebrew's xz. MEASURED 2026-11-17 (lane testnet): otool -L on the
+# release wallet binary and wallet-harness. `static` compiles xz from its source into the binary (build.rs:13).
+liblzma-sys = { version = "0.4.7", features = ["static"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "io-util", "macros", "sync"] }
+tokio-util = { version = "0.7.18", features = ["compat"] }
+futures = "0.3.32"
+
+# APPLE-PAY-STYLE BIOMETRIC AUTHORIZATION on the Send/Pay flow — LocalAuthentication (Touch ID / Face ID), on
+# BOTH macOS (desktop) AND iOS (mobile) so the mobile wallet is at 100% feature parity. After the amount is
+# entered, the OS presents the biometric prompt (falling back to the device passcode); the confidential PQ
+# payment only broadcasts on a SUCCESSFUL biometric signature — so authorizing a payment is one touch, exactly
+# like Apple Pay's tap-to-pay. Native binding via the objc2 LocalAuthentication framework crate (macOS + iOS).
+# The objc2 Core Bluetooth + LocalAuthentication crates target BOTH Apple platforms, so this ONE section serves
+# desktop AND the iPhone build — the shared Tauri-2 codebase compiles to both (see mobile-wallet-parity-guard).
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"     # a dedicated serial GCD queue that owns the Core Bluetooth delegate callbacks — isolated from
+                      # the app's main thread so a tap stays responsive (sub-1s) and works from any thread
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "NSString", "NSError", "NSData", "NSArray", "NSDictionary", "NSValue", "NSUUID", "NSObject", "NSEnumerator",
+] }
+objc2-local-authentication = { version = "0.3", features = ["LAContext", "LAError"] }
+# MONEROPAY BLE RADIO — Core Bluetooth (peripheral + central). BLE needs NO paid entitlement + NO paid account
+# (unlike Core NFC's `com.apple.developer.nfc.readersession`), and works iPhone↔iPhone↔Mac↔Android — so it is the
+# free, cross-platform tap radio for the MoneroPay protocol (crypto in `moneropay.rs`; the radio is a dumb pipe).
+objc2-core-bluetooth = { version = "0.3", features = [
+    "std", "alloc", "bitflags",
+    "CBCentralManager", "CBPeripheralManager", "CBManager", "CBPeripheral", "CBCentral",
+    "CBCentralManagerConstants", "CBService", "CBCharacteristic", "CBUUID", "CBPeer", "CBAttribute",
+    "CBATTRequest", "CBError", "CBAdvertisementData", "CBPeripheralManagerConstants", "CBDescriptor",
+    "CBDefines",
+] }
+
+# ⛔⛔⛔ UNATTENDED-TEST — A COMPILE-TIME FEATURE, NEVER A RUNTIME FLAG.
+#
+# user 2026-08-12: "the problem is that it required biometric authentication when that feature was
+# supposed to be gated for testing. Why does it keep reactivating?"
+#
+# It was not reactivating: an env-gated skip was written on 2026-08-11 and then DELETED, on the reasoning
+# that `tests/cross_device_send.rs` drives the payment headlessly and never reaches the UI command. That
+# reasoning is now invalid — the harness proved unreliable and the standing instruction is to drive the
+# REAL wallet windows, which is exactly the path the biometric gate blocks.
+#
+# An env var would have shipped a runtime bypass of an authorization step inside the production binary.
+# A CARGO FEATURE cannot: with the feature off, the bypass is not compiled at all — there is no flag, no
+# variable and no code path to reach. Strictly stronger than what shipped yesterday, and it makes the
+# only reliable send test runnable.
+#
+#     cargo build --release --features unattended-test     # test build; prints a loud startup banner
+#     cargo build --release                                # shipped build; gate MANDATORY, bypass absent
+#
+# cons: none. Zero bytes and zero branches in the default build — the code does not exist there. The risk
+# it does carry (a test binary mistaken for a shipped one) is answered in-band by the startup banner and
+# by `wallet_biometric_auth` reporting `"unattended": true` in its result.
+[features]
+unattended-test = []
+# DEV/TEST ONLY (never a shipped release): the in-process node's `/dev/inject_confirmed_deposit` door, so a
+# two-device money-path run can stand the SAME test oracle in for the Bitcoin watcher on the phone's node that
+# the harness stands in on the Mac nodes (run 93, 2026-09-19: the phone's mint poll waited on its own watcher,
+# which no harness can reach, while the Mac custodian had the deposit). Forwards to the node's feature.
+bridge-test-oracle = ["usdmd-node/bridge-test-oracle"]
+# ⭐ R7 LAYER 2 — DEV/TEST ONLY (never a shipped release): the `ui-harness` binary drives the SHIPPED front end against the
+# real core and a node the simulator serves, RUNNING value-moving commands (`unattended-test` compiles the biometric prompt
+# out) so the simulator asserts each flow's effect on the node and its peer. `tauri/test` is the mock runtime the driver uses.
+ui-harness = ["tauri/test", "unattended-test"]
+
+# ⭐ DB-288 §9 — fips203 0.4.3 VENDORED with ONE addition (`DecapsKey::try_decaps_with_message`: the recovered ML-KEM
+# message, returned only after the FO re-encryption check), so a seed-only restore reads which input each of its own
+# change notes consumed with zero node asks. Every upstream API is byte-identical; the node crate built inside this
+# workspace shares the copy. See ../vendor/fips203/VENDORED.md.
+[patch.crates-io]
+fips203 = { path = "../vendor/fips203" }
+# The node's patched arti tor-netdir (one change: no bandwidth-weights line ⇒ every weight 1.0, C tor's rule); the wallet builds the
+# node into its sidecar and harnesses, so it carries the same patch (monerousd-node-zkdag/Cargo.toml says why).
+tor-netdir = { path = "../../monerousd-node-zkdag/vendor/tor-netdir" }
+
+# ⭐ `pin` (user 2026-10-05 fast + accurate is the standard, feedback_pin_profile_fast_accurate_tests_20261005): the test
+# build every wallet pin batch uses — release semantics (debug-assertions off, overflow-checks off; the node and decider
+# dependencies stay opt-3, the wallet crate itself opt-1 so an edit rebuilds in seconds), incremental, 256 codegen units.
+# `release` stays the shipped wallet and the wallet-harness the real-node gates run. lane_run.sh maps `release` here.
+[profile.pin]
+# MEASURED 2026-10-22 (scratchpad/refactor/compile-probe-ltooff.log): `inherits = "release"` kept cargo's default thin-LOCAL
+# LTO across the 256 codegen units, so every one-line edit re-linked the crate's LTO graph (-Ztime-passes: LLVM_thinlto 102 s,
+# finish_ongoing_codegen 101 s, codegen_crate 86 s per edit). lto = "off": a one-line node.rs edit rebuilds in 106 s instead of
+# 243 s, cold 310 s instead of 714 s, peak RSS 1.69 GB instead of 2.07 GB. Test-build speed only: the release profile is unchanged.
+lto = "off"
+inherits = "release"
+incremental = true
+codegen-units = 256
+
+[profile.pin.package.monerousd-wallet-v2]
+opt-level = 1

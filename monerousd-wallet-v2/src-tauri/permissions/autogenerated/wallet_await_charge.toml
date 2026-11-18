@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-await-charge"
+description = "Enables the wallet_await_charge command without any pre-configured scope."
+commands.allow = ["wallet_await_charge"]
+
+[[permission]]
+identifier = "deny-wallet-await-charge"
+description = "Denies the wallet_await_charge command without any pre-configured scope."
+commands.deny = ["wallet_await_charge"]

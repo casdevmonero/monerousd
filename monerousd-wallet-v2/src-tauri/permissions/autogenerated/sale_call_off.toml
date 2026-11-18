@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sale-call-off"
+description = "Enables the sale_call_off command without any pre-configured scope."
+commands.allow = ["sale_call_off"]
+
+[[permission]]
+identifier = "deny-sale-call-off"
+description = "Denies the sale_call_off command without any pre-configured scope."
+commands.deny = ["sale_call_off"]

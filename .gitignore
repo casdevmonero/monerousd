@@ -1,0 +1,29 @@
+# Build outputs
+target/
+target-*/
+
+# Dependencies
+node_modules/
+
+# Generated code and app bundles
+/monerousd-wallet-v2/src-tauri/gen/
+/monerousd-wallet-v2/src-tauri/sidecar/
+/monerousd-wallet-v2/MoneroUSD*
+/monerousd-wallet-v2/staging/
+*.dmg
+*.app/
+
+# No markdown files except the public README
+*.md
+!README.md
+
+# Agent and tool configuration
+.claude/
+
+# OS files
+.DS_Store
+
+# Backup files
+*.pre[A-Z]*
+*.pre[0-9]*
+*.pre-*

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-veil-backend-price"
+description = "Enables the veil_backend_price command without any pre-configured scope."
+commands.allow = ["veil_backend_price"]
+
+[[permission]]
+identifier = "deny-veil-backend-price"
+description = "Denies the veil_backend_price command without any pre-configured scope."
+commands.deny = ["veil_backend_price"]

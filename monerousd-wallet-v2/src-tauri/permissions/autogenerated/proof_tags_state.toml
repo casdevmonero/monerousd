@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-proof-tags-state"
+description = "Enables the proof_tags_state command without any pre-configured scope."
+commands.allow = ["proof_tags_state"]
+
+[[permission]]
+identifier = "deny-proof-tags-state"
+description = "Denies the proof_tags_state command without any pre-configured scope."
+commands.deny = ["proof_tags_state"]

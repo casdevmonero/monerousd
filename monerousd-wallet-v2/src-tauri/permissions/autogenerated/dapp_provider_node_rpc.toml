@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-node-rpc"
+description = "Enables the dapp_provider_node_rpc command without any pre-configured scope."
+commands.allow = ["dapp_provider_node_rpc"]
+
+[[permission]]
+identifier = "deny-dapp-provider-node-rpc"
+description = "Denies the dapp_provider_node_rpc command without any pre-configured scope."
+commands.deny = ["dapp_provider_node_rpc"]

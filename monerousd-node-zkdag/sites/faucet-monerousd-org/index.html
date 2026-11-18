@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<!--
+  Copyright (c) 2026, The MoneroUSD Protocol. SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE).
+
+  Testnet faucet — a developer tool that ISSUES valueless test USDm on demand and sends it straight to the
+  wallet receive address you paste. You bring your OWN seed: create it in your wallet, copy its receive address,
+  paste it here. TESTNET-ONLY — the node hard-gates the network (403 TESTNET_ONLY off testnet), so this can never
+  run on mainnet, where supply stays 150%-backed by the PSM mint. Node-first (Pillar C): this page only ever
+  calls its own node's /api/faucet/* — same-origin behind the sovereign proxy, wallet-routed to your OWN node
+  inside the wallet browser. Design matches monerousd.org (Outfit + JetBrains Mono, #FF6600 on #0a0a0a).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoneroUSD · Testnet Faucet</title>
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <script src="lib/wallet-bridge.js?v=1"></script>
+  <script src="lib/wallet-nav.js?v=1"></script>
+  <style>
+    @font-face { font-family: 'Outfit'; src: url('fonts/outfit-400.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+    @font-face { font-family: 'Outfit'; src: url('fonts/outfit-500.woff2') format('woff2'); font-weight: 500; font-display: swap; }
+    @font-face { font-family: 'Outfit'; src: url('fonts/outfit-600.woff2') format('woff2'); font-weight: 600; font-display: swap; }
+    @font-face { font-family: 'Outfit'; src: url('fonts/outfit-700.woff2') format('woff2'); font-weight: 700; font-display: swap; }
+    @font-face { font-family: 'JetBrains Mono'; src: url('fonts/jetbrainsmono-400.woff2') format('woff2'); font-weight: 400; font-display: swap; }
+    @font-face { font-family: 'JetBrains Mono'; src: url('fonts/jetbrainsmono-600.woff2') format('woff2'); font-weight: 600; font-display: swap; }
+
+    :root {
+      --orange: #FF6600;
+      --orange-glow: rgba(255, 102, 0, 0.4);
+      --orange-dim: rgba(255, 102, 0, 0.12);
+      --bg: #0a0a0a;
+      --surface: #111;
+      --card: #161616;
+      --border: #222;
+      --text: #eaeaea;
+      --muted: #777;
+      --ok: #3ddc84;
+      --err: #ff7a52;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.65; overflow-x: hidden;
+    }
+
+    /* Ambient glow-field (the monerousd.org orange atmosphere, pure CSS) */
+    .glowfield { position: fixed; inset: 0; z-index: 0; pointer-events: none; overflow: hidden; }
+    .glowfield .orb { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5; }
+    .orb.a { width: 520px; height: 520px; background: radial-gradient(circle, rgba(255,102,0,.30), transparent 70%); top: -160px; left: -120px; animation: drift1 22s ease-in-out infinite; }
+    .orb.b { width: 620px; height: 620px; background: radial-gradient(circle, rgba(255,102,0,.16), transparent 70%); bottom: -220px; right: -160px; animation: drift2 28s ease-in-out infinite; }
+    .orb.c { width: 380px; height: 380px; background: radial-gradient(circle, rgba(255,140,40,.12), transparent 70%); top: 40%; left: 55%; animation: drift1 25s ease-in-out infinite reverse; }
+    @keyframes drift1 { 0%,100%{ transform: translate(0,0); } 50%{ transform: translate(60px,50px); } }
+    @keyframes drift2 { 0%,100%{ transform: translate(0,0); } 50%{ transform: translate(-70px,-40px); } }
+    .content { position: relative; z-index: 1; }
+
+    /* Nav (monerousd.org parity) */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(10,10,10,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+      border-bottom: 1px solid rgba(255,102,0,0.1);
+    }
+    .nav-inner { max-width: 1200px; margin: 0 auto; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; height: 68px; }
+    .nav-logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--text); font-weight: 700; font-size: 1.2rem; }
+    .nav-logo img { height: 36px; width: 36px; filter: drop-shadow(0 0 8px var(--orange-glow)); }
+    .nav-links { display: flex; gap: 30px; align-items: center; }
+    .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.92rem; font-weight: 500; transition: color 0.25s; }
+    .nav-links a:hover { color: var(--text); }
+    .net-pill { font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; color: var(--orange); display: inline-flex; align-items: center; gap: 7px; }
+    .net-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--orange); box-shadow: 0 0 10px var(--orange); animation: pulse 2s ease-in-out infinite; }
+    .net-pill.off { color: var(--muted); } .net-pill.off .dot { background: var(--muted); box-shadow: none; animation: none; }
+    @keyframes pulse { 0%,100%{ opacity: 1; } 50%{ opacity: .4; } }
+
+    /* Hero */
+    .hero { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 128px 24px 72px; }
+    .hero-inner { max-width: 680px; width: 100%; }
+    .faucet-mark { width: 108px; height: 108px; margin: 0 auto 28px; position: relative; filter: drop-shadow(0 0 40px var(--orange-glow)); animation: float 4s ease-in-out infinite; }
+    @keyframes float { 0%,100%{ transform: translateY(0); } 50%{ transform: translateY(-12px); } }
+    .hero h1 { font-size: clamp(2.4rem, 6vw, 4rem); font-weight: 700; letter-spacing: -0.03em; line-height: 1.08; margin-bottom: 18px; }
+    .hero h1 .accent { color: var(--orange); }
+    .hero .tagline { font-size: clamp(1.02rem, 2.5vw, 1.22rem); color: var(--muted); max-width: 540px; margin: 0 auto 40px; }
+
+    /* Faucet panel — unboxed glowing surface */
+    .panel { position: relative; text-align: left; background: linear-gradient(180deg, rgba(22,22,22,.9), rgba(14,14,14,.9)); border: 1px solid var(--border); border-radius: 20px; padding: 26px; box-shadow: 0 30px 80px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.03); }
+    .panel::before { content: ""; position: absolute; inset: -1px; border-radius: 20px; padding: 1px; background: linear-gradient(140deg, rgba(255,102,0,.5), transparent 40%, transparent 60%, rgba(255,102,0,.25)); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; }
+    .panel h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: 16px; display: flex; align-items: center; gap: 9px; }
+    .panel h2 .drip { color: var(--orange); }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin: 0 0 8px; font-weight: 500; }
+    .field { margin-bottom: 16px; }
+    input { width: 100%; background: #0e0e0e; border: 1px solid var(--border); border-radius: 12px; color: var(--text); padding: 13px 14px; font-size: 0.92rem; font-family: 'JetBrains Mono', monospace; transition: border-color .2s, box-shadow .2s; }
+    input:focus { outline: none; border-color: var(--orange); box-shadow: 0 0 0 3px var(--orange-dim); }
+    .inline { display: flex; gap: 10px; align-items: center; }
+    .amt-wrap { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+    .amt-wrap .field { flex: 1; margin-bottom: 0; min-width: 180px; }
+    .amt-eq { font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; color: var(--orange); padding-bottom: 13px; white-space: nowrap; }
+    .steps { list-style: none; counter-reset: s; margin: 12px 0 4px; padding: 0; }
+    .steps li { counter-increment: s; position: relative; padding: 6px 0 6px 34px; color: var(--muted); font-size: 0.86rem; }
+    .steps li::before { content: counter(s); position: absolute; left: 0; top: 5px; width: 22px; height: 22px; border-radius: 50%; background: var(--orange-dim); color: var(--orange); font-family: 'JetBrains Mono', monospace; font-size: 0.74rem; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+    .steps li strong { color: var(--text); font-weight: 600; }
+
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 26px; border-radius: 12px; font-size: 1rem; font-weight: 600; cursor: pointer; text-decoration: none; transition: all .25s; font-family: inherit; border: 2px solid transparent; }
+    .btn-primary { background: var(--orange); color: #fff; border-color: var(--orange); box-shadow: 0 4px 30px rgba(255,102,0,.3); position: relative; overflow: hidden; }
+    .btn-primary:hover { box-shadow: 0 4px 44px rgba(255,102,0,.5); transform: translateY(-2px); }
+    .btn-primary:disabled { opacity: .45; cursor: default; transform: none; box-shadow: none; }
+    .btn-primary .sheen { position: absolute; top: 0; left: -60%; width: 40%; height: 100%; background: linear-gradient(100deg, transparent, rgba(255,255,255,.35), transparent); animation: sheen 3.2s ease-in-out infinite; }
+    @keyframes sheen { 0%{ left: -60%; } 55%,100%{ left: 130%; } }
+    .btn-ghost { background: transparent; color: var(--muted); border-color: var(--border); font-weight: 500; padding: 14px 18px; }
+    .btn-ghost:hover { border-color: var(--orange); color: var(--orange); }
+    .actions { display: flex; gap: 12px; align-items: center; margin-top: 20px; flex-wrap: wrap; }
+    .actions .btn-primary { flex: 1; min-width: 200px; }
+
+    .status { font-size: 0.85rem; color: var(--muted); margin-top: 14px; min-height: 1.1em; font-family: 'JetBrains Mono', monospace; }
+    .status.ok { color: var(--ok); } .status.err { color: var(--err); }
+    .landed { margin-top: 12px; font-size: 0.85rem; color: var(--ok); font-family: 'JetBrains Mono', monospace; }
+
+    .hero-sub { margin-top: 34px; font-size: 0.8rem; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+    .hero-sub span { color: var(--orange); }
+
+    /* Stats bar (monerousd.org parity) */
+    .stats-bar { position: relative; z-index: 1; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: rgba(17,17,17,0.6); backdrop-filter: blur(10px); padding: 40px 28px; }
+    .stats-grid { max-width: 900px; margin: 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; text-align: center; }
+    .stat-val { font-size: 1.7rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--orange); text-shadow: 0 0 20px rgba(255,102,0,.3); }
+    .stat-label { font-size: 0.8rem; color: var(--muted); margin-top: 4px; font-weight: 500; }
+
+    /* How it works */
+    section { position: relative; z-index: 1; padding: 92px 28px; }
+    .section-inner { max-width: 1000px; margin: 0 auto; }
+    .section-title { font-size: clamp(1.5rem, 3vw, 2.1rem); font-weight: 700; text-align: center; margin-bottom: 12px; letter-spacing: -0.02em; }
+    .section-subtitle { text-align: center; color: var(--muted); max-width: 520px; margin: 0 auto 52px; }
+    .hiw { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; }
+    .hiw-step { padding: 4px 4px 4px 0; }
+    .hiw-num { font-family: 'JetBrains Mono', monospace; font-size: 2.4rem; font-weight: 600; color: var(--orange); opacity: .35; line-height: 1; margin-bottom: 12px; }
+    .hiw-step h3 { font-size: 1.05rem; font-weight: 600; margin-bottom: 8px; }
+    .hiw-step p { color: var(--muted); font-size: 0.9rem; line-height: 1.6; }
+
+    footer { position: relative; z-index: 1; border-top: 1px solid var(--border); padding: 40px 28px; text-align: center; color: var(--muted); font-size: 0.82rem; }
+    footer a { color: var(--muted); text-decoration: none; } footer a:hover { color: var(--orange); }
+    footer .mono { font-family: 'JetBrains Mono', monospace; margin-top: 10px; font-size: 0.76rem; }
+
+    @media (max-width: 720px) {
+      .nav-links a:not(.net-pill) { display: none; }
+      .stats-grid, .hiw { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="glowfield"><div class="orb a"></div><div class="orb b"></div><div class="orb c"></div></div>
+  <div class="content">
+    <nav>
+      <div class="nav-inner">
+        <a class="nav-logo" href="https://monerousd.org"><img src="logo.svg" alt="MoneroUSD"><span>MoneroUSD</span></a>
+        <div class="nav-links">
+          <a href="https://monerousd.org">Home</a>
+          <a href="https://ion.monerousd.org">Swap</a>
+          <a href="https://explorer.monerousd.org">Explorer</a>
+          <span class="net-pill" id="netPill"><span class="dot"></span><span id="netName">testnet</span></span>
+        </div>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <div class="hero-inner">
+        <svg class="faucet-mark" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <defs><linearGradient id="fg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#ff8a2b"/><stop offset="100%" stop-color="#ff6600"/></linearGradient></defs>
+          <!-- stylized tap -->
+          <path d="M30 40 h30 a22 22 0 0 1 22 22 v3" fill="none" stroke="url(#fg)" stroke-width="7" stroke-linecap="round"/>
+          <rect x="20" y="30" width="18" height="20" rx="4" fill="url(#fg)"/>
+          <rect x="76" y="60" width="14" height="12" rx="3" fill="url(#fg)"/>
+          <!-- falling drops -->
+          <circle class="d1" cx="83" cy="84" r="4.5" fill="url(#fg)"/>
+          <circle class="d2" cx="83" cy="96" r="3.5" fill="#ff6600" opacity=".7"/>
+          <ellipse cx="83" cy="108" rx="14" ry="4" fill="none" stroke="url(#fg)" stroke-width="2.4" opacity=".6"/>
+        </svg>
+        <h1>Testnet <span class="accent">Faucet</span></h1>
+        <p class="tagline">Paste your wallet's receive address and get free test USDm — issued on demand, sent straight to you.</p>
+
+        <div class="panel">
+          <h2><span class="drip">◈</span> Request test USDm</h2>
+          <div class="field">
+            <label for="toInput">Your MoneroUSD wallet receive address</label>
+            <div class="inline">
+              <input id="toInput" type="text" autocomplete="off" spellcheck="false">
+              <button class="btn btn-ghost" id="myAddrBtn" type="button" hidden>Use my wallet</button>
+            </div>
+            <ol class="steps">
+              <li>Create a seed in your MoneroUSD wallet — <strong>you own it</strong>, the faucet never gives you one.</li>
+              <li>Copy your wallet's <strong>receive address</strong> and paste it above.</li>
+              <li>Hit <strong>Send me test USDm</strong> — it lands in your wallet on its next refresh.</li>
+            </ol>
+          </div>
+          <div class="amt-wrap">
+            <div class="field">
+              <label for="amtInput">Amount (USDm)</label>
+              <input id="amtInput" type="number" value="100" min="0.01" step="1">
+            </div>
+            <div class="amt-eq" id="amtEq"></div>
+          </div>
+          <div class="actions">
+            <button class="btn btn-primary" id="dripBtn" type="button"><span class="sheen"></span>Send me test USDm</button>
+            <button class="btn btn-ghost" id="refreshBtn" type="button">Refresh</button>
+          </div>
+          <div class="status" id="status"></div>
+          <div class="landed" id="landed" hidden></div>
+        </div>
+
+        <div class="hero-sub"><span>TESTNET ONLY</span> · node-first · your seed never leaves your wallet</div>
+      </div>
+    </header>
+
+    <div class="stats-bar">
+      <div class="stats-grid">
+        <div><div class="stat-val" id="statNet">—</div><div class="stat-label">Network</div></div>
+        <div><div class="stat-val" id="statReady">—</div><div class="stat-label">Faucet ready</div></div>
+        <div><div class="stat-val" id="statDemo">—</div><div class="stat-label">Confirmed landed (demo)</div></div>
+      </div>
+    </div>
+
+    <section>
+      <div class="section-inner">
+        <h2 class="section-title">How it works</h2>
+        <p class="section-subtitle">The faucet issues valueless test USDm on demand and records each note on the ordinary note path your wallet scans — no funding, no pool.</p>
+        <div class="hiw">
+          <div class="hiw-step"><div class="hiw-num">01</div><h3>Bring your own seed</h3><p>Create a wallet in the MoneroUSD app. Your post-quantum seed and scan key stay on your device — the faucet never sees them.</p></div>
+          <div class="hiw-step"><div class="hiw-num">02</div><h3>Paste your address</h3><p>Copy your wallet's receive address and drop it in the box above. It's an ML-KEM encapsulation key — the faucet seals a confidential note to it.</p></div>
+          <div class="hiw-step"><div class="hiw-num">03</div><h3>Receive on-chain</h3><p>The node records the note on the testnet chain. Your wallet scans it from the DA stream and the balance is yours to spend — real digital cash, on testnet.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <div><a href="https://monerousd.org">monerousd.org</a> · <a href="https://ion.monerousd.org">Swap</a> · <a href="https://explorer.monerousd.org">Explorer</a></div>
+      <div class="mono">Testnet only — this faucet is hard-disabled on mainnet, where every USDm stays 150%-backed.</div>
+    </footer>
+  </div>
+
+  <script>
+    // Node-first: every call hits THIS node's /api/faucet/* (same-origin behind the sovereign proxy; wallet-routed
+    // on clearnet — inside the wallet the bridge re-routes these fetches to the user's OWN node + exposes monerousd).
+    const $ = (id) => document.getElementById(id);
+    const api = (path, opts) => fetch(path, opts).then((r) => r.json());
+    const ATOMIC_PER_USDM = 1e8; // 1 USDm = 10^8 atomic units (matches the wallet's own display unit)
+    let onTestnet = true;
+    function usdm(atomic){ return (Number(atomic || 0) / ATOMIC_PER_USDM).toLocaleString(undefined, { maximumFractionDigits: 12 }); }
+    function setStatus(t, kind){ const s = $('status'); s.textContent = t || ''; s.className = 'status' + (kind ? ' ' + kind : ''); }
+    // HONEST TESTNET-ONLY GATE: the node hard-gates /faucet/* to the testnet chain (403 TESTNET_ONLY on any other
+    // network). Mirror that gate in the UI — on a non-testnet node the form is disabled with the reason.
+    function applyNetGate(network){
+      onTestnet = (network === 'testnet');
+      $('netName').textContent = network || '…';
+      $('netPill').className = 'net-pill' + (onTestnet ? '' : ' off');
+      $('dripBtn').disabled = !onTestnet;
+      $('statNet').textContent = network || '—';
+      $('statReady').textContent = onTestnet ? 'yes' : 'no';
+      if (!onTestnet) setStatus('This node is not on testnet — the faucet is hard-disabled (TESTNET_ONLY). It never exists on mainnet.', 'err');
+    }
+    async function loadStatus(){
+      try {
+        const s = await api('/api/faucet/status');
+        applyNetGate(s.network);
+        $('statReady').textContent = s.ready ? 'yes' : 'no';
+        $('statDemo').textContent = usdm(s.demo_balance) + ' USDm';
+      } catch (e) { setStatus('Node unreachable.', 'err'); }
+    }
+    // The amount field is in USDm (100 = 100 USDm); convert to the node's atomic drip unit (1 USDm = 1e8) at submit.
+    function amountUsdm(){ return Math.max(0, parseFloat($('amtInput').value) || 0); }
+    function amountAtomic(){ return Math.round(amountUsdm() * ATOMIC_PER_USDM); }
+    function reflectAtomic(){ const a = amountAtomic(); $('amtEq').textContent = a > 0 ? '= ' + a.toLocaleString() + ' atomic units' : ''; }
+    // LANDED-PROOF (in-wallet): after a send to the wallet's own address, poll the wallet's REAL balance until it
+    // rises — on-page proof the confidential note arrived, scanned from the any-height DA stream and now spendable.
+    // Outside the wallet the recorded-on-chain confirmation stands (any wallet with that seed sees it on refresh).
+    async function proveLanded(prevAtomic){
+      const m = window.monerousd;
+      if (!m || !m.getBalance) return;
+      const el = $('landed'); el.hidden = false; el.textContent = 'Watching your wallet balance…';
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 1500));
+        try {
+          const b = await m.getBalance();
+          const atomic = Number((b && (b.atomic != null ? b.atomic : b.USDm)) || 0);
+          if (atomic > prevAtomic) { el.textContent = '✓ Landed in your wallet: +' + usdm(atomic - prevAtomic) + ' USDm (balance ' + usdm(atomic) + ' USDm)'; return; }
+        } catch (e) { void e; }
+      }
+      el.textContent = 'Recorded on-chain — your wallet picks it up on its next refresh (the note never ages out).';
+    }
+    async function drip(){
+      if (!onTestnet) { setStatus('Testnet only — this node is not on testnet.', 'err'); return; }
+      const to = $('toInput').value.trim();
+      const amount = amountAtomic();
+      if (!to) { setStatus('Paste your wallet receive address first.', 'err'); return; }
+      if (amount <= 0) { setStatus('Enter an amount in USDm.', 'err'); return; }
+      $('dripBtn').disabled = true; $('landed').hidden = true; setStatus('Issuing…');
+      let prevAtomic = 0;
+      try { const m = window.monerousd; if (m && m.getBalance) { const b = await m.getBalance(); prevAtomic = Number((b && (b.atomic != null ? b.atomic : b.USDm)) || 0); } } catch (e) { void e; }
+      try {
+        // The node reads amount/to from the JSON body (it strips the query string), so POST a real body — works
+        // hitting the node directly, via the sovereign /api proxy, or wallet-bridged to your own node.
+        const r = await api('/api/faucet/drip', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ amount: amount, to: to }) });
+        if (r && r.status === 'OK') {
+          setStatus('Sent ' + usdm(r.issued) + ' test USDm to your address and recorded the confidential note on-chain.', 'ok');
+          await loadStatus();
+          proveLanded(prevAtomic);
+        } else {
+          // ⛔ REPORT THE REAL FAULT. This branch used to say "That address is invalid" for EVERY failure —
+          // a dead proxy, a node on the wrong network, an unreachable node, anything — with the true cause
+          // buried in a parenthetical. It sent people hunting a perfectly good address while the actual fault
+          // was elsewhere (measured: the /api proxy dialing a hardcoded port the node had moved off, so a
+          // valid address was reported invalid every time). An error that names the wrong cause is worse than
+          // no error: it spends the user's time on the wrong problem.
+          var why = (r && r.reason) || '';
+          var msg;
+          if (why === 'BAD_RECIPIENT') {
+            msg = 'That address could not be read — paste your wallet’s full receive address.';
+          } else if (why === 'TESTNET_ONLY') {
+            msg = 'Your node is not on testnet, so the tap is off. The tap only ever runs on testnet.';
+          } else if (why) {
+            msg = 'The node refused it: ' + why + '.';
+          } else {
+            msg = 'No answer from your node — it may still be starting, or the wallet is pointed at a node that is not running.';
+          }
+          setStatus(msg, 'err');
+        }
+      } catch (e) { setStatus('Request failed: ' + (e && e.message || e), 'err'); }
+      $('dripBtn').disabled = !onTestnet;
+    }
+    // In-wallet convenience: the bridge exposes the user's own receive address — one tap fills it.
+    function wireWalletAddr(){
+      const m = window.monerousd;
+      if (!m || !m.getAddress) return;
+      const b = $('myAddrBtn'); b.hidden = false;
+      b.addEventListener('click', async () => {
+        try { const a = await m.getAddress(); if (a) { $('toInput').value = a; setStatus('Using your wallet address.', 'ok'); } }
+        catch (e) { setStatus('Wallet address unavailable: ' + (e && e.message || e), 'err'); }
+      });
+    }
+    $('dripBtn').addEventListener('click', drip);
+    $('refreshBtn').addEventListener('click', loadStatus);
+    $('amtInput').addEventListener('input', reflectAtomic);
+    window.addEventListener('message', (ev) => { if (ev && ev.data && ev.data.type === 'monerousd:hello') setTimeout(wireWalletAddr, 50); });
+    (async () => { reflectAtomic(); wireWalletAddr(); await loadStatus(); })();
+  </script>
+</body>
+</html>

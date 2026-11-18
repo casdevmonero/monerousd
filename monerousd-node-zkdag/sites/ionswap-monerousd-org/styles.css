@@ -1,0 +1,2209 @@
+/*
+   Copyright (c) 2026, The MoneroUSD Protocol
+
+   This file is an original work of the MoneroUSD Protocol — a post-quantum,
+   GHOSTDAG block-DAG, zero-knowledge confidential-value protocol. It is NOT part
+   of the Monero Project. Licensed under the Business Source License 1.1
+   (SPDX-License-Identifier: BUSL-1.1); see the LICENSE file in this directory;
+   Apache-2.0 from 2029-12-01.
+*/
+
+/* Ion Swap — Uniswap-inspired polish with Monero palette.
+ * Design goals:
+ *   - Large, rounded, glass-bordered cards that read as products, not forms.
+ *   - Chunky swap inputs with asset pills; a clear arrow between sides.
+ *   - Generous spacing, sharp type scale (Inter-like via system stack).
+ *   - Monero orange as the single accent; everything else is neutral.
+ *   - Subtle gradient halo behind the primary surface to add warmth.
+ */
+
+:root {
+  --orange:        #ff6600;
+  --orange-hover:  #ff7a1f;
+  --orange-soft:   rgba(255, 102, 0, 0.10);
+  --orange-border: rgba(255, 102, 0, 0.35);
+
+  --bg-0:   #0a0a0a;                 /* page */
+  --bg-1:   #111111;                 /* outer card */
+  --bg-2:   #1a1a1a;                 /* inner card / input row */
+  --bg-3:   #232323;                 /* raised pill / hover */
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+
+  --fg:     #f5f5f5;
+  --fg-2:   #c9c9c9;
+  --muted:  #8a8a8a;
+  --muted-2:#6a6a6a;
+
+  --ok:     #46d888;
+  --danger: #ff5c5c;
+
+  --r-sm: 10px;
+  --r-md: 16px;
+  --r-lg: 22px;
+  --r-xl: 28px;
+  --r-pill: 999px;
+
+  --shadow-1: 0 1px 0 rgba(255,255,255,0.04) inset, 0 8px 24px rgba(0,0,0,0.35);
+  --shadow-2: 0 1px 0 rgba(255,255,255,0.06) inset, 0 16px 48px rgba(0,0,0,0.55);
+
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg-0);
+  color: var(--fg);
+  font-family: var(--font);
+  font-feature-settings: "ss01", "cv01", "cv02", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  letter-spacing: -0.005em;
+}
+
+/* Ambient orange halo behind content, like Uniswap's radial tint. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -20% -20% auto -20%;
+  height: 60vh;
+  background: radial-gradient(ellipse at 50% 0%,
+              rgba(255, 102, 0, 0.10) 0%,
+              rgba(255, 102, 0, 0.04) 30%,
+              transparent 60%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+a { color: var(--fg); text-decoration: none; }
+a:hover { color: var(--orange); }
+
+/* ----- Top nav ----- */
+.nav {
+  position: sticky; top: 0; z-index: 10;
+  background: rgba(10,10,10,0.65);
+  backdrop-filter: saturate(1.2) blur(14px);
+  -webkit-backdrop-filter: saturate(1.2) blur(14px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 28px 10px;
+}
+.brand {
+  display: inline-flex; align-items: center; gap: 10px;
+  font-weight: 700; font-size: 17px; letter-spacing: -0.01em;
+}
+.brand .logo {
+  color: var(--orange);
+  font-size: 22px;
+  filter: drop-shadow(0 0 14px rgba(255,102,0,0.55));
+}
+.brand .brand-logo-svg {
+  width: 28px; height: 28px;
+  filter: drop-shadow(0 0 10px rgba(255,102,0,0.45));
+}
+.nav-primary {
+  display: flex; gap: 4px;
+  background: var(--bg-1);
+  padding: 4px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+}
+.nav-primary a {
+  color: var(--muted);
+  font-size: 14px; font-weight: 500;
+  padding: 8px 16px;
+  border-radius: var(--r-pill);
+  transition: background .15s ease, color .15s ease;
+}
+.nav-primary a:hover { color: var(--fg); background: var(--bg-2); }
+.nav-primary a.active { color: var(--fg); background: var(--bg-3); }
+
+.nav-secondary {
+  display: flex; gap: 2px; justify-content: center;
+  padding: 0 28px 10px;
+}
+.nav-secondary a {
+  color: var(--muted-2);
+  font-size: 12.5px; font-weight: 500;
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  transition: background .15s ease, color .15s ease;
+}
+.nav-secondary a:hover { color: var(--fg-2); background: var(--bg-2); }
+.nav-secondary a.active { color: var(--orange); background: var(--orange-soft); }
+
+.connect { display: flex; gap: 10px; align-items: center; }
+.mobile-only { display: none; }
+
+/* ----- Buttons ----- */
+.btn {
+  appearance: none; cursor: pointer;
+  font-family: inherit; font-weight: 600; font-size: 14px;
+  color: var(--fg-2);
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  padding: 10px 16px;
+  border-radius: var(--r-pill);
+  transition: background .15s ease, color .15s ease, border-color .15s ease, transform .05s;
+}
+.btn:hover { background: var(--bg-3); color: var(--fg); border-color: rgba(255,255,255,0.2); }
+.btn:active { transform: translateY(1px); }
+.btn.primary {
+  color: #0a0a0a;
+  background: linear-gradient(180deg, var(--orange-hover), var(--orange));
+  border: none;
+  padding: 14px 20px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  box-shadow: 0 6px 20px rgba(255, 102, 0, 0.35), 0 1px 0 rgba(255,255,255,0.2) inset;
+}
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.primary:disabled {
+  background: var(--bg-2);
+  color: var(--muted);
+  box-shadow: none;
+  cursor: default;
+}
+.btn.ghost { background: transparent; }
+.btn.full { width: 100%; padding: 16px 20px; font-size: 16px; border-radius: var(--r-md); }
+
+.pill {
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  font-size: 12px; font-weight: 500; color: var(--muted);
+}
+.pill.good   { color: var(--ok);     border-color: rgba(70,216,136,0.25); background: rgba(70,216,136,0.06); }
+.pill.warn   { color: var(--danger); border-color: rgba(255,92,92,0.25);  background: rgba(255,92,92,0.06); }
+
+/* ----- Layout ----- */
+main {
+  position: relative; z-index: 1;
+  max-width: 1120px;
+  margin: 28px auto 80px;
+  padding: 0 24px;
+  min-height: calc(100vh - 260px);
+}
+
+/* ----- Card ----- */
+.card {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 22px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow-1);
+}
+.card h2 {
+  margin: 0 0 4px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em;
+}
+.card h3 {
+  margin: 0 0 10px; font-size: 14px; font-weight: 500; color: var(--muted);
+}
+.card .subhead { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+
+/* ----- Swap card — the hero ----- */
+.swap-card {
+  max-width: 480px;
+  margin: 8px auto 0;
+  padding: 18px;
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-2);
+  position: relative;
+}
+.swap-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 6px 14px;
+}
+.swap-head h2 { font-size: 20px; margin: 0; }
+.swap-head .subtitle { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+
+/* Input box — the chunky dual-row inputs */
+.swap-input {
+  background: var(--bg-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+  padding: 16px 18px;
+  transition: border-color .15s ease, background .15s ease;
+}
+.swap-input:focus-within { border-color: var(--border-strong); background: #1e1e1e; }
+.swap-input .row-top {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 10px;
+}
+.swap-input .label { color: var(--muted); font-size: 12.5px; font-weight: 500; }
+.swap-input .balance { color: var(--muted); font-size: 12.5px; }
+.swap-input .row-main {
+  display: flex; align-items: center; gap: 12px;
+}
+.swap-input .amt {
+  flex: 1 1 auto;
+  background: transparent; border: none; outline: none;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 28px; font-weight: 500; letter-spacing: -0.02em;
+  padding: 0;
+  min-width: 0;
+}
+.swap-input .amt::placeholder { color: var(--muted-2); }
+.swap-input .amt:read-only { color: var(--fg); }
+
+/* Asset pill (replaces raw <select> for a cleaner look) */
+.asset-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-pill);
+  padding: 8px 12px 8px 10px;
+  font-weight: 600; font-size: 14px;
+  color: var(--fg);
+  cursor: pointer;
+  position: relative;
+  transition: background .15s ease, border-color .15s ease;
+  white-space: nowrap;
+}
+.asset-pill:hover { background: #2c2c2c; border-color: rgba(255,255,255,0.2); }
+.asset-pill .dot {
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--orange);
+  box-shadow: 0 0 10px rgba(255,102,0,0.55);
+  flex: 0 0 auto;
+}
+.asset-pill .token-logo,
+.token-logo {
+  width: 20px; height: 20px; border-radius: 50%;
+  flex: 0 0 auto;
+  background: #0a0a0a;
+  border: 1px solid rgba(255,255,255,0.08);
+  display: block;
+}
+.asset-pill select {
+  /* Keep the native select for a11y, but visually hidden over the pill. */
+  position: absolute; inset: 0;
+  opacity: 0; cursor: pointer;
+  appearance: none;
+  font-family: inherit;
+}
+.asset-pill .caret { opacity: 0.6; font-size: 10px; }
+
+/* The arrow button between input rows */
+.swap-arrow-wrap {
+  display: flex; justify-content: center;
+  margin: -10px 0;
+  position: relative; z-index: 2;
+}
+.swap-arrow {
+  width: 36px; height: 36px;
+  border-radius: 12px;
+  background: var(--bg-1);
+  border: 4px solid var(--bg-0); /* creates the "notch" look */
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .15s ease, background .15s ease, transform .2s ease;
+  box-shadow: var(--shadow-1);
+}
+.swap-arrow:hover { color: var(--orange); background: var(--bg-2); transform: rotate(180deg); }
+.swap-arrow svg { width: 16px; height: 16px; }
+
+/* Slippage / route subrow */
+.sub-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+  margin-top: 14px;
+}
+.sub-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+}
+.sub-card .label {
+  color: var(--muted); font-size: 11.5px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.sub-card .val { font-size: 14px; font-weight: 500; color: var(--fg); }
+.sub-card select {
+  background: transparent; border: none; color: var(--fg);
+  font-size: 14px; font-weight: 500;
+  padding: 0; outline: none; cursor: pointer;
+  appearance: none; width: 100%;
+  font-family: inherit;
+}
+
+.fee-breakdown {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: var(--orange-soft);
+  border: 1px solid var(--orange-border);
+  border-radius: var(--r-md);
+  color: var(--fg-2);
+  font-size: 12.5px; line-height: 1.5;
+}
+
+/* Notice callout */
+.notice {
+  padding: 10px 14px;
+  background: var(--orange-soft);
+  border: 1px solid var(--orange-border);
+  border-radius: var(--r-md);
+  font-size: 12.5px; line-height: 1.5;
+  color: var(--fg);
+  margin: 0 0 16px;
+}
+.notice strong { color: var(--orange); font-weight: 600; }
+
+/* Status line */
+.status { margin-top: 14px; min-height: 1em; font-size: 13.5px; }
+.status .ok { color: var(--ok); }
+.status .danger { color: var(--danger); }
+
+/* Batch status card */
+.batch-status {
+  margin-top: 16px;
+  padding: 16px 18px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  color: var(--muted);
+  font-size: 13px;
+  display: flex; align-items: center; gap: 10px;
+}
+.batch-status .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--orange);
+  box-shadow: 0 0 12px rgba(255,102,0,0.55);
+  animation: pulse 1.8s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+.batch-countdown { color: var(--orange); font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* ----- Generic tables + grids (for other pages) ----- */
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.row .grow { flex: 1 1 auto; }
+label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
+.input, select {
+  background: var(--bg-2); border: 1px solid var(--border); color: var(--fg);
+  padding: 12px 14px; border-radius: var(--r-md); font-size: 14.5px; width: 100%;
+  font-family: inherit;
+  transition: border-color .15s ease;
+}
+.input:focus, select:focus { outline: none; border-color: var(--orange); }
+
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+th { color: var(--muted); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+td { color: var(--fg-2); }
+tr:last-child td { border-bottom: none; }
+tr:hover td { color: var(--fg); }
+
+.grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+/* ----- Balance row under swap inputs ----- */
+.swap-input .row-bottom {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 10px;
+  font-size: 12px;
+}
+.balance-line {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.chip {
+  appearance: none; cursor: pointer;
+  font-family: inherit; font-weight: 600; font-size: 11px;
+  color: var(--orange);
+  background: var(--orange-soft);
+  border: 1px solid var(--orange-border);
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  transition: background .15s ease, color .15s ease;
+}
+.chip:hover:not(:disabled) { background: rgba(255,102,0,0.18); color: var(--orange-hover); }
+.chip:disabled { opacity: 0.4; cursor: default; }
+
+/* ----- Wallet balance strip (Uniswap-style) ----- */
+.wallet-bal {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 8px; padding: 10px 14px;
+  background: rgba(255, 102, 0, 0.04);
+  border: 1px solid rgba(255, 102, 0, 0.10);
+  border-radius: var(--r-sm);
+  font-size: 12.5px; font-variant-numeric: tabular-nums;
+  transition: border-color .2s ease, background .2s ease;
+}
+.wallet-bal:hover { border-color: rgba(255, 102, 0, 0.22); }
+.wallet-bal .wb-icon {
+  width: 16px; height: 16px; flex-shrink: 0;
+  color: var(--orange); opacity: 0.7;
+}
+.wallet-bal .wb-label { color: var(--muted); white-space: nowrap; }
+.wallet-bal .wb-amt { color: var(--fg-2); font-weight: 600; letter-spacing: -0.01em; }
+.wallet-bal .wb-asset { color: var(--muted); }
+.wallet-bal .wb-max { margin-left: auto; }
+.wallet-bal.wb-off {
+  background: var(--bg-2); border-color: var(--border);
+}
+.wallet-bal.wb-off .wb-icon { color: var(--muted-2); }
+.wallet-bal.wb-off .wb-label { color: var(--muted-2); }
+
+/* ----- Fee breakdown rows ----- */
+.fee-breakdown { padding: 10px 14px; }
+.fee-breakdown .fee-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 4px 0;
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+.fee-breakdown .fee-row + .fee-row { border-top: 1px dashed rgba(255,255,255,0.05); }
+.fee-breakdown .fee-label { color: var(--muted); }
+.fee-breakdown .fee-value { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+.fee-breakdown .fee-note {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed rgba(255,255,255,0.08);
+  color: var(--muted); font-size: 11.5px; line-height: 1.5;
+}
+.fee-breakdown .fee-note.warn { color: #ffb066; }
+
+.notice.warn { border-color: rgba(255,176,0,0.35); background: rgba(255,176,0,0.06); }
+.notice.warn strong { color: #ffb066; }
+
+/* ----- Active nav styling ----- */
+.nav-primary a.active {
+  color: var(--fg);
+  background: linear-gradient(180deg, rgba(255,102,0,0.18), rgba(255,102,0,0.10));
+  border: 1px solid rgba(255,102,0,0.30);
+  padding: 7px 15px;
+}
+
+/* ----- Connect consent sheet ----- */
+.consent-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0,0,0,0.65);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  animation: overlay-fade .18s ease-out;
+}
+@keyframes overlay-fade { from { opacity: 0; } to { opacity: 1; } }
+.consent-sheet {
+  width: 100%; max-width: 440px;
+  background:
+    linear-gradient(180deg, rgba(20,22,26,0.92) 0%, rgba(13,14,16,0.96) 100%);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: var(--r-xl);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.06) inset,
+    0 30px 64px rgba(0,0,0,0.65),
+    0 0 50px rgba(255,102,0,0.10);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  padding: 24px 24px 20px;
+  animation: sheet-in .22s ease-out;
+}
+@keyframes sheet-in { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.consent-head {
+  display: flex; justify-content: center; align-items: center; gap: 10px;
+  margin-bottom: 14px;
+}
+.consent-ion, .consent-wallet {
+  width: 44px; height: 44px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 6px;
+}
+.consent-arrow {
+  color: var(--orange);
+  font-size: 18px;
+  text-shadow: 0 0 8px rgba(255,102,0,0.5);
+}
+.consent-sheet h3 {
+  margin: 0 0 6px;
+  font-size: 17px; font-weight: 600; letter-spacing: -0.01em;
+  text-align: center;
+}
+.consent-origin {
+  color: var(--muted); font-size: 12px;
+  text-align: center;
+  margin-bottom: 18px;
+  font-family: ui-monospace, SF Mono, Menlo, monospace;
+}
+.consent-perms {
+  list-style: none; margin: 0 0 20px; padding: 0;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.consent-perms li {
+  display: flex; align-items: flex-start; gap: 10px;
+  font-size: 13px; line-height: 1.45;
+}
+.consent-perms li .muted { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.consent-perms strong { color: var(--fg); font-weight: 600; }
+.perm-ico {
+  flex: 0 0 auto;
+  width: 20px; height: 20px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700;
+  margin-top: 1px;
+}
+.perm-ico.ok  { background: rgba(70,216,136,0.14); color: var(--ok); border: 1px solid rgba(70,216,136,0.3); }
+.perm-ico.warn{ background: rgba(138,138,138,0.14); color: var(--muted); border: 1px solid rgba(138,138,138,0.3); }
+
+.consent-actions {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.consent-actions .btn { padding: 12px 16px; font-size: 14px; }
+.consent-actions .btn.primary { padding: 12px 16px; }
+
+/* ----- Footer ----- */
+.foot {
+  padding: 28px 24px;
+  color: var(--muted); font-size: 12.5px;
+  display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  max-width: 1120px; margin: 40px auto 0;
+  border-top: 1px solid var(--border);
+}
+.foot-left { display: flex; align-items: center; gap: 12px; max-width: 680px; }
+.foot-logo {
+  width: 36px; height: 36px; flex: 0 0 auto;
+  filter: drop-shadow(0 0 8px rgba(255,102,0,0.25));
+}
+.foot-right { white-space: nowrap; }
+
+/* ----- Page card — centered panels for non-trade pages ----- */
+.page-card {
+  max-width: 520px;
+  margin: 8px auto 0;
+  padding: 22px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-2);
+}
+.page-card.wide { max-width: 720px; }
+.page-card .page-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 4px 2px 18px;
+}
+.page-card .page-head h2 {
+  font-size: 20px; font-weight: 600; margin: 0;
+  letter-spacing: -0.01em;
+}
+.page-card .page-head .subtitle {
+  color: var(--muted); font-size: 12.5px; margin-top: 2px;
+}
+
+/* ----- Tab bar (pill-style, like Uniswap sub-tabs) ----- */
+.tab-bar {
+  display: flex; gap: 4px;
+  background: var(--bg-2);
+  padding: 4px;
+  border-radius: var(--r-pill);
+  margin-bottom: 18px;
+}
+.tab-bar button {
+  flex: 1;
+  appearance: none; cursor: pointer;
+  font-family: inherit; font-size: 13.5px; font-weight: 500;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  padding: 10px 14px;
+  border-radius: var(--r-pill);
+  transition: background .15s ease, color .15s ease;
+}
+.tab-bar button:hover { color: var(--fg-2); }
+.tab-bar button.active {
+  color: var(--fg);
+  background: var(--bg-3);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+
+.btn.btn-sm {
+  padding: 5px 10px;
+  font-size: 12px;
+  border-radius: var(--r-pill);
+  background: var(--bg-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.btn.btn-sm:hover { color: var(--fg-2); }
+.btn.btn-sm.active {
+  background: var(--orange-soft);
+  color: var(--orange);
+  border-color: var(--orange);
+}
+
+/* ----- Stat grid — chunky metric cards ----- */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.stat-box {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 14px 16px;
+}
+.stat-box .stat-label {
+  color: var(--muted); font-size: 11.5px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.stat-box .stat-value {
+  font-size: 22px; font-weight: 600; color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+.stat-box .stat-sub {
+  color: var(--muted); font-size: 11.5px; margin-top: 2px;
+}
+
+/* ----- Form field — swap-input style for page forms ----- */
+.field {
+  background: var(--bg-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  transition: border-color .15s ease;
+}
+.field:focus-within { border-color: var(--border-strong); }
+.field .field-label {
+  color: var(--muted); font-size: 12px; font-weight: 500;
+  margin-bottom: 8px;
+}
+.field .field-input {
+  width: 100%;
+  background: transparent; border: none; outline: none;
+  color: var(--fg);
+  font-family: inherit; font-size: 16px; font-weight: 500;
+  padding: 0;
+}
+.field .field-input::placeholder { color: var(--muted-2); }
+.field select.field-input {
+  appearance: none; cursor: pointer;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238a8a8a' stroke-width='1.5' fill='none'/%3E%3C/svg%3E") no-repeat right 0 center;
+  padding-right: 18px;
+}
+.field-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+
+/* ----- Empty state — centered placeholder ----- */
+.empty-state {
+  text-align: center;
+  padding: 32px 20px;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+.empty-state .empty-icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+  opacity: 0.5;
+  filter: grayscale(0.6);
+}
+.empty-state strong { color: var(--fg-2); }
+
+/* ----- Copy block — monospace address/URL block ----- */
+.copy-block {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+.copy-block code {
+  flex: 1; overflow: hidden; text-overflow: ellipsis;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 13px; color: var(--fg-2);
+  white-space: nowrap;
+}
+.copy-block .btn { flex: 0 0 auto; padding: 6px 12px; font-size: 12px; }
+
+/* ----- Info list — permission/feature list ----- */
+.info-list {
+  list-style: none; margin: 0 0 16px; padding: 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.info-list li {
+  display: flex; align-items: flex-start; gap: 10px;
+  font-size: 13.5px; line-height: 1.45;
+  padding: 10px 14px;
+  background: var(--bg-2);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+}
+.info-list li .ico {
+  flex: 0 0 auto; width: 28px; height: 28px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px;
+  background: var(--orange-soft);
+  border: 1px solid var(--orange-border);
+  color: var(--orange);
+}
+
+/* ----- Portfolio table ----- */
+.port-total {
+  text-align: center;
+  font-size: 28px; font-weight: 600;
+  letter-spacing: -0.02em;
+  padding: 8px 0 18px;
+  font-variant-numeric: tabular-nums;
+}
+.port-total .total-label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; font-weight: 400; }
+.port-table { width: 100%; border-collapse: collapse; }
+.port-table th { text-align: left; padding: 10px 8px; color: var(--muted); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid var(--border); }
+.port-table td { padding: 12px 8px; font-size: 14px; border-bottom: 1px solid var(--border); color: var(--fg-2); }
+.port-table tr:last-child td { border-bottom: none; }
+.port-table tr:hover td { color: var(--fg); background: rgba(255,255,255,0.015); }
+.port-table .asset-cell { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+
+/* ----- NFT grid ----- */
+.nft-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+.nft-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 14px;
+  transition: border-color .15s ease, transform .1s ease;
+}
+.nft-card:hover { border-color: var(--border-strong); transform: translateY(-2px); }
+
+/* ----- Wizard steps (token create) ----- */
+.wizard-steps {
+  display: flex; gap: 4px; margin-bottom: 18px;
+}
+.wizard-step {
+  flex: 1; height: 4px; border-radius: 2px;
+  background: var(--bg-3);
+}
+.wizard-step.done { background: var(--orange); }
+.wizard-step.active { background: var(--orange); opacity: 0.6; }
+.wizard-subtitle { color: var(--muted); font-size: 12.5px; margin-bottom: 16px; }
+
+/* ----- NFT upload area ----- */
+.nft-upload-area {
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+.nft-preview {
+  background: var(--bg-2);
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--r-lg);
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.6;
+  transition: border-color .15s ease, background .15s ease;
+}
+.nft-upload-area:hover .nft-preview { border-color: var(--orange-border); background: var(--orange-soft); }
+.nft-preview img { display: block; margin: 0 auto; }
+
+/* ----- Divider ----- */
+.divider { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+/* ----- Utility colors ----- */
+.muted  { color: var(--muted); }
+.ok     { color: var(--ok); }
+.danger { color: var(--danger); }
+.orange { color: var(--orange); }
+.num    { font-variant-numeric: tabular-nums; }
+
+/* ----- Pool row hover + lock icon ----- */
+.pool-row:hover td { background: rgba(255,255,255,0.02); }
+.lock-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  margin-right: 4px; vertical-align: middle;
+}
+
+/* ----- Activity feed table (pair detail) ----- */
+.card table tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* ----- Collection card hover ----- */
+.coll-card:hover { border-color: var(--orange-border); }
+
+/* ----- Responsive ----- */
+@media (max-width: 680px) {
+  .nav-top { padding: 10px 16px 6px; }
+  .nav-primary { display: none; }
+  .nav-secondary {
+    padding: 0 12px 8px;
+    overflow-x: auto; justify-content: flex-start;
+    gap: 0; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .nav-secondary::-webkit-scrollbar { display: none; }
+  .nav-secondary a { white-space: nowrap; font-size: 12.5px; padding: 6px 10px; }
+  .nav-secondary .mobile-only { display: inline; }
+  main { padding: 0 12px; margin-top: 16px; }
+  .swap-card { padding: 14px; }
+  .swap-input .amt { font-size: 24px; }
+  .sub-row { grid-template-columns: 1fr; }
+  .foot { flex-direction: column; }
+  .consent-sheet { padding: 18px 18px 16px; }
+  .consent-actions { grid-template-columns: 1fr; }
+  .page-card { padding: 14px; margin-top: 4px; }
+  .page-card .page-head { padding: 2px 2px 12px; }
+  .page-card .page-head h2 { font-size: 18px; }
+  .field { padding: 10px 14px; margin-bottom: 6px; }
+  .field .field-input { font-size: 15px; }
+  .field .field-label { margin-bottom: 5px; font-size: 11.5px; }
+  .field-row { grid-template-columns: 1fr; gap: 0; }
+  .field-row.field-row-2col { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .stat-grid { grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 10px; }
+  .stat-box { padding: 10px 12px; }
+  .stat-box .stat-value { font-size: 18px; }
+  .nft-grid { grid-template-columns: 1fr 1fr; }
+  .wizard-steps { margin-bottom: 10px; }
+  .wizard-subtitle { margin-bottom: 10px; font-size: 12px; }
+  .notice { padding: 8px 12px; font-size: 12px; margin-bottom: 12px; }
+  .sub-card { padding: 10px 12px; }
+  .sub-card .label { font-size: 11px; margin-bottom: 4px; }
+  .sub-card .val { font-size: 13px; }
+  .fee-breakdown { padding: 8px 12px; }
+  .fee-breakdown .fee-row { font-size: 12px; }
+  .info-list li { padding: 8px 12px; font-size: 13px; }
+  .info-list li .ico { width: 24px; height: 24px; font-size: 12px; }
+  .copy-block { padding: 10px 12px; }
+  .copy-block code { font-size: 11.5px; }
+  .empty-state { padding: 24px 16px; }
+  .port-total { font-size: 24px; padding: 4px 0 14px; }
+  .btn.full { padding: 14px 16px; font-size: 15px; }
+  .btn.primary { padding: 12px 16px; font-size: 14px; }
+  .trade-tabs { gap: 4px; }
+  .trade-tab { padding: 8px 14px; font-size: 13px; }
+}
+
+/* ── Trade tabs (Swap / Wrap / Unwrap) ── */
+.trade-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  justify-content: center;
+}
+.trade-tab {
+  background: var(--bg-2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  padding: 9px 22px;
+  font-size: 14px;
+  font-weight: 500;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.trade-tab:hover {
+  background: var(--bg-3);
+  color: var(--fg-2);
+}
+.trade-tab.active {
+  background: var(--orange-soft);
+  color: var(--orange);
+  border-color: var(--orange-border);
+}
+
+/* Asset selector for wrap/unwrap panels */
+.asset-select {
+  width: 100%;
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: var(--font);
+  cursor: pointer;
+  appearance: auto;
+}
+.asset-select:focus {
+  outline: none;
+  border-color: var(--orange-border);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Sovereign Tech v1 — additive design layer (v1.2.207).
+ *
+ * Goals:
+ *   • Deeper black surfaces + softer divider tints for OLED-grade contrast
+ *   • Tabular-num/mono treatment for every numeric + hash surface
+ *   • Pulse / hover-lift / focus-glow utilities (respects prefers-reduced-motion)
+ *   • Reusable card/stat/badge primitives without ripping the old system out
+ *
+ * Usage: add `.sov-card`, `.sov-stat`, `.sov-badge`, `.sov-rail`,
+ * `.sov-mono`, `.sov-tabular` to existing markup. The old `.card`,
+ * `.btn`, `.swap-card` continue to work — these classes layer ON TOP.
+ * ───────────────────────────────────────────────────────────────── */
+:root {
+  --sov-bg-deep:     #050505;
+  --sov-bg-elev-1:   #0d0e10;
+  --sov-bg-elev-2:   #15171a;
+  --sov-bg-elev-3:   #1f2226;
+  --sov-bg-popover:  #21252b;
+
+  --sov-rail:        rgba(255, 102, 0, 0.85);
+  --sov-rail-soft:   rgba(255, 102, 0, 0.18);
+  --sov-rail-glow:   0 0 16px rgba(255, 102, 0, 0.28);
+
+  --sov-divider:     rgba(255, 255, 255, 0.06);
+  --sov-divider-2:   rgba(255, 255, 255, 0.10);
+
+  --sov-text:        #f1f1f3;
+  --sov-text-muted:  #9aa0a8;
+  --sov-text-mute2:  #5d636c;
+
+  --sov-success:     #34d27e;
+  --sov-warn:        #f5a623;
+  --sov-danger:      #ff5e5e;
+  --sov-info:        #45c2f7;
+
+  --sov-mono: 'JetBrains Mono', ui-monospace, 'SF Mono',
+              Menlo, Consolas, 'Liberation Mono', monospace;
+}
+
+/* Tabular nums + mono helpers — every numeric / hash surface should
+ * carry one of these so columns line up cleanly across rows. */
+.sov-tabular   { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.sov-mono      { font-family: var(--sov-mono); font-variant-numeric: tabular-nums; letter-spacing: 0; }
+.sov-mono-sm   { font-family: var(--sov-mono); font-size: 12px; color: var(--sov-text-muted); }
+
+/* Card primitive — translucent glass surface for content blocks. */
+.sov-card {
+  background:
+    linear-gradient(180deg, rgba(20,22,26,0.58) 0%, rgba(13,14,16,0.66) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.04) inset,
+    0 12px 36px rgba(0,0,0,0.40);
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  transition: transform 180ms ease-out,
+              box-shadow 180ms ease-out,
+              border-color 180ms ease-out;
+}
+.sov-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255,102,0,0.20);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.06) inset,
+    0 18px 48px rgba(0,0,0,0.55),
+    0 0 28px rgba(255,102,0,0.10);
+}
+.sov-card.is-static:hover {
+  transform: none;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.04) inset,
+    0 12px 36px rgba(0,0,0,0.45);
+  border-color: var(--sov-divider);
+}
+.sov-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 22px 12px;
+  border-bottom: 1px solid var(--sov-divider);
+}
+.sov-card-header .h-title {
+  font-size: 14px; font-weight: 600; color: var(--sov-text);
+  letter-spacing: 0.02em; text-transform: uppercase;
+}
+.sov-card-header .h-meta {
+  font-family: var(--sov-mono);
+  font-size: 11px; color: var(--sov-text-muted);
+}
+.sov-card-body { padding: 18px 22px; }
+
+/* Stat block — translucent glass tile, used in hero strips. */
+.sov-stat {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 16px 18px;
+  background:
+    linear-gradient(180deg, rgba(20,22,26,0.58) 0%, rgba(13,14,16,0.66) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 14px;
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+}
+.sov-stat::before {
+  content: "";
+  position: absolute; left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--sov-rail);
+  opacity: 0;
+  transition: opacity 180ms ease-out;
+}
+.sov-stat.is-active::before { opacity: 1; }
+.sov-stat .label {
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--sov-text-muted);
+}
+.sov-stat .value {
+  font-family: var(--sov-mono);
+  font-size: 22px; font-weight: 600; color: var(--sov-text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+.sov-stat .delta {
+  font-family: var(--sov-mono);
+  font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.sov-stat .delta.up   { color: var(--sov-success); }
+.sov-stat .delta.down { color: var(--sov-danger); }
+.sov-stat .delta.flat { color: var(--sov-text-mute2); }
+
+/* Badge primitive — verified ✓, stable, deprecated, etc. */
+.sov-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px;
+  font-size: 11px; font-weight: 600;
+  letter-spacing: 0.02em;
+  border-radius: 999px;
+  background: var(--sov-bg-elev-3);
+  color: var(--sov-text-muted);
+  border: 1px solid var(--sov-divider-2);
+  vertical-align: middle;
+}
+.sov-badge.verified  { color: var(--orange); border-color: var(--sov-rail-soft); background: rgba(255,102,0,0.08); }
+.sov-badge.stable    { color: var(--sov-info); border-color: rgba(69,194,247,0.25); background: rgba(69,194,247,0.08); }
+.sov-badge.deprecated{ color: var(--sov-text-mute2); text-decoration: line-through; }
+.sov-badge.live      { color: var(--sov-success); border-color: rgba(52,210,126,0.25); background: rgba(52,210,126,0.08); }
+.sov-badge.live::before {
+  content: "";
+  width: 6px; height: 6px; border-radius: 999px;
+  background: var(--sov-success);
+  box-shadow: 0 0 8px rgba(52,210,126,0.6);
+  animation: sov-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes sov-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.85); }
+}
+
+/* Active rail — used on tabs / nav items / activity-bar items */
+.sov-rail-active {
+  position: relative;
+}
+.sov-rail-active::before {
+  content: "";
+  position: absolute; left: 0; bottom: -1px;
+  width: 100%; height: 2px;
+  background: var(--sov-rail);
+  border-radius: 2px;
+  box-shadow: var(--sov-rail-glow);
+}
+
+/* Pulse-on-load for newly-arrived rows. Pages add `.sov-fresh`
+ * to a row that was just inserted so it briefly highlights. */
+.sov-fresh { animation: sov-fresh-flash 1.2s ease-out 1; }
+@keyframes sov-fresh-flash {
+  0%   { background: rgba(255,102,0,0.18); }
+  100% { background: transparent; }
+}
+
+/* Address / hash truncation helper — copy-on-click visual hint. */
+.sov-truncate {
+  font-family: var(--sov-mono);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color 120ms ease-out;
+}
+.sov-truncate:hover { color: var(--orange); }
+.sov-truncate.is-copied { color: var(--sov-success); }
+
+/* Reduced-motion: honor the user's preference. */
+@media (prefers-reduced-motion: reduce) {
+  .sov-card, .sov-stat, .sov-rail-active, .sov-fresh, .sov-badge.live::before {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Stat strip — explorer hero, governance dashboard, portfolio header. */
+.sov-stat-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+/* Portfolio asset grid — responsive cards, click-to-trade. */
+.portfolio-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.portfolio-card {
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+.portfolio-card .token-logo {
+  flex: 0 0 38px;
+}
+.sov-text-mute2 {
+  color: var(--sov-text-mute2);
+  font-size: 13px;
+  font-style: italic;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Sovereign Tech v1 — GLOBAL UPGRADE (v1.2.207)
+ *
+ * Promotes the new design tokens onto the legacy global classes
+ * (.card, .btn.primary, .swap-card, .swap-input, .pill, .tabs,
+ * .nav-primary, .page-card) so every existing page automatically
+ * inherits the redesign without per-page markup changes.
+ *
+ * Higher specificity / later cascade order wins — these rules
+ * intentionally come AFTER the v0 definitions above.
+ * ───────────────────────────────────────────────────────────────── */
+
+/* Deeper page surface + stronger ambient orange aurora. */
+body { background: var(--sov-bg-deep, #050505); }
+body::before {
+  inset: -25% -20% auto -20%;
+  height: 70vh;
+  background:
+    radial-gradient(ellipse at 18% 8%, rgba(255,102,0,0.16) 0%, transparent 50%),
+    radial-gradient(ellipse at 82% 5%, rgba(255,102,0,0.10) 0%, transparent 55%),
+    radial-gradient(ellipse at 50% 0%, rgba(255,102,0,0.08) 0%, transparent 65%);
+}
+
+/* Brand mark — stronger glow + subtle drift so it reads as a
+ * sovereign sigil, not a static favicon. */
+.brand .brand-logo-svg {
+  filter: drop-shadow(0 0 14px rgba(255,102,0,0.55));
+  animation: sov-brand-pulse 5.5s ease-in-out infinite;
+}
+@keyframes sov-brand-pulse {
+  0%,100% { filter: drop-shadow(0 0 14px rgba(255,102,0,0.50)); }
+  50%     { filter: drop-shadow(0 0 22px rgba(255,102,0,0.85)); }
+}
+
+/* Top nav primary — translucent pill container, translucent orange
+ * pill on the active route. Keeps the original "rounded pill of
+ * pills" pattern; Sovereign Tech polish is in the glassmorphism. */
+.nav-primary {
+  background: rgba(255,255,255,0.03);
+  border-color: rgba(255,255,255,0.08);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+}
+.nav-primary a.active {
+  color: var(--orange);
+  background: rgba(255,102,0,0.14);
+  border: 1px solid rgba(255,102,0,0.32);
+  box-shadow: 0 0 14px rgba(255,102,0,0.18) inset, 0 4px 12px rgba(255,102,0,0.10);
+}
+/* Secondary nav — translucent active pill PLUS a polished orange
+ * gradient underline accent on every link so the row reads as a
+ * navigation rhythm rather than bland text. The underline is a
+ * gradient (translucent edges → solid center) with a soft glow at
+ * rest, brightens to full saturation on hover, and locks brightest
+ * with a stronger glow on active. */
+.nav-secondary a {
+  position: relative;
+  padding-bottom: 7px;             /* extra room so the bar has breathing space */
+}
+.nav-secondary a::after {
+  content: "";
+  position: absolute;
+  left: 12%;
+  right: 12%;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg,
+    rgba(255,102,0,0)    0%,
+    rgba(255,102,0,0.55) 18%,
+    rgba(255,140,40,0.85) 50%,
+    rgba(255,102,0,0.55) 82%,
+    rgba(255,102,0,0)    100%);
+  box-shadow: 0 0 8px rgba(255,102,0,0.30);
+  transform: scaleX(0.92);
+  transform-origin: center;
+  transition: transform 200ms ease-out,
+              filter 200ms ease-out,
+              box-shadow 200ms ease-out,
+              height 200ms ease-out;
+  pointer-events: none;
+}
+.nav-secondary a:hover::after {
+  transform: scaleX(1);
+  filter: brightness(1.35) saturate(1.15);
+  box-shadow: 0 0 14px rgba(255,102,0,0.55);
+}
+.nav-secondary a.active {
+  color: var(--orange);
+  background: rgba(255,102,0,0.10);
+  border: 1px solid rgba(255,102,0,0.22);
+}
+.nav-secondary a.active::after {
+  height: 2.5px;
+  transform: scaleX(1);
+  background: linear-gradient(90deg,
+    rgba(255,102,0,0.40) 0%,
+    rgba(255,160,60,1)   50%,
+    rgba(255,102,0,0.40) 100%);
+  box-shadow:
+    0 0 16px rgba(255,102,0,0.70),
+    0 0 4px  rgba(255,102,0,0.55);
+}
+@media (prefers-reduced-motion: reduce) {
+  .nav-secondary a::after { transition: none !important; }
+}
+
+/* Connect button — orange-on-black, never gray. */
+.connect .btn,
+.connect button#connect-btn {
+  color: var(--orange);
+  border-color: rgba(255,102,0,0.40);
+  background: rgba(255,102,0,0.08);
+  font-weight: 600;
+}
+.connect .btn:hover {
+  background: rgba(255,102,0,0.16);
+  border-color: var(--orange);
+}
+
+/* Cards — translucent glass surface with soft hover lift. */
+.card {
+  background:
+    linear-gradient(180deg, rgba(20,22,26,0.65) 0%, rgba(13,14,16,0.72) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.04) inset,
+    0 14px 38px rgba(0,0,0,0.45);
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  transition: border-color 220ms ease-out, box-shadow 220ms ease-out, transform 220ms ease-out;
+}
+.card:hover {
+  border-color: rgba(255,102,0,0.18);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.06) inset,
+    0 22px 56px rgba(0,0,0,0.55),
+    0 0 28px rgba(255,102,0,0.08);
+}
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: none !important; }
+  .card:hover { transform: none !important; }
+}
+
+/* Page-card (Pools/Liquidity/Trade containers) — translucent glass
+ * with the same vocabulary. Wider radius for the larger surface. */
+.page-card {
+  background:
+    linear-gradient(180deg, rgba(20,22,26,0.62) 0%, rgba(13,14,16,0.70) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 22px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.05) inset,
+    0 18px 56px rgba(0,0,0,0.45);
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+}
+.page-card .page-head h2 {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--sov-text, #f1f1f3);
+  position: relative;
+  padding-left: 14px;
+}
+.page-card .page-head h2::before {
+  content: "";
+  position: absolute; left: 0; top: 6px; bottom: 6px;
+  width: 3px;
+  background: var(--orange);
+  border-radius: 2px;
+  box-shadow: 0 0 10px rgba(255,102,0,0.65);
+}
+.page-card .page-head .subtitle {
+  font-size: 13px;
+  color: var(--sov-text-muted, #9aa0a8);
+  letter-spacing: 0.01em;
+}
+
+/* Swap card — the hero. Translucent glass with subtle gradient, soft
+ * border, glowing orange ambience. NO solid orange rail — the user
+ * preferred the original "translucent surface that looks like floating
+ * glass" aesthetic. */
+.swap-card {
+  background:
+    linear-gradient(180deg, rgba(20,22,26,0.72) 0%, rgba(13,14,16,0.78) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 24px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.06) inset,
+    0 28px 64px rgba(0,0,0,0.55),
+    0 0 48px rgba(255,102,0,0.07);
+  backdrop-filter: blur(12px) saturate(1.15);
+  -webkit-backdrop-filter: blur(12px) saturate(1.15);
+}
+.swap-input {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 18px;
+  transition: border-color 180ms ease-out, background 180ms ease-out, box-shadow 180ms ease-out;
+}
+.swap-input:focus-within {
+  border-color: rgba(255,102,0,0.45);
+  background: rgba(255,102,0,0.04);
+  box-shadow: 0 0 0 4px rgba(255,102,0,0.08);
+}
+.swap-input .amt {
+  font-family: var(--sov-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.015em;
+  font-weight: 500;
+}
+
+/* Primary buttons — orange with subtle inner shine. */
+.btn.primary,
+.btn.btn-primary {
+  background: linear-gradient(180deg, #ff7a1f 0%, #ff5400 100%);
+  box-shadow:
+    0 8px 24px rgba(255,102,0,0.45),
+    0 1px 0 rgba(255,255,255,0.25) inset,
+    0 0 0 1px rgba(255,102,0,0.4);
+  letter-spacing: 0;
+}
+.btn.primary:hover,
+.btn.btn-primary:hover {
+  filter: brightness(1.08) saturate(1.05);
+  box-shadow:
+    0 12px 32px rgba(255,102,0,0.55),
+    0 1px 0 rgba(255,255,255,0.3) inset,
+    0 0 0 1px rgba(255,102,0,0.55);
+}
+
+/* Pills — translucent glass treatment, Sovereign Tech polish. */
+.pill {
+  padding: 6px 12px;
+  border-radius: var(--r-pill);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.pill.good {
+  color: var(--sov-success, #34d27e);
+  border-color: rgba(52,210,126,0.30);
+  background: rgba(52,210,126,0.10);
+  box-shadow: 0 0 14px rgba(52,210,126,0.10);
+}
+.pill.warn {
+  color: var(--sov-danger, #ff5e5e);
+  border-color: rgba(255,94,94,0.30);
+  background: rgba(255,94,94,0.10);
+}
+
+/* Tabs (.tabs > .tab, .trade-tabs > .trade-tab) — translucent
+ * glass pills. Active state is an orange-tinted pill with subtle
+ * inner glow; non-active are neutral glass.
+ *
+ * NOTE: this PRESERVES the pill-shape that v0 trade-tabs already
+ * used (border-radius: var(--r-pill)). The earlier v=26 attempt
+ * to convert these to underline-rail tabs was a regression — the
+ * user's existing visual language is "pill on a translucent
+ * surface" and Sovereign Tech polish layers on top of that. */
+.trade-tabs {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: var(--r-pill);
+  padding: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px;
+  margin: 0 auto 18px;
+  width: fit-content;
+  max-width: 100%;
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+}
+.trade-tab {
+  appearance: none;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 13.5px;
+  padding: 8px 18px;
+  border-radius: var(--r-pill);
+  letter-spacing: 0.005em;
+  transition: color 150ms ease-out, background 150ms ease-out, border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+.trade-tab:hover {
+  color: var(--fg-2);
+  background: rgba(255,255,255,0.04);
+}
+.trade-tab.active {
+  color: var(--orange);
+  background: rgba(255,102,0,0.14);
+  border-color: rgba(255,102,0,0.32);
+  box-shadow:
+    0 0 14px rgba(255,102,0,0.16) inset,
+    0 4px 14px rgba(255,102,0,0.10);
+}
+/* Generic .tab (non trade) — keep simpler underline-rail since
+ * those callers have always had that shape (e.g. tab-bar). */
+.tabs > .tab {
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 13.5px;
+  padding: 10px 14px;
+  position: relative;
+  transition: color 150ms ease-out;
+}
+.tabs > .tab:hover { color: var(--fg-2); }
+.tabs > .tab.active { color: var(--orange); }
+.tabs > .tab.active::after {
+  content: "";
+  position: absolute; left: 14%; right: 14%; bottom: -1px;
+  height: 2px;
+  background: var(--orange);
+  border-radius: 2px;
+  box-shadow: 0 0 12px rgba(255,102,0,0.55);
+}
+
+/* Numerics — every <td class="num"> + amount cell now mono+tabular. */
+.num, td.num, .num.muted, .balance, .swap-input .amt,
+.port-table td:nth-child(2), .port-table td:nth-child(3) {
+  font-family: var(--sov-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.005em;
+}
+
+/* Tables — softer divider, hover row, mono numbers. */
+.port-table, table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.port-table thead th, table thead th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--sov-text-muted, #9aa0a8);
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--sov-divider, rgba(255,255,255,0.10));
+  text-align: left;
+}
+.port-table tbody td, table tbody td {
+  padding: 14px 10px;
+  border-bottom: 1px solid var(--sov-divider, rgba(255,255,255,0.06));
+  color: var(--sov-text, #f1f1f3);
+  font-size: 14px;
+}
+.port-table tbody tr:hover, table tbody tr:hover {
+  background: rgba(255,102,0,0.04);
+}
+
+/* Token logo halo on hover — subtle but distinctive. */
+.token-logo {
+  background: var(--sov-bg-elev-2);
+  border-color: var(--sov-divider-2, rgba(255,255,255,0.10));
+  transition: box-shadow 180ms ease-out;
+}
+.asset-cell:hover .token-logo,
+.portfolio-card:hover .token-logo {
+  box-shadow: 0 0 12px rgba(255,102,0,0.30);
+}
+
+/* Footer — subtle treatment. */
+.foot {
+  border-top: 1px solid var(--sov-divider, rgba(255,255,255,0.06));
+  padding: 24px 24px 32px;
+  margin-top: 60px;
+  color: var(--sov-text-muted, #9aa0a8);
+  font-size: 12.5px;
+}
+.foot-logo {
+  height: 26px; width: 26px;
+  filter: drop-shadow(0 0 10px rgba(255,102,0,0.40));
+}
+
+/* Inputs / selects — Sovereign focus ring. */
+input[type="text"], input[type="number"], input[type="search"],
+select, textarea {
+  background: var(--sov-bg-elev-1, #0d0e10);
+  border: 1px solid var(--sov-divider-2, rgba(255,255,255,0.10));
+  border-radius: 10px;
+  color: var(--sov-text, #f1f1f3);
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 14px;
+  transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--orange);
+  box-shadow: 0 0 0 4px rgba(255,102,0,0.12);
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Token-picker modal (Uniswap-style)
+ * Used by lib/token-picker.js. Click on .asset-pill anywhere on the
+ * site opens this picker; verified tokens + user-imported tokens
+ * appear with logos. Custom tokens are only added by ion1_ address —
+ * NEVER auto-populated from chain enumeration.
+ * ───────────────────────────────────────────────────────────────── */
+.tp-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px;
+  animation: tp-fade .18s ease-out;
+}
+@keyframes tp-fade { from { opacity: 0; } to { opacity: 1; } }
+.tp-sheet {
+  width: 100%; max-width: 440px; max-height: 88vh;
+  display: flex; flex-direction: column;
+  background:
+    linear-gradient(180deg, rgba(20,22,26,0.92) 0%, rgba(13,14,16,0.95) 100%);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 22px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.06) inset,
+    0 30px 64px rgba(0,0,0,0.65),
+    0 0 50px rgba(255,102,0,0.10);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
+  overflow: hidden;
+  animation: tp-rise .22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes tp-rise { from { transform: translateY(8px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.tp-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 18px 20px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.tp-title {
+  font-size: 15px; font-weight: 600; color: var(--fg);
+  letter-spacing: -0.005em;
+}
+.tp-close {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--muted); font-size: 22px; line-height: 1;
+  width: 28px; height: 28px; border-radius: 50%;
+  transition: background 120ms ease-out, color 120ms ease-out;
+}
+.tp-close:hover { background: rgba(255,255,255,0.05); color: var(--fg); }
+.tp-search {
+  position: relative;
+  padding: 14px 20px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.tp-search-icon {
+  position: absolute; left: 32px; top: 50%; transform: translateY(-50%);
+  font-size: 14px; opacity: 0.55;
+  pointer-events: none;
+}
+.tp-search input {
+  width: 100%;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 12px;
+  padding: 11px 12px 11px 36px;
+  font-size: 14px;
+  color: var(--fg);
+  font-family: inherit;
+  transition: border-color 150ms ease-out, box-shadow 150ms ease-out, background 150ms ease-out;
+}
+.tp-search input:focus {
+  outline: none;
+  border-color: rgba(255,102,0,0.50);
+  background: rgba(255,102,0,0.05);
+  box-shadow: 0 0 0 4px rgba(255,102,0,0.10);
+}
+.tp-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 6px 8px 12px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.10) transparent;
+}
+.tp-list::-webkit-scrollbar { width: 8px; }
+.tp-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.10); border-radius: 8px; }
+.tp-section {
+  padding: 12px 14px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.tp-row {
+  display: flex; align-items: center; gap: 12px;
+  width: 100%;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  padding: 10px 12px;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  color: var(--fg);
+  transition: background 120ms ease-out, border-color 120ms ease-out;
+}
+.tp-row:hover {
+  background: rgba(255,102,0,0.06);
+  border-color: rgba(255,102,0,0.18);
+}
+.tp-row.is-current {
+  background: rgba(255,102,0,0.08);
+  border-color: rgba(255,102,0,0.25);
+}
+.tp-row-logo {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  flex: 0 0 auto;
+  display: block;
+}
+.tp-row-text { flex: 1 1 auto; min-width: 0; }
+.tp-row-symbol {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--fg);
+  display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap;
+}
+.tp-row-name {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+  /* Allow long names (e.g. raw `ion1_…` token addresses for an
+   * imported token whose `name` field hadn't resolved yet) to
+   * wrap inside the row instead of overflowing the modal sheet
+   * on the right edge. `overflow-wrap: anywhere` breaks at any
+   * char (the only correct choice for hex blobs that have no
+   * hyphen / space natural break points). Keep `overflow:
+   * hidden` so a hostile token name with thousands of chars
+   * doesn't push the row to absurd heights. */
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+/* Same fix for the picker's import-card preview line — a 69-char
+ * `ion1_` paste used to spill past the orange-bordered card. */
+.tp-import-text span {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.tp-row-check {
+  color: var(--orange);
+  font-size: 16px;
+  flex: 0 0 auto;
+}
+.tp-badge {
+  display: inline-flex; align-items: center;
+  font-size: 10.5px; font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  letter-spacing: 0;
+  background: rgba(255,255,255,0.06);
+  color: var(--muted);
+  border: 1px solid rgba(255,255,255,0.10);
+}
+.tp-badge.verified  { color: var(--orange); border-color: rgba(255,102,0,0.30); background: rgba(255,102,0,0.08); }
+.tp-badge.stable    { color: #45c2f7; border-color: rgba(69,194,247,0.30); background: rgba(69,194,247,0.08); }
+.tp-badge.imported  { color: var(--muted); }
+
+.tp-empty {
+  padding: 28px 20px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+.tp-empty code {
+  font-family: var(--sov-mono, ui-monospace, monospace);
+  background: rgba(255,255,255,0.06);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.tp-import-card {
+  margin: 8px 8px 4px;
+  padding: 14px 14px;
+  background: rgba(255,102,0,0.06);
+  border: 1px solid rgba(255,102,0,0.22);
+  border-radius: 14px;
+  display: flex; align-items: center; gap: 12px;
+}
+.tp-import-text {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 13px;
+}
+.tp-import-text strong { display: block; color: var(--fg); margin-bottom: 4px; }
+.tp-import-text span {
+  color: var(--muted);
+  font-family: var(--sov-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+.tp-import-btn {
+  flex: 0 0 auto;
+  font-size: 13px !important;
+  padding: 9px 16px !important;
+}
+.tp-import-err {
+  flex: 1 0 100%;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.tp-foot {
+  padding: 12px 20px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  font-size: 11.5px;
+  color: var(--muted-2);
+  text-align: center;
+}
+.tp-foot code {
+  font-family: var(--sov-mono, ui-monospace, monospace);
+  background: rgba(255,255,255,0.06);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* ── Asset-pill enhancement: when token-picker.js takes over,
+ *    the native <select> is hidden via JS and the pill becomes a
+ *    button that opens the modal. */
+.asset-pill.tp-active select { display: none; }
+
+/* ─────────────────────────────────────────────────────────────────
+ * Asset-pill overflow clamp
+ *
+ * When the picker hands back a token whose `symbol` field is empty
+ * (or literally an ion1_ id, e.g. a freshly-imported community
+ * token whose metadata hasn't backfilled yet), the pill would
+ * otherwise stretch to fit the full 69-character address and spill
+ * past the swap card's right edge. Clamp the label to ~22ch and
+ * fall through to ellipsis; the full id stays available in the
+ * pill's `title` attr and via the picker re-open.
+ *
+ * The pill itself stays `white-space: nowrap` so the layout
+ * (logo + label + chevron in one line) is preserved. Only the
+ * text node shrinks.
+ * ────────────────────────────────────────────────────────────── */
+.asset-pill {
+  max-width: min(280px, 100%);
+  min-width: 0;
+}
+.asset-pill > span:not(.dot):not(.caret):not(.pill-chevron) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 22ch;
+}
+.asset-pill .pill-text {
+  display: inline-block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 22ch;
+  vertical-align: middle;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Pair-detail contract-address row
+ *
+ * Sits inside the pair header card (the one above the chart) and
+ * exposes a one-click copy of the token's canonical ion1_ id for
+ * the custom-token leg of the pair. Verified pairs (USDm-wBTC,
+ * etc.) don't render this row at all. Click anywhere on the row
+ * OR the Copy button copies; success flashes the row green for
+ * 1.2 s. Mirrors the `tok-card-addr` pattern from /pools.
+ * ────────────────────────────────────────────────────────────── */
+.pd-contract-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease;
+  min-width: 0;
+}
+.pd-contract-row:hover,
+.pd-contract-row:focus-visible {
+  border-color: var(--accent);
+  background: rgba(247,148,29,0.04);
+  outline: none;
+}
+.pd-contract-row.is-copied {
+  border-color: #22c55e;
+  background: rgba(34,197,94,0.08);
+}
+.pd-contract-label {
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.pd-contract-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pd-contract-copy {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.pd-contract-row:hover .pd-contract-copy,
+.pd-contract-row:focus-visible .pd-contract-copy {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.pd-contract-row.is-copied .pd-contract-copy {
+  color: #22c55e;
+  border-color: #22c55e;
+}
+.pd-contract-copy svg { display: block; }
+
+/* ─────────────────────────────────────────────────────────────────
+ * Pair-detail chart legend overlay
+ *
+ * Renders in the top-left of the chart container. TradingView /
+ * Coinbase Advanced have a similar OHLC + change% strip docked
+ * to the chart's plot area. Updates on `subscribeCrosshairMove`
+ * so hovering any candle paints its values; without a hover the
+ * latest candle's values are shown so the strip is never blank.
+ *
+ * Translucent dark background + subtle border so it sits ON TOP
+ * of the chart without obscuring it. Mono-font for the numbers.
+ * ────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+    }
+
+@media (prefers-reduced-motion: reduce) {
+  .tp-overlay, .tp-sheet { animation: none !important; }
+  .tp-row, .tp-close { transition: none !important; }
+}
+
+/* ─────────────────────────────────────────────────────────────────
+ * Tx timeline (lib/tx-timeline.js) — fancy stage progress widget
+ * Green pulsing dot at the current stage, orange-filled done dots,
+ * grey hollow future dots. Connectors shimmer when "live".
+ * ───────────────────────────────────────────────────────────────── */
+.tx-timeline {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  padding: 14px 6px 8px;
+  gap: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+.tx-step {
+  flex: 0 0 auto;
+  display: flex; flex-direction: column; align-items: center;
+  min-width: 70px;
+  text-align: center;
+  position: relative;
+}
+.tx-step-dot {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.06);
+  border: 2px solid rgba(255,255,255,0.12);
+  position: relative;
+  flex: 0 0 auto;
+  transition: background 200ms ease-out, border-color 200ms ease-out, box-shadow 200ms ease-out;
+}
+.tx-step.future .tx-step-dot {
+  background: transparent;
+  border-color: rgba(255,255,255,0.14);
+}
+.tx-step.done .tx-step-dot {
+  background: var(--orange);
+  border-color: var(--orange);
+  box-shadow: 0 0 10px rgba(255,102,0,0.45);
+}
+.tx-step.current .tx-step-dot {
+  background: var(--ok, #46d888);
+  border-color: var(--ok, #46d888);
+  box-shadow: 0 0 12px rgba(70,216,136,0.55);
+}
+.tx-step.failed .tx-step-dot {
+  background: var(--danger, #ff5e5e);
+  border-color: var(--danger, #ff5e5e);
+  box-shadow: 0 0 12px rgba(255,94,94,0.55);
+}
+/* The pulsing aura on the live current dot. Renders BEHIND the
+ * inner dot via absolute positioning + inset offset; the dot's
+ * border keeps it sharp on top of the pulse. */
+.tx-step.current .tx-step-pulse {
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  background: rgba(70,216,136,0.45);
+  animation: tx-step-pulse 1.6s ease-out infinite;
+  pointer-events: none;
+}
+@keyframes tx-step-pulse {
+  0%   { transform: scale(0.55); opacity: 0.85; }
+  70%  { transform: scale(1.45); opacity: 0;   }
+  100% { transform: scale(1.45); opacity: 0;   }
+}
+.tx-step-label {
+  margin-top: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+.tx-step.done .tx-step-label   { color: var(--orange); }
+.tx-step.current .tx-step-label { color: var(--ok, #46d888); }
+.tx-step.failed .tx-step-label { color: var(--danger, #ff5e5e); }
+.tx-step-sub {
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: var(--muted-2, #6a6a6a);
+  font-family: var(--sov-mono, ui-monospace, monospace);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Connectors — the line between two adjacent dots. The "live"
+ * variant runs an orange-to-green flowing animation from the last
+ * completed stage toward the active current stage. */
+.connector {
+  flex: 1 1 auto;
+  height: 2px;
+  margin-top: 7px;          /* visual centerline of dots = 7 (half of 14) */
+  background: rgba(255,255,255,0.08);
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+  min-width: 14px;
+}
+.connector.done {
+  background: linear-gradient(90deg, var(--orange) 0%, rgba(255,102,0,0.6) 100%);
+  box-shadow: 0 0 6px rgba(255,102,0,0.18);
+}
+.connector.future {
+  background: rgba(255,255,255,0.06);
+  background-image:
+    repeating-linear-gradient(90deg,
+      transparent 0,
+      transparent 4px,
+      rgba(255,255,255,0.10) 4px,
+      rgba(255,255,255,0.10) 7px
+    );
+}
+.connector.live {
+  background: linear-gradient(90deg,
+    var(--orange) 0%,
+    rgba(255,102,0,0.4) 50%,
+    rgba(70,216,136,0.4) 50%,
+    var(--ok, #46d888) 100%);
+  background-size: 200% 100%;
+  animation: connector-flow 1.8s linear infinite;
+  box-shadow: 0 0 8px rgba(70,216,136,0.18);
+}
+@keyframes connector-flow {
+  0%   { background-position:   0% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tx-step.current .tx-step-pulse,
+  .connector.live {
+    animation: none !important;
+  }
+  .tx-step-dot, .connector { transition: none !important; }
+}
+
+/* Section heading — large, sovereign, used above stat strips. */
+.sov-section-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 16px;
+  margin: 4px 4px 14px;
+}
+.sov-section-head .title {
+  font-size: 19px; font-weight: 700; letter-spacing: -0.01em;
+  color: var(--sov-text);
+}
+.sov-section-head .title::before {
+  content: "";
+  display: inline-block;
+  width: 3px; height: 18px;
+  background: var(--sov-rail);
+  border-radius: 2px;
+  margin-right: 10px;
+  vertical-align: text-bottom;
+  box-shadow: var(--sov-rail-glow);
+}
+.sov-section-head .meta {
+  font-family: var(--sov-mono);
+  font-size: 12px; color: var(--sov-text-muted);
+}
+
+/* ---------------------------------------------------------------
+   W22.14c — Network selector chrome
+   --------------------------------------------------------------- */
+
+/* Top-of-page strip. Hidden on mainnet; lit on every other network
+   so users have a constant signal of "I am not on mainnet". Color
+   comes inline from the registry's badgeColor. */
+.network-strip {
+  position: relative;
+  z-index: 50;
+  padding: 6px 16px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #0d0d0d;
+  background: #f59e0b;            /* default; runtime overrides */
+}
+
+/* The pill button itself. Same shape as the existing .pill (Tor
+   badge) but with explicit background/border/color so the registry's
+   per-network color carries through. */
+.network-pill {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  padding: 4px 10px;
+  border: 1px solid;              /* color from JS */
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  transition: background 120ms ease-out, transform 80ms ease-out;
+}
+.network-pill:hover { transform: translateY(-1px); }
+
+/* W22.14h — Dropdown popover (single-origin model; switching networks
+   never reloads the page). Positioned right below the pill row. */
+.network-popover {
+  position: absolute;
+  top: 64px;
+  right: 16px;
+  z-index: 60;
+  min-width: 260px;
+  max-width: 320px;
+  background: #141a2e;
+  border: 1px solid rgba(123, 63, 242, 0.25);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 6px 0;
+  font-size: 13px;
+}
+.network-popover[hidden] { display: none; }
+.network-popover-inner { display: flex; flex-direction: column; }
+.network-popover-header {
+  padding: 8px 14px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.5);
+}
+.network-popover-footer {
+  padding: 8px 14px 10px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+  line-height: 1.4;
+  border-top: 1px solid rgba(255,255,255,0.05);
+  margin-top: 4px;
+}
+.network-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  cursor: pointer;
+  color: #f5f5f5;
+  transition: background 100ms ease-out;
+}
+.network-row:hover { background: rgba(123, 63, 242, 0.12); }
+.network-row.is-active {
+  background: rgba(123, 63, 242, 0.18);
+  font-weight: 600;
+}
+.network-row-label { flex: 1; display: flex; align-items: center; gap: 6px; }
+.network-swatch {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.network-tag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(245, 158, 11, 0.18);
+  color: #f59e0b;
+}
+.network-check {
+  color: rgba(255,255,255,0.9);
+  font-size: 14px;
+}
+

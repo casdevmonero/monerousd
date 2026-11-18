@@ -1,0 +1,78 @@
+/*
+   Copyright (c) 2026, The MoneroUSD Protocol
+
+   This file is an original work of the MoneroUSD Protocol — a post-quantum,
+   GHOSTDAG block-DAG, zero-knowledge confidential-value protocol. It is NOT part
+   of the Monero Project. Licensed under the Apache License, Version 2.0
+   (SPDX-License-Identifier: Apache-2.0); see the LICENSE and NOTICE files at the
+   repository root.
+*/
+
+:root {
+  --bg: #0a0e1a;
+  --surface: #141a2e;
+  --surface-2: #1b2240;
+  --accent: #7b3ff2;
+  --accent-2: #a78bfa;
+  --success: #22c55e;
+  --warn: #f59e0b;
+  --muted: #64748b;
+  --text: #e2e8f0;
+  --border: rgba(167, 139, 250, 0.16);
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+    Roboto, sans-serif;
+  font-size: 15px; line-height: 1.55;
+}
+code { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  font-size: .9em; color: var(--accent-2); background: rgba(167,139,250,0.08);
+  padding: 1px 6px; border-radius: 4px; }
+.page { max-width: 880px; margin: 0 auto; padding: 48px 24px 96px; }
+.hero { text-align: center; margin-bottom: 48px; }
+.hero .logo {
+  width: 64px; height: 64px; border-radius: 16px;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+  margin: 0 auto 16px; display: flex; align-items: center; justify-content: center;
+  font-size: 32px; font-weight: 700; color: #fff;
+}
+.hero h1 { margin: 0 0 12px; font-size: 32px; font-weight: 700; }
+.lede { color: var(--muted); margin: 0 auto 24px; max-width: 640px; font-size: 16px; }
+.badges { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.badge {
+  display: inline-block; padding: 4px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; letter-spacing: .02em;
+  border: 1px solid var(--border);
+}
+.badge--verified { background: rgba(123,63,242,0.18); color: var(--accent-2); border-color: rgba(123,63,242,0.4); }
+.badge--t1 { background: rgba(34,197,94,0.12); color: var(--success); border-color: rgba(34,197,94,0.3); }
+.badge--t2 { background: rgba(167,139,250,0.08); color: var(--accent-2); border-color: var(--border); }
+.section {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; padding: 24px 28px; margin-bottom: 20px;
+}
+.section h2 { margin: 0 0 14px; font-size: 20px; }
+.section h3 { margin: 22px 0 8px; font-size: 15px; font-weight: 600; color: var(--accent-2); }
+.section ul, .section ol { margin: 0; padding-left: 22px; }
+.section li { margin-bottom: 8px; }
+.invariants li strong { color: var(--accent-2); margin-right: 6px; }
+.release { margin-bottom: 16px; }
+.release-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 8px 0; border-bottom: 1px solid var(--border);
+}
+.release-row:last-child { border-bottom: none; }
+.release-row span { color: var(--muted); font-size: 13px; }
+.release-row strong { font-size: 14px; }
+.platforms { width: 100%; border-collapse: collapse; }
+.platforms th, .platforms td {
+  text-align: left; padding: 10px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.platforms th { color: var(--muted); font-weight: 600; }
+.platforms .muted { color: var(--muted); text-align: center; padding: 24px; }
+.hint { color: var(--muted); font-size: 13px; margin-top: 12px; }

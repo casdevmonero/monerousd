@@ -1,0 +1,16 @@
+# THE LANE-F CORPUS — sequences that were INTERESTING, kept in version control.
+#
+# One block per sequence, separated by a line of exactly three dashes. Each block is the corpus
+# grammar `report::corpus_block` prints: a `# parties` header, a `# seed` header, then one op per line.
+#
+# WHY A SOURCE FILE AND NOT A DIRECTORY: this repo bans local-storage writes ecosystem wide, so the
+# fuzzer PRINTS a block and a human pastes it here. That costs a human step and buys three things a
+# scratch directory cannot give: the corpus survives a clean `git clone`, it lands in a diff where it
+# can be reviewed, and it cannot grow unattended. `consensus_scenarios.txt` beside it works the same way.
+#
+# Every campaign replays every block below BEFORE generating anything new, so a class found once is
+# re-checked forever, by anyone, from a clean clone.
+#
+# (Seeded empty on purpose: an entry here is a claim that a specific schedule reached a behaviour no
+# other entry reaches, and no such claim has been MEASURED yet. Inventing a few plausible-looking
+# blocks to make the file non-empty would be exactly the kind of decoration this lane exists to catch.)

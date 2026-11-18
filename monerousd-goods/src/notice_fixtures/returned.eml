@@ -1,0 +1,17 @@
+DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=parcels.example; s=k1;
+ h=from:to:subject:date;
+ bh=WqCYzYDOc2o/KFQ23wJDgydTReCd5Z1/LXsbIPm4RWQ=;
+ b=Xm256/BnJ+EaOuFpHuk/XeBpQdvL7qrjrHDmzkwTtTOJSRa5+Nfnc8x7/sYPVy+U
+ 5+vsMxWz40H9ilLerZzVziRE28rDPC5AD24psLF/BlKZZbWKGsPqt+oBtd72hkx9
+ JHiwKsdBcsoYO+C50TmsBvu1nfzfpdIoc+8UWcalJwcPkMmCoAT/fvFjdDFf1Kqc
+ XC0ecWxgZHGtggWLcXMveoysRL7N24uetpKjccg/zi7I+/Zg7tvdgh4Ldc9nI29v
+ Swnin3wuTLZURGBKVkfA9CYSji3I+PIRlAH4xPizbuxKBAa6E4VMEQ568gzrt7An
+ O1GXY+f7Rj/RKLpMHm56Aw==
+From: Parcels Example <notify@parcels.example>
+To: orders@shop.example
+Subject: Parcels Example: Returned to Sender, Tracking Number 1Z999AA10123456784
+Date: Fri, 15 Jan 2027 09:30:00 -0500
+Message-ID: <20270115143000.1@parcels.example>
+X-Mailer: parcels-notify 4.2
+
+The parcel is being returned to the sender.

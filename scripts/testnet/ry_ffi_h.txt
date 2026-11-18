@@ -1,0 +1,26 @@
+
+/* ── Confidential Reserve-Yield coinbase (hiding/ZK; reward bound HIDDEN in cm_b) ── */
+
+/* Verify a serialized hiding/ZK Reserve-Yield coinbase proof.
+ *   publics : 4*8 field elements (cm_S_new | cm_S_old | note_cm | cm_b), 4-byte LE each = 128 bytes.
+ *   k/modulus : fixed circuit params (the reward bound is HIDDEN in cm_b, never passed).
+ * Returns 1 = verified, 0 = rejected, <0 = malformed pointer input. Never panics. */
+int32_t pqpool_reserve_yield_verify(const uint8_t *proof, size_t proof_len,
+                                    const uint8_t *publics, size_t publics_len,
+                                    uint32_t k, uint64_t modulus);
+
+/* Zero-marshaling smoke test: prove + verify a Reserve-Yield draw internally. 1 = ok, 0 = fail. */
+int32_t pqpool_reserve_yield_selftest(uint32_t k, uint64_t modulus, uint64_t b, uint64_t x);
+
+/* Produce a serialized hiding/ZK Reserve-Yield coinbase proof + its 128-byte publics (miner side).
+ *   rcmx/rcmy/rcmb : VALUE_LIMBS*4 = 16 bytes each (blindings for S_new, S_old, the hidden bound).
+ *   out_proof_*    : receive a heap buffer; free it with pqpool_free.
+ *   out_publics    : caller-provided 128-byte buffer (cm_S_new | cm_S_old | note_cm | cm_b).
+ * Returns 1 = ok, 0 = prove failed, <0 = malformed pointer/length input. */
+int32_t pqpool_reserve_yield_prove(uint32_t k, uint64_t modulus, uint64_t b, uint64_t x,
+                                   const uint8_t *rcmx, size_t rcmx_len,
+                                   const uint8_t *rcmy, size_t rcmy_len,
+                                   const uint8_t *rcmb, size_t rcmb_len,
+                                   uint64_t note_value,
+                                   uint8_t **out_proof_ptr, size_t *out_proof_len,
+                                   uint8_t *out_publics, size_t out_publics_len);

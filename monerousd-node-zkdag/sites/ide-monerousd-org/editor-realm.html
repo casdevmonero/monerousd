@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="monerousd-realm" content="isolated">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MoneroUSD IDE — editor realm</title>
+<!--
+  THE ISOLATED EDITOR REALM (hole scanner T1, 2026-10-28). Vendored Monaco (lib/monaco, ~36 minified files nobody audits
+  line by line) used to run in the IDE's own frame — the frame that can call the wallet bridge. It now runs HERE: a document
+  the IDE frames with `sandbox="allow-scripts"` and nothing else, so this realm has an OPAQUE origin (no storage, no cookies,
+  no same-origin scripting of the IDE), cannot navigate the top window, and cannot speak to the wallet (the wallet answers
+  only the app's top frame, by `event.source`). Editor text crosses the boundary as plain postMessage data, both ways.
+  This document loads NO wallet bridge and NO ES module: classic scripts only (an opaque origin's module import is a CORS
+  fetch the sovereign server refuses by design, DB-374). `lib/dsol-language.js` is the IDE's own language definition.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0b0b; overflow: hidden; }
+  #host { position: absolute; inset: 0; }
+  #boot { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #8a8a8a;
+          font: 13px "JetBrains Mono", ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<div id="boot">Loading editor…</div>
+<div id="host"></div>
+<script src="lib/dsol-language.js"></script>
+<script src="editor-realm.js"></script>
+</body>
+</html>

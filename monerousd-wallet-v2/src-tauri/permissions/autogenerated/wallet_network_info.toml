@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-network-info"
+description = "Enables the wallet_network_info command without any pre-configured scope."
+commands.allow = ["wallet_network_info"]
+
+[[permission]]
+identifier = "deny-wallet-network-info"
+description = "Denies the wallet_network_info command without any pre-configured scope."
+commands.deny = ["wallet_network_info"]

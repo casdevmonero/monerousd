@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-register-clue"
+description = "Enables the wallet_register_clue command without any pre-configured scope."
+commands.allow = ["wallet_register_clue"]
+
+[[permission]]
+identifier = "deny-wallet-register-clue"
+description = "Denies the wallet_register_clue command without any pre-configured scope."
+commands.deny = ["wallet_register_clue"]

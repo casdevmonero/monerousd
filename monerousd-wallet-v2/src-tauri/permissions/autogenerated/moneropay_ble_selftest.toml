@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-moneropay-ble-selftest"
+description = "Enables the moneropay_ble_selftest command without any pre-configured scope."
+commands.allow = ["moneropay_ble_selftest"]
+
+[[permission]]
+identifier = "deny-moneropay-ble-selftest"
+description = "Denies the moneropay_ble_selftest command without any pre-configured scope."
+commands.deny = ["moneropay_ble_selftest"]

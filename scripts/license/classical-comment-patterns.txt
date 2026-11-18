@@ -1,0 +1,78 @@
+# Data file (NOT code) for scan-stale-classical-comments.py.
+# Each non-empty, non-'#' line is a case-insensitive regex. A COMMENT line in a
+# MonerousD-unique file that matches one of these — and does NOT match an
+# [exempt] line below — is a stale/misleading classical-Monero-model note to
+# delete or rewrite to the PQ/DAG shape.
+#
+# [terms] — classical-model vocabulary that is dead for MonerousD
+ring[ _-]?signature
+mixin
+ring[ _-]?size
+ringsize
+key[ _-]?image
+ringct
+clsag
+mlsag
+ring[ _-]?decoys?
+mixin[ _-]?decoys?
+view[ _-]?key
+incoming_transfers
+add[-_]priority[-_]node
+levin
+payment[ _-]?id
+block-by-block
+full[- ]history sync
+longest[- ]chain
+get_balance
+#
+# [exempt] — lines whose comment is an HONEST removal/absence/replacement note, or
+# describes a legitimately-classical external context (keep — NOT stale/misleading).
+[exempt] vestigial
+[exempt] delete
+[exempt] removed?
+[exempt] reject
+[exempt] gate[- ]off
+[exempt] deprecated
+[exempt] PQUI-EXEMPT
+[exempt] instead of
+# honest "this classical path is dead/gone/replaced" notes
+[exempt] \bdead\b
+[exempt] \bgone\b
+[exempt] no longer
+[exempt] retired
+[exempt] \blegacy\b
+[exempt] provably.?(dead|0|zero)
+[exempt] which is dead
+[exempt] classical .*(rail|path|model).*(dead|gone|removed|purged)
+[exempt] replaces? the (legacy|classical)
+[exempt] \breplaced\b
+# absence assertions (privacy audits): "No spend-key / view-key / seed"
+[exempt] no (spend|view).?key
+[exempt] never (leaves|sees)
+[exempt] no ring
+[exempt] NOT (a )?(ring|classical|monero)
+# legitimately-classical EXTERNAL context (bridge endpoints wrap real Monero/BTC;
+# Pillar 2 permits classical crypto ONLY at external bridge endpoints)
+[exempt] monero'?s
+[exempt] \bxmr\b
+[exempt] bridge
+[exempt] reserve wallet
+[exempt] multisig
+[exempt] home chain
+# MonerousD's OWN live PQ/DSOL constructions that reuse a word (NOT classical)
+[exempt] pq_scan_card
+[exempt] decapsulat
+[exempt] AES-?(256-?)?GCM
+[exempt] HKDF
+[exempt] this card'?s view key
+[exempt] card view key
+[exempt] pq note
+[exempt] no exposed
+[exempt] nullifier
+[exempt] linking tag
+[exempt] burn_key_image
+[exempt] one-time
+[exempt] viewkey
+[exempt] view key never leaves
+[exempt] scope
+[exempt] stealth

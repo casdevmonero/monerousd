@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- The hardened runtime is ON by default for Tauri macOS bundles. Under it, a usage description in
+       Info.plist is necessary but NOT sufficient: CoreBluetooth also requires this entitlement, and without
+       it the radio reports CBManagerState.unauthorized and never powers on — measured directly, with system
+       Bluetooth On and the usage strings present. That is tap-to-pay silently dead for every user. -->
+  <key>com.apple.security.device.bluetooth</key>
+  <true/>
+</dict>
+</plist>

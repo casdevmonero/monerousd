@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-collection-progress"
+description = "Enables the dapp_provider_collection_progress command without any pre-configured scope."
+commands.allow = ["dapp_provider_collection_progress"]
+
+[[permission]]
+identifier = "deny-dapp-provider-collection-progress"
+description = "Denies the dapp_provider_collection_progress command without any pre-configured scope."
+commands.deny = ["dapp_provider_collection_progress"]

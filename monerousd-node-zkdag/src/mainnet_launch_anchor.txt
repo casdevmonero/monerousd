@@ -1,0 +1,7 @@
+# MonerousD mainnet launch anchor — EMPTY UNTIL THE PUBLIC LAUNCH (params::MAINNET_LAUNCH_ANCHOR_TEXT).
+# While this file holds no `key=value` line, no node starts on the mainnet identity (params::mainnet_launched).
+# The launch command writes it, right before the launch release is built:
+#   usdmd-node launch-anchor --tree <the monerousd-node-zkdag folder>
+# which reads a Bitcoin block six below the tip from two onion explorers that must agree, hashes this tree's launch files
+# (src/sat_set_aside.bin, src/defi_launch.bin), and writes three lines here: bitcoin_height, bitcoin_block, artifacts.
+# The mainnet genesis then commits to them, so no chain started before launch can be the real mainnet.

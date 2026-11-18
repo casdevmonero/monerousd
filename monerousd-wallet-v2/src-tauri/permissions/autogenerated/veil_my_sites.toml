@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-veil-my-sites"
+description = "Enables the veil_my_sites command without any pre-configured scope."
+commands.allow = ["veil_my_sites"]
+
+[[permission]]
+identifier = "deny-veil-my-sites"
+description = "Denies the veil_my_sites command without any pre-configured scope."
+commands.deny = ["veil_my_sites"]

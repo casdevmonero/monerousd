@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-node-rpc"
+description = "Enables the node_rpc command without any pre-configured scope."
+commands.allow = ["node_rpc"]
+
+[[permission]]
+identifier = "deny-node-rpc"
+description = "Denies the node_rpc command without any pre-configured scope."
+commands.deny = ["node_rpc"]

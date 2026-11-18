@@ -1,0 +1,17 @@
+{
+  "version": "1.2.176",
+  "contentType": "spa-with-api",
+  "rootHash": null,
+  "bundleSize": 5747,
+  "fileCount": 5,
+  "_synced_at": "2026-04-25T05:30:00.000Z",
+  "publisher": "official",
+  "publishedAt": "2026-04-25T05:30:00.000Z",
+  "displayName": "MoneroUSD Installers",
+  "primaryDomain": "installers.monerousd.org",
+  "tier": "T1",
+  "verified": true,
+  "blurb": "Sovereign binary distribution \u2014 chain-anchored upgrade path that survives DNS / registrar / edge takedown of update.monerousd.org",
+  "_purpose": "Sovereign binary distribution path. The release pipeline writes per-platform installer manifests + SHA256SUMS into this bundle so existing installs can upgrade WITHOUT depending on update.monerousd.org DNS. Per rule 31 in build-1261/CLAUDE.md, this is auxiliary to the primary electron-updater path, not a replacement.",
+  "_replaceWith": "scripts/sync-sovereign-installers.sh \u2014 pulls latest-mac.yml / latest.yml / latest-linux.yml + installer artefacts from the VPS into this bundle and updates SHA256SUMS"
+}

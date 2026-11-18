@@ -1,0 +1,33 @@
+{
+  "_comment": "LANE X — THE PREIMAGE / BINDING SUBJECTS. A subject is one peer-supplied struct, the function that folds its binding preimage, and the files whose adopt paths act on it. NOTHING ELSE IS CURATED: the fields, the adopt functions and the binder names are read off the source, so a field added tomorrow is enumerated tomorrow. Adding a subject here is how this lane grows.",
+  "_calibration": {
+    "_comment": "The harness's own standard (docs/harness-design.md Part D): a capability is not built until it REPRODUCES a known-missed row. These are the commands that prove it, and they must keep working.",
+    "A3+A5": "enumerate.py --subject sync_bundle --at preHoleClose2-20260907 --expect-findings blue_work,anchor_blue_work,anchor_ordinal",
+    "closed": "enumerate.py --subject sync_bundle --expect-findings ''"
+  },
+  "subjects": {
+    "sync_bundle": {
+      "struct": "SyncBundle",
+      "struct_file": "src/sync.rs",
+      "binding_fn": "sync_binding",
+      "binding_file": "src/sync.rs",
+      "adopt_files": [
+        "src/sync.rs",
+        "src/node.rs"
+      ],
+      "invariant": "I-4 FORK CHOICE INTEGRITY + I-1 — a joiner adopts this struct on the strength of ONE proof, so every field its adopt path acts on must be folded into the accumulator that proof certifies. Rows A3 (blue_work / anchor_blue_work) and A5 (anchor_ordinal) are both this shape, and A5 is the row the hand audit's pins missed."
+    },
+    "decider_bundle": {
+      "struct": "DeciderBundle",
+      "struct_file": "src/decider.rs",
+      "binding_fn": "sync_binding",
+      "binding_file": "src/sync.rs",
+      "adopt_files": [
+        "src/sync.rs",
+        "src/decider.rs",
+        "src/whir_decider.rs"
+      ],
+      "invariant": "I-4 — the certificate the adopt gate verifies. Its own `chain_acc` is the binding, so the question here is which of ITS fields the accept path acts on without the accumulator covering them."
+    }
+  }
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-show"
+description = "Enables the dapp_show command without any pre-configured scope."
+commands.allow = ["dapp_show"]
+
+[[permission]]
+identifier = "deny-dapp-show"
+description = "Denies the dapp_show command without any pre-configured scope."
+commands.deny = ["dapp_show"]

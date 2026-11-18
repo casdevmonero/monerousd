@@ -1,0 +1,26 @@
+=== MULTI-NODE 'more nodes = more TPS' LIVE PROOF ===
+[gen] generating 600 REAL PQ carriers (have 256) — nice, 4 threads (thermal-safe)…
+[carrier_gen] generating 600 REAL PQ spend carriers on 4 threads → /tmp/usdmd_carriers.hex
+[carrier_gen] wrote 600 carriers (58162 B each) in 48.4s = 12 carriers/s across 4 cores → /tmp/usdmd_carriers.hex
+[pool] 600 real carriers ready
+
+--- K=1 node(s): each floods 600 DISTINCT carriers, 2 threads, IN PARALLEL ---
+  node0 (port 28200): OK=600 in 1.752s -> 342 admitted tx/s
+  >>> K=1 AGGREGATE = 600 admitted / 1.752s parallel wall-clock = 342 admitted tx/s (NETWORK TOTAL)
+
+--- K=2 node(s): each floods 300 DISTINCT carriers, 2 threads, IN PARALLEL ---
+  node0 (port 28200): OK=300 in 0.900s -> 333 admitted tx/s
+  node1 (port 28201): OK=300 in 0.910s -> 330 admitted tx/s
+  >>> K=2 AGGREGATE = 600 admitted / 0.910s parallel wall-clock = 659 admitted tx/s (NETWORK TOTAL)
+
+--- K=3 node(s): each floods 200 DISTINCT carriers, 2 threads, IN PARALLEL ---
+  node0 (port 28200): OK=200 in 0.564s -> 354 admitted tx/s
+  node1 (port 28201): OK=200 in 0.590s -> 339 admitted tx/s
+  node2 (port 28202): OK=200 in 0.573s -> 349 admitted tx/s
+  >>> K=3 AGGREGATE = 600 admitted / 0.590s parallel wall-clock = 1017 admitted tx/s (NETWORK TOTAL)
+
+=== SCALING RESULT: aggregate admitted tx/s vs node count ===
+  1 node(s): 342 admitted tx/s   (1.00x the 1-node baseline)
+  2 node(s): 659 admitted tx/s   (1.93x the 1-node baseline)
+  3 node(s): 1017 admitted tx/s   (2.97x the 1-node baseline)
+=== DONE — more nodes = more aggregate TPS, PROVEN on the live greenfield mesh ===

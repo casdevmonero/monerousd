@@ -1,0 +1,256 @@
+# MONEROUSD CONSENSUS SCENARIOS — the case library.
+#
+# Every case below is a class a GATE RUN found the expensive way: roughly fifteen minutes, a frozen
+# binary and a machine freeze, for one bit of information. Written here they run in seconds, on every
+# build, so a class that cost a day cannot come back unnoticed.
+#
+# GRAMMAR (one case per `name` block; `#` starts a comment):
+#   name     <case-name>
+#   parties  <n>                  how many nodes take part (default 2)
+#   produce  <party> [count]      that party produces blocks; everyone else owes each one
+#   deliver  <k>                  hand over the k-th owed block — OUT OF ORDER on purpose
+#   drain                         hand over everything still owed
+#   restart  <party>              export the checkpoint, start fresh, restore — a real restart
+#   jump     <to> <from>          `to` adopts `from`'s certified bundle, the way a joiner does
+#   burst    <k>                  hand over the next k owed blocks at once — a cascade
+#   drop     <party>              lose one owed delivery to that party for good (only a parent ask can bring it)
+#   receive  <party>              that party produces a block carrying a REAL note (bytes, never cover)
+#   forget   <party>              that party forgets every idle record's bytes (they must regenerate)
+#   tamper   <to> <from>          `to` is offered a TAMPERED bundle from `from` — must refuse, state untouched
+#   forge-rows <party>            that party is paged forged rows — none may displace a claim, never stale
+#   invalid  <party>              that party gossips a wrong-work block — everyone must reject it
+#   replay   <to> <from>          `to` is re-sent the bundle it last adopted from `from` — nothing may move
+#   spend    <party>              that party spends a real note it holds — a deletion its next block carries
+#
+# THE PROPERTIES, checked after every case (the drain emulates the mesh: parent asks, sidecar pages,
+# roots runs): no honest block was ever refused; every party derives the same ordinal for every record,
+# the same dense fold counter, the same spine root, the same unspent root and the same selected tip;
+# every party still holds the genesis record at ordinal 0; every party is READY (no orphans, no stale
+# spine, no sidecar gap, no missing record, serving); every real-note record is held byte for byte by
+# every party at the same ordinal; every party gives the same present/absent verdict for every real
+# note (digital cash); and the carry stays bounded by depth × width. An adversarial action
+# (tamper, forge-rows, invalid, replay) carries its own verdict: the refusal must happen.
+
+# ── Run 31: the restart seam. The tip was re-recorded on resume, so the resumed node's record space
+# shifted by one against its peer's and never came back.
+name restart-seam-tip-not-re-recorded
+parties 2
+produce 0 6
+drain
+restart 0
+produce 0 3
+drain
+
+# ── Run 32: the jump seam. After adopting a certified spine the counter sat BELOW the certified
+# position, so every later record was filed at an ordinal the peer had already used.
+name jump-seam-counter-below-certified-position
+parties 2
+produce 0 12
+drain
+jump 1 0
+produce 0 4
+drain
+
+# ── Run 41: the measured one — 597 of 598 records at different ordinals. Two parties producing into the
+# same window, each folding in ARRIVAL order, which is a different order on each side.
+name concurrent-producers-fold-the-same-ordinals
+parties 2
+produce 0 3
+produce 1 3
+deliver 3
+deliver 0
+produce 0 2
+produce 1 2
+deliver 5
+drain
+
+# ── Run 42/43: the fold carry. Blocks between the fold root and the tip were in nobody's DAG after a
+# jump, so the jumped party re-jumped forever.
+name jump-then-both-sides-keep-producing
+parties 2
+produce 0 8
+drain
+jump 1 0
+produce 1 3
+produce 0 3
+drain
+
+# ── Run 44: the restart stand-off. Both parties restarted with blocks still in flight and each decided
+# it was the heavier chain.
+name both-restart-with-blocks-still-in-flight
+parties 2
+produce 0 4
+produce 1 4
+deliver 2
+restart 0
+restart 1
+drain
+
+# ── Run 45: the genesis row evicted at adopt — every roots run holed at ordinal 0 from then on.
+name genesis-row-survives-an-adopt
+parties 2
+produce 0 10
+drain
+jump 1 0
+drain
+restart 1
+drain
+
+# ── Three parties, out-of-order delivery, one restart: the shape the pair gate cannot express at all.
+name three-parties-out-of-order-with-a-restart
+parties 3
+produce 0 3
+produce 1 3
+produce 2 3
+deliver 7
+deliver 2
+restart 2
+deliver 0
+drain
+
+# ── A party that jumps and is then restarted must still agree — the two seams composed, which is how
+# they actually appear on the live pair.
+name jump-then-restart-the-jumper
+parties 2
+produce 0 10
+drain
+jump 1 0
+restart 1
+produce 0 3
+drain
+
+# ── A late block: produced early, delivered after a restart. Run 43's shape in miniature.
+name a-block-delivered-after-the-recipient-restarted
+parties 2
+produce 0 5
+produce 0 1
+restart 1
+drain
+
+# ── Everyone restarts in turn while the queue is never empty.
+name rolling-restarts-with-a-non-empty-queue
+parties 3
+produce 0 2
+produce 1 2
+produce 2 2
+restart 0
+deliver 1
+restart 1
+deliver 3
+restart 2
+drain
+
+# DB-119 (2026-09-20) — A SPENT NOTE CAME BACK. Found by the three-party schedule search at seed 1 and
+# kept here because every layer of the repair is exercised by it: a node that cannot apply a carried
+# deletion must FILE what the block carried (not what it managed to apply), RECORD the debt even while it
+# reads READY, and retire that debt only when the deletion lands or is definitely absent with nothing else
+# owed. Before the fix party 1 ended holding, as UNSPENT, a note the chain had spent — the double-spend
+# shape with no attacker (p0/p2 uroot 62965876, p1 1857c71f).
+
+# DB-119 (2026-09-20) — A SPENT NOTE CAME BACK, and this is the schedule that showed it. Kept because every
+# layer of the repair is exercised by it: a node that cannot apply a carried deletion must FILE what the
+# BLOCK carried (not what it managed to apply), RECORD the debt even while it reads READY, and retire that
+# debt only when the deletion LANDS or is DEFINITELY absent with nothing else owed. Before the fix party 1
+# ended holding, as UNSPENT, a note the chain had spent — the double-spend shape with no attacker:
+# p0 uroot 62965876, p2 62965876, p1 1857c71f, with p1 `del_rows=0` against the peers' 1.
+name db119-a-deferred-deletion-must-outlive-the-record-that-carries-its-leaf
+parties 3
+invalid 0
+tamper 0 0
+produce 1 1
+produce 0 1
+receive 0
+burst 1
+forge-rows 2
+produce 0 1
+deliver 60
+jump 1 2
+produce 0 1
+deliver 49
+produce 1 1
+deliver 39
+forge-rows 1
+replay 1 0
+restart 1
+produce 2 1
+produce 1 1
+receive 2
+jump 2 0
+invalid 0
+burst 2
+produce 2 1
+restart 1
+deliver 55
+deliver 39
+drop 0
+produce 1 1
+invalid 2
+jump 1 2
+produce 1 1
+burst 4
+produce 1 1
+forget 2
+deliver 5
+invalid 0
+deliver 46
+deliver 54
+produce 2 1
+produce 2 1
+drop 0
+deliver 53
+deliver 5
+deliver 32
+spend 0
+drop 0
+burst 6
+# db120 (2026-09-20, seed 7 of the schedule search): party 0 JUMPED at #27, refused every later receive on
+# its holed map, and the tick rewound its live root to the pre-jump anchor 522edda5; an off-lock heal job
+# that had matched that anchor at replay index 3 FAST-installed over a 29-record ledger — READY on a map
+# missing seven notes its peers held, while its own complete ledger replayed to 06238151 == p1 == p2. The
+# install now checks the job's matched prefix against the LIVE replay order and folds forward every record
+# past it (ordinal-indexed and young alike), reverting a fast install whose rows cannot yet fold.
+name db120-a-jumper-must-not-latch-ready-on-its-pre-jump-map
+parties 3
+receive 0
+produce 1 2
+drop 0
+receive 0
+produce 1 2
+restart 1
+receive 0
+produce 1 2
+jump 2 0
+receive 2
+produce 0 2
+forget 0
+receive 1
+produce 2 2
+burst 6
+spend 1
+receive 2
+produce 0 2
+burst 3
+receive 1
+produce 2 2
+drop 2
+receive 2
+produce 0 2
+restart 2
+receive 1
+produce 2 2
+jump 0 1
+receive 1
+produce 2 2
+forget 1
+
+# ── MEASURED 2026-10-22 (lane b, main 172aaf7, scratchpad/verify/g11b-case05-nojump-main-20261022.log): case 05 with its
+# `jump` removed. A party that CRAWLED the whole chain (never adopted a bundle) and then restarts stays at fold 27 while
+# its peer stands at 94 — the restarted crawler holds every block (unfolded 106) yet folds no further. G1 class (a restart
+# changes state): the fold is a function of the blocks held, so a restart must reach the same fold as the live peer.
+name crawled-never-jumped-party-restarts-and-folds-to-the-mesh
+parties 2
+produce 0 10
+drain
+drain
+restart 1
+drain

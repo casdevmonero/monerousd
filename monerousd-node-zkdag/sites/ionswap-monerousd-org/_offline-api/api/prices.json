@@ -1,0 +1,9 @@
+{
+  "_offline": true,
+  "_note": "Sovereign offline fallback — no live oracle data. Stablecoins are pinned to 1; volatile assets show '—' in the UI.",
+  "prices": {
+    "USDm": 1,
+    "wUSDT-TRX": 1,
+    "wRLUSD": 1
+  }
+}

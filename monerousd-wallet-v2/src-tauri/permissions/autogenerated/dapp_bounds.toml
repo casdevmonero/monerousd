@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-bounds"
+description = "Enables the dapp_bounds command without any pre-configured scope."
+commands.allow = ["dapp_bounds"]
+
+[[permission]]
+identifier = "deny-dapp-bounds"
+description = "Denies the dapp_bounds command without any pre-configured scope."
+commands.deny = ["dapp_bounds"]

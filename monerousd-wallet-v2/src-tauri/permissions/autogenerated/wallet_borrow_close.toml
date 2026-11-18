@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-borrow-close"
+description = "Enables the wallet_borrow_close command without any pre-configured scope."
+commands.allow = ["wallet_borrow_close"]
+
+[[permission]]
+identifier = "deny-wallet-borrow-close"
+description = "Denies the wallet_borrow_close command without any pre-configured scope."
+commands.deny = ["wallet_borrow_close"]

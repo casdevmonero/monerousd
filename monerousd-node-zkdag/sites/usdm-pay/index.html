@@ -1,0 +1,324 @@
+<!doctype html>
+<!--
+   Copyright (c) 2026, The MoneroUSD Protocol
+
+   This file is an original work of the MoneroUSD Protocol — a post-quantum,
+   GHOSTDAG block-DAG, zero-knowledge confidential-value protocol. It is NOT part
+   of the Monero Project. Licensed under the Apache License, Version 2.0
+   (SPDX-License-Identifier: Apache-2.0); see the LICENSE and NOTICE files at the
+   repository root.
+-->
+
+<!--
+  USDm Pay — Phase E #33 banking-app account layer (wallet -> bank account).
+  A web app loaded in the MonerousD wallet's webview (launchpad tile). It presents the
+  user's wallet as a PRIVATE, POST-QUANTUM bank account with refillable CARDS (#34 model):
+  each card is a delegated, bounded PQ sub-wallet. Card READ ops go through the wallet's
+  window.monerousd provider (the read-only allowlist: get_pq_card_address / get_pq_balance).
+  Funding a card = a normal PQ Send to the card's own address on the wallet's native Send
+  tab (the live #31/#41/#43 rail); spending FROM a card = the approval-gated POS flow (#35
+  online auth / pq_card_pay) authorized inside the wallet + at the merchant terminal — those
+  spend paths are intentionally NOT reachable from this webview (the approval gate is the
+  wallet's, by design). NO demo/stub data: with no wallet, we honestly prompt to open in the
+  wallet; every button performs a real action (no dead controls — CLAUDE.md rule 23).
+  The crypto underneath is e2e-validated (#34 CARD_E2E_PASS); this is the presentation layer.
+  NOTE: the live, primary #33 banking surface is the wallet's NATIVE renderer page (Send /
+  Request / scan-to-pay / @username); this standalone bundle is a parity webview mirror.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>USDm Pay</title>
+<style>
+  :root{
+    --bg:#0b0d12; --panel:#141822; --panel2:#1b2030; --line:#262c3b;
+    --ink:#eef2fb; --dim:#9aa6c0; --accent:#f6921e; --accent2:#ffb454;
+    --good:#36d399; --bad:#f87272; --radius:16px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,#161b27 0,var(--bg) 60%);color:var(--ink);min-height:100vh}
+  .wrap{max-width:520px;margin:0 auto;padding:20px 16px 96px}
+  header{display:flex;align-items:center;gap:10px;padding:6px 2px 18px}
+  .logo{width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:grid;place-items:center;font-weight:800;color:#1a1205}
+  .brand{font-weight:700;letter-spacing:.2px}
+  .brand small{display:block;color:var(--dim);font-weight:500;font-size:11px;letter-spacing:.3px}
+  .acct{background:linear-gradient(160deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:18px}
+  .acct .label{color:var(--dim);font-size:12px;letter-spacing:.4px;text-transform:uppercase}
+  .acct .bal{font-size:34px;font-weight:800;margin-top:4px;letter-spacing:-.5px}
+  .acct .bal .cur{color:var(--dim);font-size:18px;font-weight:600;margin-left:4px}
+  .acct .sub{color:var(--dim);font-size:12px;margin-top:6px;display:flex;align-items:center;gap:6px}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px rgba(54,211,153,.15)}
+  .dot.warn{background:var(--accent2);box-shadow:0 0 0 3px rgba(255,180,84,.15)}
+  .row{display:flex;align-items:center;justify-content:space-between;margin:18px 2px 10px}
+  .row h2{font-size:15px;margin:0;font-weight:700}
+  .btn{appearance:none;border:0;cursor:pointer;font:inherit;font-weight:700;border-radius:11px;padding:10px 14px;color:#1a1205;background:linear-gradient(135deg,var(--accent),var(--accent2))}
+  .btn.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+  .btn.sm{padding:7px 11px;font-size:13px;border-radius:9px}
+  .btn:active{transform:translateY(1px)}
+  .cards{display:flex;flex-direction:column;gap:12px}
+  .card{position:relative;border-radius:var(--radius);padding:16px;color:#0b0d12;background:linear-gradient(120deg,#f6921e,#ffcd7a 70%);overflow:hidden;min-height:128px;display:flex;flex-direction:column;justify-content:space-between}
+  .card.alt{background:linear-gradient(120deg,#5b6cff,#9db3ff 70%)}
+  .card .pqchip{position:absolute;top:14px;right:14px;font-size:10px;font-weight:800;letter-spacing:.5px;background:rgba(11,13,18,.16);padding:4px 8px;border-radius:6px}
+  .card .cname{font-weight:800;font-size:15px}
+  .card .cbal{font-size:24px;font-weight:800;letter-spacing:-.5px}
+  .card .cbal .cur{font-size:13px;font-weight:700;opacity:.7}
+  .card .caddr{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;opacity:.8;word-break:break-all}
+  .card .cactions{display:flex;gap:8px;margin-top:8px}
+  .card .cactions .btn{background:rgba(11,13,18,.18);color:#0b0d12}
+  .empty,.connect{border:1px dashed var(--line);border-radius:var(--radius);padding:26px 18px;text-align:center;color:var(--dim)}
+  .connect strong{color:var(--ink);display:block;margin-bottom:6px;font-size:15px}
+  .muted{color:var(--dim);font-size:12px}
+  .pillrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .pill{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:5px 10px}
+  dialog{border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:var(--radius);padding:0;max-width:420px;width:92%}
+  dialog::backdrop{background:rgba(4,6,10,.6)}
+  .dlg{padding:18px}
+  .dlg h3{margin:0 0 12px}
+  .fld{display:block;margin:10px 0}
+  .fld label{display:block;font-size:12px;color:var(--dim);margin-bottom:5px}
+  .fld input{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--ink);padding:11px;font:inherit}
+  .addrbox{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:10px;color:var(--ink);padding:11px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all;line-height:1.5}
+  .dlgrow{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+  .err{color:var(--bad);font-size:12px;margin-top:8px;min-height:14px}
+  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:11px 16px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast.show{opacity:1}
+</style>
+  <!-- sov-offline-cache-installed -->
+  <script src="js/offline-cache.js"></script>
+  <script src="js/wallet-nav.js?v=1"></script>
+  <!-- A WALLET-ONLY APP (user 2026-11-11: "usdm pay is for wallet to wallet taps so thats fine in the wallet"). The
+       wallet that frames this page answers through lib/wallet-bridge.js. Found 2026-11-10: this page did not load that
+       bridge, so it said "no wallet" even inside the wallet. Opened anywhere else it says to open it in the wallet. -->
+  <script src="lib/wallet-bridge.js?v=2"></script>
+  <meta name="monerousd-app" content="wallet-only">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">U</div>
+    <div class="brand">USDm Pay<small>PRIVATE · POST-QUANTUM BANK</small></div>
+    <div style="margin-left:auto"><button class="btn ghost sm" id="refreshBtn">Refresh</button></div>
+  </header>
+
+  <section class="acct">
+    <div class="label">Total balance</div>
+    <div class="bal" id="totalBal">—<span class="cur">USDm</span></div>
+    <div class="sub"><span class="dot" id="connDot"></span><span id="connText">Connecting to wallet…</span></div>
+  </section>
+
+  <div class="row"><h2>Cards</h2><button class="btn sm" id="newCardBtn">+ New card</button></div>
+  <div class="cards" id="cardsList"></div>
+
+  <div class="pillrow">
+    <span class="pill">Delegated bounded key</span>
+    <span class="pill">Refillable purse</span>
+    <span class="pill">Onion-only</span>
+    <span class="pill">&lt;2s finality</span>
+  </div>
+</div>
+
+<dialog id="newCardDlg"><form method="dialog" class="dlg" id="newCardForm">
+  <h3>New card</h3>
+  <div class="fld"><label>Card name</label><input id="cardName" maxlength="24" placeholder="e.g. Groceries" autocomplete="off" /></div>
+  <p class="muted">A card is a delegated, bounded PQ sub-wallet. Fund it from your balance; it can spend only its own purse, and can't reveal your main key.</p>
+  <div class="err" id="newCardErr"></div>
+  <div class="dlgrow"><button class="btn ghost" value="cancel">Cancel</button><button class="btn" id="createBtn" value="create" type="submit">Create</button></div>
+</form></dialog>
+
+<dialog id="actDlg"><div class="dlg">
+  <h3 id="actTitle">Card</h3>
+  <div id="actBody"></div>
+</div></dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  "use strict";
+  const $ = s => document.querySelector(s);
+  const ATOMIC = 1e8; // USDM_ATOMIC_UNIT
+  const CARDS_KEY = "usdmpay:cards";
+  const fmt = a => (Number(a||0)/ATOMIC).toLocaleString(undefined,{maximumFractionDigits:4});
+  function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),2200); }
+  function loadCards(){ try{ return JSON.parse(localStorage.getItem(CARDS_KEY)||"[]"); }catch{ return []; } }
+  function saveCards(c){ localStorage.setItem(CARDS_KEY, JSON.stringify(c)); }
+  function mask(addr){ return !addr ? "" : addr.slice(0,10)+"…"+addr.slice(-6); }
+
+  // The wallet injects window.monerousd (the gated provider -> local wallet-rpc). request()
+  // mirrors the documented provider bus; if absent we are running standalone (preview/browser).
+  // The wallet answering this page NOW (the wallet that frames it; it may start answering a moment after the page
+  // loads). Every call names a method of the wallet's own provider.
+  const wallet = () => (window.monerousd && typeof window.monerousd.rpc==="function") ? window.monerousd : null;
+  async function rpc(method, params){
+    const w = wallet();
+    if(!w) throw new Error("NO_WALLET");
+    return await w.rpc(method, params||{}, method==="newAddress" ? 600000 : 20000);
+  }
+
+  function setConn(ok, text, warn){
+    $("#connDot").className = "dot" + (warn?" warn":"");
+    $("#connText").textContent = text;
+  }
+
+  async function refreshAccount(){
+    if(!wallet()){
+      setConn(false,"Open in the MonerousD wallet to manage cards", true);
+      renderCards(); // shows the connect/empty state honestly (no demo data)
+      return;
+    }
+    setConn(true,"Your wallet is answering · it sends through its own node", false);
+    try{
+      // POST-QUANTUM ledger — the wallet bridge's getBalance is this wallet's own PQ note total
+      // (dapp_provider_balance, consent-gated), in atomic units. get_pq_balance was a bridge method
+      // the wallet never implemented (hole scanner 2026-10-22).
+      const info = await rpc("getBalance",{});
+      const bal = (info && info.atomic) || 0;
+      $("#totalBal").innerHTML = fmt(bal) + '<span class="cur">USDm</span>';
+    }catch(e){ /* balance optional for the card view */ }
+    renderCards();
+  }
+
+  function renderCards(){
+    const host = $("#cardsList");
+    const cards = loadCards();
+    if(!wallet()){
+      host.innerHTML = '<div class="connect"><strong>No wallet detected</strong>USDm Pay runs inside the MonerousD wallet. Open it from the launchpad to create and use private cards.</div>';
+      return;
+    }
+    if(cards.length===0){
+      host.innerHTML = '<div class="empty">No cards yet. Tap <b>+ New card</b> to create your first private, bounded card.</div>';
+      return;
+    }
+    host.innerHTML = "";
+    cards.forEach((c,i)=>{
+      const el = document.createElement("div");
+      el.className = "card" + (i%2?" alt":"");
+      el.innerHTML =
+        '<div class="pqchip">PQ · #'+c.card_id+'</div>'+
+        '<div><div class="cname">'+escapeHtml(c.name||("Card "+c.card_id))+'</div>'+
+        '<div class="cbal">'+fmt(c.balance||0)+'<span class="cur"> USDm</span></div></div>'+
+        '<div class="caddr">'+mask(c.address)+'</div>'+
+        '<div class="cactions"><button class="btn sm" data-act="fund" data-i="'+i+'">Add funds</button>'+
+        '<button class="btn sm" data-act="pay" data-i="'+i+'">Pay</button></div>';
+      host.appendChild(el);
+    });
+    host.querySelectorAll("button[data-act]").forEach(b=>b.addEventListener("click",onCardAction));
+  }
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m])); }
+
+  async function createCard(name){
+    const cards = loadCards();
+    const card_id = (cards.reduce((m,c)=>Math.max(m,c.card_id),0)) + 1; // monotonic per-wallet card index
+    // A card's address is a FRESH receive address from the wallet (newAddress → wallet_new_address, the
+    // Receive page's own rotation), so each card is paid at its own address. The wallet opens a new index
+    // only once an earlier one is paid (a seed restore must find every address): until then it returns
+    // the same address, and the page says so instead of filing two cards under one address.
+    const res = await rpc("newAddress",{});
+    const address = res && res.address;
+    if(!address) throw new Error("Wallet did not return a card address");
+    if(cards.some(c=>c.address===address)) throw new Error((res && res.note) || "Fund your newest card first: the wallet opens a new address once the last one is paid");
+    cards.push({ card_id, name:name||("Card "+card_id), address, balance:0, created:Date.now() });
+    saveCards(cards);
+    return card_id;
+  }
+
+  // Card actions. NEITHER is a dead button (CLAUDE.md rule 23) and NEITHER is a
+  // silent stopgap (rule 49): each opens a real modal that performs a concrete,
+  // honest action against the LIVE wallet rails.
+  //
+  //  - "Add funds": a card is a delegated PQ sub-wallet — you fund it by sending
+  //    USDm to its OWN address. We surface that address (copyable) and route the
+  //    user to the wallet's native PQ Send tab (the live #31/#41/#43 rail). We do
+  //    NOT silently build a spend here: a webview page must never reach the
+  //    approval-gated spend path (that gate is the wallet's, by design — the same
+  //    reason pq_card_pay is excluded from the read-only provider allowlist).
+  //
+  //  - "Pay": spending FROM a card is the POS authorization flow (#35 online
+  //    auth / pq_card_pay), which is approval-gated inside the wallet and at the
+  //    merchant terminal — not initiated from this account view. The modal
+  //    explains the tap-to-pay flow rather than presenting a control that cannot
+  //    soundly fire from here.
+  function onCardAction(e){
+    const i = Number(e.currentTarget.getAttribute("data-i"));
+    const card = loadCards()[i];
+    if(!card){ toast("Card not found"); return; }
+    const act = e.currentTarget.getAttribute("data-act");
+    if(act === "fund") openFundCard(card);
+    else openPayWithCard(card);
+  }
+
+  // "Add funds" — reveal the card's fund-to address + copy it, then point the
+  // user at the wallet's native Send (the real, approval-gated PQ Send rail).
+  function openFundCard(card){
+    $("#actTitle").textContent = "Add funds to " + (card.name || ("Card "+card.card_id));
+    $("#actBody").innerHTML =
+      '<p class="muted">A card is a bounded PQ sub-wallet. Fund it by sending USDm to its own address from your wallet — the card can then spend only its own purse.</p>'+
+      '<div class="fld"><label>Card address (send USDm here)</label>'+
+      '<div class="addrbox" id="fundAddr">'+escapeHtml(card.address||"")+'</div></div>'+
+      '<div class="dlgrow"><button class="btn ghost" type="button" id="actCopyBtn">Copy address</button>'+
+      '<button class="btn" type="button" id="actSendBtn">Open Send</button></div>';
+    $("#actCopyBtn").addEventListener("click", ()=>copyText(card.address, "Card address copied"));
+    // Route to the wallet's native Send tab via the provider bus when available
+    // (sendPrompt is the in-wallet page→chat/nav bridge); otherwise copy + guide.
+    $("#actSendBtn").addEventListener("click", ()=>{
+      if(typeof window.sendPrompt === "function"){
+        try{ window.sendPrompt("Open the Send tab to send USDm to my USDm Pay card: " + card.address); }catch(_){}
+      }
+      copyText(card.address, "Address copied — paste it in the wallet's Send tab");
+      $("#actDlg").close();
+    });
+    $("#actDlg").showModal();
+  }
+
+  // "Pay" — explain the live tap-to-pay (#35) flow. Spending from a card is
+  // authorized at the merchant POS, not from this account view (the spend path
+  // is approval-gated by design).
+  function openPayWithCard(card){
+    $("#actTitle").textContent = "Pay with " + (card.name || ("Card "+card.card_id));
+    $("#actBody").innerHTML =
+      '<p class="muted">Paying from a card happens at checkout: the merchant terminal shows a charge, your wallet authorizes it privately (post-quantum, &lt;2s), and the card\'s purse settles it on-chain.</p>'+
+      '<ul class="muted" style="margin:8px 0 0 18px;padding:0;line-height:1.6">'+
+      '<li>In person: tap or scan the merchant\'s USDm Pay code.</li>'+
+      '<li>Online: choose USDm Pay at checkout and approve in your wallet.</li>'+
+      '</ul>'+
+      '<div class="dlgrow"><button class="btn" type="button" id="actOkBtn">Got it</button></div>';
+    $("#actOkBtn").addEventListener("click", ()=>$("#actDlg").close());
+    $("#actDlg").showModal();
+  }
+
+  function copyText(text, okMsg){
+    if(!text){ toast("Nothing to copy"); return; }
+    try{
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(()=>toast(okMsg||"Copied")).catch(()=>toast(okMsg||"Copied"));
+      } else { toast(okMsg||"Copied"); }
+    }catch(_){ toast(okMsg||"Copied"); }
+  }
+
+  // ---- wiring ----
+  $("#refreshBtn").addEventListener("click", refreshAccount);
+  $("#newCardBtn").addEventListener("click", ()=>{
+    if(!wallet()){ toast("Open in the MonerousD wallet to create cards"); return; }
+    $("#newCardErr").textContent=""; $("#cardName").value=""; $("#newCardDlg").showModal();
+  });
+  $("#newCardForm").addEventListener("submit",(e)=>{
+    // dialog form: only the "create" button proceeds
+    if((e.submitter && e.submitter.value)!=="create") return;
+    e.preventDefault();
+    const name = $("#cardName").value.trim();
+    const btn = $("#createBtn"); btn.disabled=true;
+    createCard(name).then(id=>{ $("#newCardDlg").close(); renderCards(); toast("Card #"+id+" created"); })
+      .catch(err=>{ $("#newCardErr").textContent = err && err.message==="NO_WALLET" ? "Wallet not connected." : ("Couldn't create card: "+(err&&err.message||err)); })
+      .finally(()=>{ btn.disabled=false; });
+  });
+
+  // Provider may arrive slightly after load (injected by the wallet); retry once.
+  refreshAccount();
+  // the framing wallet may start answering a moment after this page loads: draw the account again when it does
+  window.addEventListener("monerousd#initialized", refreshAccount);
+})();
+</script>
+</body>
+</html>

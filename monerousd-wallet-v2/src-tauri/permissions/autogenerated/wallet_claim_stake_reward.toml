@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-claim-stake-reward"
+description = "Enables the wallet_claim_stake_reward command without any pre-configured scope."
+commands.allow = ["wallet_claim_stake_reward"]
+
+[[permission]]
+identifier = "deny-wallet-claim-stake-reward"
+description = "Denies the wallet_claim_stake_reward command without any pre-configured scope."
+commands.deny = ["wallet_claim_stake_reward"]

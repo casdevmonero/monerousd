@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-gov-vote"
+description = "Enables the wallet_gov_vote command without any pre-configured scope."
+commands.allow = ["wallet_gov_vote"]
+
+[[permission]]
+identifier = "deny-wallet-gov-vote"
+description = "Denies the wallet_gov_vote command without any pre-configured scope."
+commands.deny = ["wallet_gov_vote"]

@@ -1,0 +1,54 @@
+[package]
+name = "p3-merkle-tree"
+description = "A Merkle tree implementation providing commitment scheme functionality for cryptographic proofs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+p3-commit.workspace = true
+p3-field.workspace = true
+p3-matrix.workspace = true
+p3-maybe-rayon.workspace = true
+# ⛔ 2026-09-28 (§M6-T): a direct `rayon` dependency for the tree builder's layer loops was tried and REVERTED the
+# same hour — the parallel tree broke the decider's committed prover (its rebuilt root check) and the same pins the
+# graph-wide `parallel` feature breaks. See merkle_tree.rs's import comment.
+# ⭐ link 79 (2026-10-21): DIRECT rayon at two named sites of the STREAMED commit only (`hiding_mmcs.rs` salts,
+# `merkle_tree.rs::streamed_par` leaf digests) — pure per-row functions, byte-identical on any pool (the 09-28 revert
+# predates the PRF salts and the deterministic grind); pinned by `db371_a_streamed_tree_equals_the_classic_tree` and the
+# decider's `a_parallel_prove_is_byte_identical_to_a_one_thread_prove`. The classic tree's layer loops stay serial.
+rayon.workspace = true
+p3-symmetric.workspace = true
+p3-util.workspace = true
+
+itertools.workspace = true
+rand.workspace = true
+serde = { workspace = true, features = ["alloc"] }
+spin.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+p3-baby-bear = { path = "../baby-bear" }
+p3-blake3 = { path = "../blake3" }
+p3-keccak = { path = "../keccak" }
+p3-mds = { path = "../mds" }
+p3-rescue = { path = "../rescue" }
+
+criterion.workspace = true
+proptest.workspace = true
+
+[[bench]]
+name = "merkle_tree"
+harness = false
+
+[[bench]]
+name = "pruned_verify"
+harness = false
+
+[lints]
+workspace = true

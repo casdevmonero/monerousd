@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-device-slot-status"
+description = "Enables the wallet_device_slot_status command without any pre-configured scope."
+commands.allow = ["wallet_device_slot_status"]
+
+[[permission]]
+identifier = "deny-wallet-device-slot-status"
+description = "Denies the wallet_device_slot_status command without any pre-configured scope."
+commands.deny = ["wallet_device_slot_status"]

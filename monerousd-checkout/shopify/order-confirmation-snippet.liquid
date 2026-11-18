@@ -1,0 +1,10 @@
+{% comment %}
+  MonerousD for Shopify. Paste into Settings → Notifications → Order confirmation, where you want the button.
+  Replace PAY.YOURSHOP.COM with your helper's public address (its `public_url`).
+
+  The button is harmless on orders paid another way: the helper opens a pay page only for an unpaid order that was
+  placed with the MonerousD payment method, and only for the buyer (the order status address is the buyer's secret).
+{% endcomment %}
+<table style="margin:16px 0"><tr><td style="background:#0071e3;border-radius:10px;padding:12px 20px">
+  <a href="https://PAY.YOURSHOP.COM/shopify/pay?id={{ id }}&key={{ order_status_url | url_encode }}" style="color:#ffffff;text-decoration:none;font-weight:600">Pay with MonerousD</a>
+</td></tr></table>

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-purchase-fund"
+description = "Enables the purchase_fund command without any pre-configured scope."
+commands.allow = ["purchase_fund"]
+
+[[permission]]
+identifier = "deny-purchase-fund"
+description = "Denies the purchase_fund command without any pre-configured scope."
+commands.deny = ["purchase_fund"]

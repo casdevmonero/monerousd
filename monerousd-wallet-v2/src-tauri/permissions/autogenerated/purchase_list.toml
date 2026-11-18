@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-purchase-list"
+description = "Enables the purchase_list command without any pre-configured scope."
+commands.allow = ["purchase_list"]
+
+[[permission]]
+identifier = "deny-purchase-list"
+description = "Denies the purchase_list command without any pre-configured scope."
+commands.deny = ["purchase_list"]

@@ -1,0 +1,14 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root)
+#
+# Pin the wallet to a current stable toolchain. The embedded Tor stack (arti-client) and its
+# transitive deps (e.g. typed-index-collections 3.5) require rustc >= 1.90; the machine default is
+# 1.89. This MUST live at the tauri PROJECT ROOT: the `tauri` CLI (and cargo-mobile2's iOS/Android
+# xcode-script) run cargo from here, so a pin only under src-tauri/ is detected too late and the
+# build falls back to the 1.89 default. Placed at the root, it applies to the tauri CLI, desktop,
+# iOS and Android builds, and the mobile-parity guard identically — one reproducible toolchain.
+# Scoped to the WALLET only: the node tree (monerousd-node-zkdag) has no pin and keeps its own
+# default toolchain, so a wallet toolchain bump never perturbs node/consensus builds.
+[toolchain]
+channel = "stable"
+targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim"]

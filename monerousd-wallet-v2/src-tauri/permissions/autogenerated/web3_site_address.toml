@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-web3-site-address"
+description = "Enables the web3_site_address command without any pre-configured scope."
+commands.allow = ["web3_site_address"]
+
+[[permission]]
+identifier = "deny-web3-site-address"
+description = "Denies the web3_site_address command without any pre-configured scope."
+commands.deny = ["web3_site_address"]

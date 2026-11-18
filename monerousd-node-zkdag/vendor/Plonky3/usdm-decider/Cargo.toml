@@ -1,0 +1,84 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0
+#
+# This file is an original work of the MoneroUSD Protocol, a post-quantum GHOSTDAG block-DAG
+# zero-knowledge confidential-value protocol. It is NOT part of the Monero Project. Licensed under
+# the Apache License, Version 2.0; see the LICENSE and NOTICE files at the repository root.
+
+[package]
+name = "usdm-decider"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+description = "MonerousD's prover and verifier: the WHIR light decider, its AIRs and the recursive whole-chain certificate, over KoalaBear and Poseidon2."
+publish = false
+
+[lib]
+name = "usdm_decider"
+
+[dependencies]
+# ⭐ rayon DIRECTLY, not through `p3-maybe-rayon`. The shim's `parallel` feature is graph-wide, and
+# enabling it made PROVING NONDETERMINISTIC inside Plonky3's own crates (measured: two identical proves,
+# same length, different bytes — §CA). The decider's zerocheck round loop is the hot path and its
+# reduction is index-ordered, so parallelising it alone is both the win and safe.
+# ⛔ RE-MEASURED 2026-09-28 17:18 (§M6-T): with the feature on, `prove_committed_with` returned None on the
+# very first grinding instance (the determinism pin never reached its byte comparison) and the decider suite
+# went red across modules (anchor_set_membership carriers, …) — the vendored parallel paths are not the
+# serial paths this tree was built against. Reverted the same minute; the prover's parallelism stays DIRECT
+# rayon at named sites (the grind, the streamed tables), extended site by site with a byte-identity pin each.
+rayon = { workspace = true }
+libc = "0.2"
+p3-field = { workspace = true }
+p3-matrix = { workspace = true }
+p3-koala-bear = { workspace = true }
+p3-poseidon2-air = { workspace = true }
+p3-poseidon2 = { workspace = true }
+p3-merkle-tree = { workspace = true }
+p3-commit = { workspace = true }
+p3-symmetric = { workspace = true }
+p3-challenger = { workspace = true }
+p3-dft = { workspace = true }
+p3-whir = { workspace = true }
+p3-sumcheck = { workspace = true }
+p3-multilinear-util = { workspace = true }
+p3-air = { workspace = true }
+p3-batch-stark = { path = "../batch-stark" }
+p3-lookup = { workspace = true }
+# ⭐ `sys_rng` — REAL OS entropy for the §BE-1 blinding rows. A deterministic pad is a pad every
+# observer can subtract off, which would leave a carrier's openings exactly as revealing as before
+# while looking blinded; the blinding rows must be unpredictable or they are decoration.
+rand = { workspace = true, features = ["sys_rng"] }
+serde = { workspace = true, features = ["derive", "alloc"] }
+# Carrier (de)serialization for the light-decider proof bundle — production prove/verify bytes
+# entries (prove_rec_block_light_decider_bytes / verify_rec_block_light_decider_bytes) the wallet
+# fast-broadcast + node verify call. Also used by the A4-family research tests.
+postcard = { version = "1.1.3", features = ["use-std"] }
+# Fast PQ-safe content hash for the settlement-aggregate carrier-set digest: hash each carrier bundle's FULL
+# bytes to 32 bytes (GB/s) then absorb the digest into the transcript, so the aggregate binds the exact carrier
+# CONTENT without an O(Σ bytes) per-byte sponge absorb (which made the downstream verify slower than the per-tx
+# path it replaces). Same blake3 the node uses for block ids / state roots.
+blake3 = "1"
+
+[build-dependencies]
+# K1 (2026-09-30): build.rs hashes the prover's own sources at BUILD time (`USDM_PROVER_SOURCE_DIGEST`), so a test
+# binary's proof-cache key names the sources it was compiled from. The same blake3 the crate already depends on.
+blake3 = "1"
+# SPEED G1 (lane speed4, 2026-11-12): compiles the Metal plumbing on Apple targets (build.rs). Already in both lockfiles.
+cc = "1"
+
+[features]
+# TEST SUPPORT ONLY (2026-09-30, lane-review K1): exposes `prover_fingerprint::prover_source_digest` — the blake3 of the
+# prover's own sources, lockfiles, compiler and prover env — so the node's certificate cache and the decider's proof
+# cache share ONE key spelling. Enabled by the node's dev-dependency on this crate, never by a production build.
+test-support = []
+
+[dev-dependencies]
+p3-sumcheck = { workspace = true, features = ["test-util"] }
+# DB-371 (lane stable 2026-11-02): the test binary runs the NODE's allocator (usdmd-node `main.rs`: jemalloc, 1 s decay), so the
+# prover-memory profile pin measures what a node process holds — the system allocator's cached large frees read 4.4 GB of
+# compressed `MALLOC_LARGE (empty)` in the release-shape profile (vmmap), none of it live.
+tikv-jemallocator = "0.6"
+# §M6-T: the WHIR prover's `#[instrument]` spans (prove_with_alpha, round, final_round; the Merkle tree's build) read
+# as a timed tree by the prover-profile pin — the split of the 168 s witness opening into named parts.
+tracing-forest = { workspace = true, features = ["ansi", "smallvec"] }
+tracing-subscriber = { workspace = true, features = ["std", "env-filter"] }

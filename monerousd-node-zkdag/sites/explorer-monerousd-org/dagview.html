@@ -1,0 +1,517 @@
+<!doctype html>
+<!--
+   Copyright (c) 2026, The MoneroUSD Protocol
+
+   This file is an original work of the MoneroUSD Protocol — a post-quantum,
+   GHOSTDAG block-DAG, zero-knowledge confidential-value protocol. It is NOT part
+   of the Monero Project. Licensed under the Apache License, Version 2.0
+   (SPDX-License-Identifier: Apache-2.0); see the LICENSE and NOTICE files at the
+   repository root.
+-->
+
+<html lang="en">
+<head>
+<meta name="monerousd-realm" content="isolated">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MoneroUSD — Live BlockDAG</title>
+<style>
+  :root{ --cyan:#FF6600; --blue:#FF8533; --red:#ef4444; --gold:#ffb347; --ink:#0a0a0a; }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ height:100%; background:var(--ink); color:#f0eeea;
+    font-family:'Inter',-apple-system,system-ui,'Segoe UI',sans-serif; overflow:hidden; overscroll-behavior:none; }
+  #c{ position:fixed; inset:0; display:block; touch-action:none; }
+  .ui{ position:fixed; z-index:10; pointer-events:none; }
+  /* top bar */
+  #top{ top:0; left:0; right:0; display:flex; align-items:center; justify-content:space-between;
+    padding:16px 22px; background:linear-gradient(180deg,rgba(8,8,8,.85),rgba(8,8,8,0)); }
+  .brand{ display:flex; align-items:center; gap:11px; font-weight:700; letter-spacing:.3px; font-size:17px; }
+  .dot{ width:11px; height:11px; border-radius:50%; background:var(--cyan);
+    box-shadow:0 0 14px var(--cyan),0 0 30px var(--cyan); animation:pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{opacity:.55;transform:scale(.85)} 50%{opacity:1;transform:scale(1.15)} }
+  .sub{ font-size:11px; color:#9a958c; font-weight:500; letter-spacing:1.5px; text-transform:uppercase; }
+  /* view toggle slider */
+  #toggle{ pointer-events:auto; display:flex; align-items:center; gap:0; background:rgba(20,20,20,.72);
+    border:1px solid rgba(255,102,0,.22); border-radius:999px; padding:4px; backdrop-filter:blur(12px);
+    box-shadow:0 8px 40px rgba(0,0,0,.5); }
+  #toggle button{ pointer-events:auto; cursor:pointer; border:0; background:transparent; color:#a09b92;
+    font:600 12.5px Inter,sans-serif; letter-spacing:.4px; padding:8px 18px; border-radius:999px;
+    transition:.28s cubic-bezier(.4,0,.2,1); position:relative; z-index:2; }
+  #toggle button.on{ color:#fff; }
+  #knob{ position:absolute; top:4px; bottom:4px; border-radius:999px;
+    background:linear-gradient(135deg,var(--blue),var(--cyan)); box-shadow:0 0 24px rgba(255,102,0,.5);
+    transition:.32s cubic-bezier(.34,1.3,.5,1); z-index:1; }
+  /* stats */
+  #stats{ left:22px; bottom:20px; display:flex; gap:26px; padding:14px 20px;
+    background:rgba(17,17,17,.72); border:1px solid rgba(255,102,0,.18); border-radius:16px;
+    backdrop-filter:blur(14px); box-shadow:0 10px 50px rgba(0,0,0,.55); }
+  .stat .k{ font-size:10.5px; letter-spacing:1.4px; text-transform:uppercase; color:#8c8a85; margin-bottom:5px; }
+  .stat .v{ font:700 22px/1 'JetBrains Mono',ui-monospace,monospace; }
+  .stat .v small{ font-size:12px; color:#9a958c; font-weight:500; }
+  .tps .v{ background:linear-gradient(90deg,var(--cyan),var(--gold)); -webkit-background-clip:text;
+    background-clip:text; -webkit-text-fill-color:transparent; }
+  /* legend */
+  #legend{ right:22px; bottom:20px; display:flex; gap:18px; padding:11px 18px; font-size:11.5px;
+    background:rgba(17,17,17,.70); border:1px solid rgba(255,102,0,.16); border-radius:14px; backdrop-filter:blur(12px); }
+  .leg{ display:flex; align-items:center; gap:7px; color:#b5b2ab; }
+  .sw{ width:11px; height:11px; border-radius:3px; }
+  .sw.blue{ background:var(--cyan); box-shadow:0 0 10px var(--cyan); }
+  .sw.red{ background:var(--red); box-shadow:0 0 10px var(--red); }
+  /* block-list view */
+  #blocks{ position:fixed; inset:64px 0 0 0; z-index:5; overflow-y:auto; padding:18px 22px 90px;
+    display:none; opacity:0; transition:opacity .35s; }
+  #blocks.show{ display:block; opacity:1; }
+  .row{ display:grid; grid-template-columns:90px 1fr 120px 70px; align-items:center; gap:14px;
+    padding:13px 18px; margin:0 auto 9px; max-width:880px; border-radius:13px;
+    background:rgba(20,20,20,.72); border:1px solid rgba(255,255,255,.08); transition:.2s;
+    animation:slidein .4s cubic-bezier(.2,1,.3,1); }
+  .row:hover{ border-color:rgba(255,102,0,.42); transform:translateX(3px); }
+  @keyframes slidein{ from{opacity:0;transform:translateY(-10px)} to{opacity:1;transform:translateY(0)} }
+  .h{ font:700 16px 'JetBrains Mono',monospace; color:var(--cyan); }
+  .hash{ font:500 12.5px 'JetBrains Mono',monospace; color:#9a958c; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .par{ font:500 11px 'JetBrains Mono',monospace; color:#6f6c66; }
+  .tag{ justify-self:end; font:700 10.5px Inter; letter-spacing:.6px; padding:4px 11px; border-radius:999px; }
+  .tag.blue{ color:var(--cyan); background:rgba(255,102,0,.12); border:1px solid rgba(255,102,0,.32); }
+  .tag.red{ color:var(--red); background:rgba(255,59,107,.1); border:1px solid rgba(255,59,107,.3); }
+  #title{ position:fixed; left:0; right:0; top:38%; text-align:center; z-index:4; pointer-events:none;
+    opacity:0; transition:opacity 1s; }
+  #title h1{ font-size:clamp(28px,5vw,58px); font-weight:800; letter-spacing:-1px;
+    background:linear-gradient(120deg,#fff,var(--cyan),var(--blue)); -webkit-background-clip:text;
+    background-clip:text; -webkit-text-fill-color:transparent; }
+  #title p{ color:#9a958c; font-size:14px; margin-top:8px; letter-spacing:2px; text-transform:uppercase; }
+
+  /* responsive HUD — the WebGL canvas auto-resizes via the resize handler */
+  @media (max-width:760px){
+    #stats{ left:10px; right:10px; bottom:12px; gap:16px 22px; padding:11px 14px; flex-wrap:wrap; justify-content:center; }
+    .stat .v{ font-size:18px; } .stat .k{ font-size:9.5px; letter-spacing:1px; }
+    #legend{ bottom:auto; top:14px; right:14px; left:auto; padding:8px 12px; gap:12px; font-size:10.5px; }
+    #top{ padding:12px 14px; } .brand{ font-size:14.5px; } #toggle button{ padding:7px 13px; font-size:11.5px; }
+  }
+  @media (max-width:430px){
+    #legend{ display:none; }
+    #stats{ gap:12px 16px; padding:10px 12px; } .stat{ flex:1 1 42%; min-width:0; text-align:center; }
+    .stat .v{ font-size:16px; }
+  }
+</style>
+  <script src="lib/wallet-nav.js?v=1"></script>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="title" class="ui"><h1>MoneroUSD BlockDAG</h1><p>private · post-quantum · O(1)-verified</p></div>
+
+<div id="top" class="ui">
+  <div class="brand"><span class="dot"></span><div>MoneroUSD<div class="sub">Live Explorer · Testnet</div></div></div>
+  <div id="toggle"><span id="knob"></span>
+    <button id="bView">Block View</button><button id="dView" class="on">DAG View</button></div>
+</div>
+
+<div id="blocks"></div>
+
+<div id="stats" class="ui">
+  <div class="stat"><div class="k">DAG Height</div><div class="v" id="sHeight">0</div></div>
+  <div class="stat"><div class="k">Blocks held</div><div class="v" id="sBlocks">0</div></div>
+  <div class="stat"><div class="k">Spine / Merged</div><div class="v" id="sBR">0 / 0</div></div>
+  <div class="stat tps"><div class="k">Block rate</div><div class="v" id="sTps">0<small> blk/s</small></div></div>
+</div>
+<div id="legend" class="ui">
+  <div class="leg"><span class="sw blue"></span>Selected</div>
+  <div class="leg"><span class="sw red"></span>Merged</div>
+</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/three.module.js",
+  "three/addons/": "./vendor/three/addons/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+// ---- config: live testnet endpoint (explorer proxy). Falls back to a faithful GHOSTDAG simulation. ----
+const FEED = '/api/explorer/dag-recent';  // same-origin sovereign proxy of the node's REAL recent DAG (ids, parent edges, blue scores) — the node is the backend; no clearnet host
+if (new URLSearchParams(location.search).has('embed')) { ['top'].forEach(function(id){ var e=document.getElementById(id); if(e) e.style.display='none'; }); } // adjust to the explorer's block API; sim fallback otherwise
+const COL_BLUE = new THREE.Color(0xFF6600), COL_RED = new THREE.Color(0xef4444), COL_SPINE = new THREE.Color(0xFFB066);
+
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio,2)); renderer.setSize(innerWidth,innerHeight);
+const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(0x0a0908, 0.0125); scene.background = new THREE.Color(0x070605);
+const camera = new THREE.PerspectiveCamera(58, innerWidth/innerHeight, 0.1, 4000);
+camera.position.set(0,8,118);
+
+// bloom for the "out of this world" glow
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene,camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight), 1.35, 0.62, 0.12);
+composer.addPass(bloom);
+
+// ---- starfield + nebula ----
+(function stars(){
+  const N=8200, g=new THREE.BufferGeometry(), p=new Float32Array(N*3), s=new Float32Array(N), col=new Float32Array(N*3);
+  // warm orange-space palette + a few icy accents so the stars POP and read as colorful, not grey
+  const pal=[[1.0,0.42,0.06],[1.0,0.55,0.14],[1.0,0.72,0.30],[1.0,0.86,0.55],[1.0,0.97,0.82],[1.0,1.0,1.0],[1.0,1.0,1.0],[0.58,0.78,1.0],[0.80,0.90,1.0]];
+  for(let i=0;i<N;i++){ const r=380+Math.random()*1720, t=Math.random()*6.283, ph=Math.acos(2*Math.random()-1);
+    p[i*3]=r*Math.sin(ph)*Math.cos(t); p[i*3+1]=r*Math.sin(ph)*Math.sin(t); p[i*3+2]=r*Math.cos(ph); s[i]=Math.random();
+    const c=pal[(Math.random()*pal.length)|0]; col[i*3]=c[0]; col[i*3+1]=c[1]; col[i*3+2]=c[2]; }
+  g.setAttribute('position',new THREE.BufferAttribute(p,3)); g.setAttribute('tw',new THREE.BufferAttribute(s,1));
+  g.setAttribute('scol',new THREE.BufferAttribute(col,3));
+  const m=new THREE.ShaderMaterial({ transparent:true, depthWrite:false, blending:THREE.AdditiveBlending,
+    uniforms:{ t:{value:0} },
+    vertexShader:`attribute float tw; attribute vec3 scol; uniform float t; varying float v; varying vec3 vc;
+      void main(){ v=0.28+0.72*pow(abs(sin(t*0.8+tw*42.0)),1.7); vc=scol; vec4 mv=modelViewMatrix*vec4(position,1.0);
+      gl_PointSize=(1.1+tw*2.7)*(320.0/-mv.z); gl_Position=projectionMatrix*mv; }`,
+    fragmentShader:`varying float v; varying vec3 vc; void main(){ vec2 d=gl_PointCoord-0.5; float a=smoothstep(0.5,0.0,length(d));
+      gl_FragColor=vec4(mix(vc,vec3(1.0),v*0.5)*v*1.28, a*(0.40+0.60*v)); }` });
+  const pts=new THREE.Points(g,m); scene.add(pts); window._stars=m; window._starPts=pts;
+})();
+function nebula(c,x,y,z,sz){ const cv=document.createElement('canvas'); cv.width=cv.height=256;
+  const ctx=cv.getContext('2d'), gr=ctx.createRadialGradient(128,128,0,128,128,128);
+  gr.addColorStop(0,c+'cc'); gr.addColorStop(.4,c+'33'); gr.addColorStop(1,c+'00');
+  ctx.fillStyle=gr; ctx.fillRect(0,0,256,256);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({ map:new THREE.CanvasTexture(cv), blending:THREE.AdditiveBlending,
+    depthWrite:false, opacity:.14 })); sp.position.set(x,y,z); sp.scale.set(sz,sz,1); scene.add(sp); }
+nebula('#FF6600',-260,120,-500,900); nebula('#C21A1A',300,-160,-650,1100); nebula('#FFA62B',-100,-220,-300,700);
+// periodic orange shooting star streaking the far background (bg stays black)
+const shoot = (function(){
+  const mat=new THREE.LineBasicMaterial({ color:0xFF8a3a, transparent:true, opacity:0, blending:THREE.AdditiveBlending });
+  const geo=new THREE.BufferGeometry(); const pos=new Float32Array(6); geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const ln=new THREE.Line(geo,mat); ln.frustumCulled=false; scene.add(ln);
+  // glowing nucleus that rides the head of the streak (meteor / shooting-star)
+  const ht=(function(){ const cv=document.createElement('canvas'); cv.width=cv.height=64; const x=cv.getContext('2d'); const g=x.createRadialGradient(32,32,0,32,32,32); g.addColorStop(0,'#ffffff'); g.addColorStop(.4,'#ffe0b0'); g.addColorStop(1,'rgba(255,170,80,0)'); x.fillStyle=g; x.fillRect(0,0,64,64); return new THREE.CanvasTexture(cv); })();
+  const head=new THREE.Sprite(new THREE.SpriteMaterial({map:ht,transparent:true,opacity:0,blending:THREE.AdditiveBlending,depthWrite:false})); head.scale.setScalar(30); scene.add(head);
+  let next=1.3, life=0, sx=0,sy=0,sz=0, dx=0,dy=0,dz=0, tl=0.15, hs=30;
+  return function(t,dt){
+    if(life<=0){ next-=dt; if(next<=0){ next=0.7+Math.random()*2.4; const a=Math.random()*6.283; const meteor=Math.random()<0.5;
+      sx=Math.cos(a)*(950+Math.random()*680); sy=300+Math.random()*560; sz=-360-Math.random()*1100;
+      dx=(Math.random()-0.5)*(meteor?1500:1050); dy=-300-Math.random()*420; dz=(Math.random()-0.5)*640; life=1.0;
+      const col=meteor?0xffd0a0:0xff8a3a; mat.color.setHex(col); head.material.color.setHex(col);
+      tl=meteor?0.22:0.13; hs=meteor?40:26; head.scale.setScalar(hs); } return; }
+    life-=dt*0.8; const p=1-life;
+    pos[0]=sx+dx*p; pos[1]=sy+dy*p; pos[2]=sz+dz*p; pos[3]=sx+dx*(p-tl); pos[4]=sy+dy*(p-tl); pos[5]=sz+dz*(p-tl);
+    geo.attributes.position.needsUpdate=true; const o=Math.sin(Math.max(0,Math.min(1,life))*3.14159);
+    mat.opacity=o*0.95; head.material.opacity=o; head.position.set(pos[0],pos[1],pos[2]);
+  };
+})();
+
+// ---- solar-system flythrough: the DAG loops infinitely past the sun, planets & moon (time-of-day seeded) ----
+(function solar(){
+  const TWO=6.28318, hr=new Date().getHours()+new Date().getMinutes()/60;
+  function mkTex(draw){ const cv=document.createElement('canvas'); cv.width=cv.height=256; draw(cv.getContext('2d')); return new THREE.CanvasTexture(cv); }
+  const glowTex=mkTex(c=>{ const gg=c.createRadialGradient(128,128,0,128,128,128); gg.addColorStop(0,'#fff'); gg.addColorStop(.3,'#ffffffaa'); gg.addColorStop(1,'#ffffff00'); c.fillStyle=gg; c.fillRect(0,0,256,256); });
+  // real-terminator lighting: the Sun lights one hemisphere, the far side falls into shadow (exactly like real life)
+  scene.add(new THREE.AmbientLight(0x2a3350, 0.62));
+  const sunLight=new THREE.PointLight(0xfff1d6, 2.7, 0, 0.0); scene.add(sunLight);
+  // real-colour surfaces; clouds/bands live on a SEPARATE, independently-rotating layer (moving atmospheres)
+  const earth=c=>{ c.fillStyle='#0a3a78'; c.fillRect(0,0,256,256); const cc=['#2e6b3a','#356f3e','#6f5e38','#8a7340','#b8a05a'];
+    for(let i=0;i<28;i++){c.fillStyle=cc[i%5];c.globalAlpha=.94;c.beginPath();c.ellipse(Math.random()*256,Math.random()*256,12+Math.random()*44,9+Math.random()*28,Math.random()*3,0,TWO);c.fill();}
+    c.globalAlpha=1; c.fillStyle='#eef4ff'; c.fillRect(0,0,256,11); c.fillRect(0,245,256,11); };
+  const cloudsT=c=>{ c.clearRect(0,0,256,256); c.fillStyle='#ffffff'; for(let i=0;i<28;i++){c.globalAlpha=.30+Math.random()*.45;c.beginPath();c.ellipse(Math.random()*256,Math.random()*256,16+Math.random()*42,5+Math.random()*11,Math.random()*3,0,TWO);c.fill();} c.globalAlpha=1; };
+  const venusT=c=>{ for(let y=0;y<256;y+=2){ c.fillStyle=Math.sin(y*0.06)>-0.2?'#e0cf9c':'#cdb886'; c.fillRect(0,y,256,2);} };
+  const venusCl=c=>{ c.clearRect(0,0,256,256); c.fillStyle='#f3e8c4'; for(let i=0;i<16;i++){c.globalAlpha=.42;c.beginPath();c.ellipse(Math.random()*256,Math.random()*256,30+Math.random()*44,9+Math.random()*13,0.3,0,TWO);c.fill();} c.globalAlpha=1; };
+  const band=(a,b,spot)=>c=>{ for(let y=0;y<256;y+=2){ const k=Math.sin(y*0.05)+0.32*Math.sin(y*0.15+1)+0.12*Math.sin(y*0.42); c.fillStyle=k>0?a:b; c.fillRect(0,y,256,2);} if(spot){ c.fillStyle=spot; c.beginPath();c.ellipse(168,120,28,16,0,0,TWO);c.fill(); } };
+  const bandCl=a=>c=>{ c.clearRect(0,0,256,256); for(let y=0;y<256;y+=3){ if(Math.sin(y*0.085+0.6)>0.25){ c.fillStyle=a; c.globalAlpha=.45; c.fillRect(0,y,256,2);} } c.globalAlpha=1; };
+  const smooth=(col,b2)=>c=>{ c.fillStyle=col; c.fillRect(0,0,256,256); c.globalAlpha=.16; c.fillStyle=b2||'#ffffff'; for(let y=46;y<256;y+=58){c.fillRect(0,y,256,4);} c.globalAlpha=1; };
+  const rock=(col,cr)=>c=>{ c.fillStyle=col; c.fillRect(0,0,256,256); for(let i=0;i<130;i++){c.fillStyle=cr||'rgba(0,0,0,.18)';c.globalAlpha=.14+Math.random()*.36;c.beginPath();c.arc(Math.random()*256,Math.random()*256,2+Math.random()*15,0,TWO);c.fill();} c.globalAlpha=1; };
+  const defs=[
+    {r:60,sun:1,col:0xffc844},
+    {r:9,t:rock('#8c857c','rgba(40,34,28,.5)')},
+    {r:17,t:venusT,cloud:venusCl,atmo:0xe6d8a8},
+    {r:20,t:earth,cloud:cloudsT,atmo:0x4ea0ff},
+    {r:7,t:rock('#b6b2ac','rgba(50,48,52,.5)')},
+    {r:13,t:rock('#b5462c','rgba(120,52,30,.45)'),atmo:0xc97a4a},
+    {r:48,t:band('#d9c2a0','#b08a52','#c0392b'),cloud:bandCl('#efe1c4'),atmo:0xe0c79a},
+    {r:40,t:band('#e3d2a0','#c2a96a'),cloud:bandCl('#f1e6c2'),ring:1,atmo:0xe6d2a0},
+    {r:28,t:smooth('#9fe0e6','#c8f0f2')},
+    {r:27,t:smooth('#3b5bdb','#5a7bff')}
+  ];
+  const INFO=[
+    {n:'\u2600 Sun',d:'The star at the centre of our solar system \u2014 99.86% of the system mass. About 150 million km from Earth (1 AU). Fuses hydrogen into helium, lighting every planet you see here.'},
+    {n:'Mercury',d:'1st planet, 0.39 AU from the Sun. The smallest planet and the closest to the Sun. Almost no atmosphere \u2014 scorching days, freezing nights.'},
+    {n:'Venus',d:'2nd planet, 0.72 AU. The hottest world (about 465\u00b0C) from a runaway CO\u2082 greenhouse. Spins backwards relative to the others.'},
+    {n:'\ud83c\udf0d Earth',d:'3rd planet, 1 AU. The only known world with life and liquid surface water \u2014 our home, between Venus and Mars.'},
+    {n:'Moon',d:'The natural satellite of Earth, about 384,000 km away. Drives the ocean tides and always shows us the same face.'},
+    {n:'Mars',d:'4th planet, 1.52 AU. The "Red Planet" \u2014 rusty iron-oxide dust, two tiny moons, and dry ancient riverbeds.'},
+    {n:'Jupiter',d:'5th planet, 5.2 AU. The largest planet: a gas giant with the centuries-old Great Red Spot storm and 95+ moons.'},
+    {n:'Saturn',d:'6th planet, 9.5 AU. Famous for its bright icy ring system. So light it would float in water.'},
+    {n:'Uranus',d:'7th planet, 19.2 AU. An ice giant tipped almost sideways; its pale cyan colour comes from methane.'},
+    {n:'Neptune',d:'8th and farthest planet, 30 AU. A deep-blue ice giant with the fastest winds in the solar system.'}
+  ];
+  // bodies: 0=Sun(centre) then Mercury,Venus,Earth,Moon,Mars,Jupiter,Saturn,Uranus,Neptune.
+  // ORB = orbital radius, PER = relative orbital period (outer = slower, like real life). The Moon orbits Earth.
+  const ORB=[0,115,170,230,44,300,400,500,585,665], PER=[1,150,260,400,34,560,900,1300,1700,2100];
+  const list=[];
+  defs.forEach((d,i)=>{
+    const g=new THREE.Group();
+    const sm = d.sun ? new THREE.MeshBasicMaterial({color:d.col,fog:false}) : new THREE.MeshLambertMaterial({map:mkTex(d.t),fog:false});
+    const sph=new THREE.Mesh(new THREE.SphereGeometry(d.r,42,32), sm); sph.userData={info:INFO[i]}; sph.rotation.z=i*0.21; g.add(sph);
+    if(d.sun){ const h=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:0xffb733,blending:THREE.AdditiveBlending,depthWrite:false,opacity:0.95,fog:false})); h.scale.setScalar(d.r*6); g.add(h); }
+    if(d.atmo){ g.add(new THREE.Mesh(new THREE.SphereGeometry(d.r*1.14,30,22), new THREE.MeshBasicMaterial({color:d.atmo,transparent:true,opacity:0.16,side:THREE.BackSide,blending:THREE.AdditiveBlending,fog:false}))); }
+    let cloudMesh=null;
+    if(d.cloud){ cloudMesh=new THREE.Mesh(new THREE.SphereGeometry(d.r*1.03,40,30), new THREE.MeshLambertMaterial({map:mkTex(d.cloud),transparent:true,depthWrite:false,fog:false})); g.add(cloudMesh); }
+    if(d.ring){ const rg=new THREE.Mesh(new THREE.RingGeometry(d.r*1.45,d.r*2.35,72), new THREE.MeshBasicMaterial({color:0xe6d2a0,side:THREE.DoubleSide,transparent:true,opacity:0.6,fog:false})); rg.rotation.x=1.18; rg.rotation.y=0.2; g.add(rg); }
+    g.userData={spin:0.0016+Math.random()*0.004, sph:sph, cloud:cloudMesh}; scene.add(g); list.push(g);
+  });
+  // ONE world in frame at a time: the system is a single-file line; as the DAG flows you PASS each planet in
+  // turn, off to the side and in the distance, then it recycles far ahead. Never more than one prominent body,
+  // never crossing the central DAG path. Cloud/atmosphere layers rotate independently so the worlds look alive.
+  const _SPAN=list.length*2000, _GAP=2000, _CYC=240000;
+  list.forEach((g,i)=>{ const u=g.userData, ang=i*1.37;
+    u.sideX=Math.cos(ang)*(300+(i%3)*70);                    // each world passes on its own bearing, off to the side
+    u.sideY=Math.sin(ang)*(210+(i%4)*55)-20;
+  });
+  window._solar=function(cz){ const now=Date.now(), flow=((now/_CYC)%1)*_SPAN;
+    sunLight.position.set(520, 420, cz+360);                 // fixed key light -> worlds lit toward the viewer
+    for(let i=0;i<list.length;i++){ const g=list[i], u=g.userData;
+      const d=(((i*_GAP - flow)%_SPAN)+_SPAN)%_SPAN;          // distance ahead; only ONE body sits in the front window
+      g.position.set(u.sideX, u.sideY, cz + 250 - d);         // sweeps past in the distance, off to the side
+      u.sph.rotation.y += u.spin;
+      if(u.cloud) u.cloud.rotation.y += u.spin*0.55;          // moving atmosphere (drifts slower than the surface)
+    }
+  };
+  // click a planet -> name + educational popover
+  const _pray=new THREE.Raycaster(), _pm=new THREE.Vector2();
+  const ppop=document.createElement('div'); ppop.id='planetpop';
+  ppop.style.cssText='position:fixed;z-index:31;display:none;max-width:308px;padding:15px 17px;background:rgba(15,17,24,.96);border:1px solid rgba(120,170,255,.42);border-radius:14px;backdrop-filter:blur(14px);box-shadow:0 18px 56px rgba(0,0,0,.66);font:500 12px Inter,system-ui,sans-serif;color:#f0eeea;pointer-events:auto';
+  document.body.appendChild(ppop);
+  window.addEventListener('dagtap', function(ev){ const e=ev.detail||ev;
+    if(_dragged) return; if(e.target&&e.target.closest&&e.target.closest('.ui,#toggle,#top,#blkpop,#planetpop,#bsuggest')) return;
+    _pm.x=(e.clientX/innerWidth)*2-1; _pm.y=-(e.clientY/innerHeight)*2+1; _pray.setFromCamera(_pm,camera);
+    const sphs=list.map(g=>g.children[0]).filter(Boolean);
+    const hit=_pray.intersectObjects(sphs,false)[0];
+    if(hit&&hit.object.userData.info){ const f=hit.object.userData.info;
+      ppop.innerHTML='<div style="font:700 16px Inter;color:#9ec1ff;margin-bottom:7px">'+escapeHtml(f.n)+'</div><div style="font-size:11.5px;line-height:1.55;color:#c7c2ba">'+escapeHtml(f.d)+'</div><div style="margin-top:10px;font-size:9.5px;color:#6f6c66">click empty space to close</div>';
+      ppop.style.left=Math.min(e.clientX+15,innerWidth-322)+'px'; ppop.style.top=Math.min(e.clientY+15,innerHeight-160)+'px'; ppop.style.display='block'; }
+    else ppop.style.display='none';
+  });
+})();
+
+// ---- the DAG ----
+const dag = new THREE.Group(); scene.add(dag);
+const blocks=[]; const tips=[];   // tips = recent blocks new ones may reference (multi-parent)
+const nodeGeo = new THREE.IcosahedronGeometry(1.5, 1);
+const edgesMat = new THREE.LineBasicMaterial({ color:0xFF6600, transparent:true, opacity:.32, blending:THREE.AdditiveBlending, fog:false });
+const edgeGroup = new THREE.Group(); dag.add(edgeGroup);
+let height=0, blueN=0, redN=0, frontZ=0;
+// camera-mode flow state (phase 2 wires focus/scrub/search to these)
+let viewMode='live', focusBlk=null, camZ=70, scrubZ=0, orbitAz=0, orbitEl=0.18, _drag=null, _dragged=false, _userOrbited=false, _lastT=0, userZoom=1; const blocksByNum=new Map();
+
+function addBlock(isBlue, parentRefs, h, realHash, realTxs){
+  const lane = (Math.random()-0.5)*46, lift=(Math.random()-0.5)*30;
+  const px = parentRefs.length? parentRefs.reduce((a,b)=>a+b.mesh.position.x,0)/parentRefs.length : 0;
+  const py = parentRefs.length? parentRefs.reduce((a,b)=>a+b.mesh.position.y,0)/parentRefs.length : 0;
+  const pos = new THREE.Vector3(px*0.6+lane, py*0.6+lift, frontZ);
+  const col = isBlue?COL_BLUE:COL_RED;
+  const mat = new THREE.MeshBasicMaterial({ color: col, fog:false });
+  const mesh = new THREE.Mesh(nodeGeo, mat); mesh.position.copy(pos); mesh.scale.setScalar(0.01);
+  mesh.userData={ born:performance.now(), tgt:(isBlue?1.0:0.72) }; dag.add(mesh);
+  // glow halo
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map:haloTex, color:col, blending:THREE.AdditiveBlending,
+    depthWrite:false, opacity:isBlue?0.9:0.6 })); halo.scale.setScalar(isBlue?11:8); mesh.add(halo);
+  const blk={ mesh, isBlue, h, hash:realHash, parents:parentRefs.map(p=>p.h), txs:(realTxs||0) }; // real id only — never an invented hash
+  // edges to parents
+  parentRefs.forEach(p=>{ const g=new THREE.BufferGeometry().setFromPoints([pos.clone(), p.mesh.position.clone()]);
+    const m=edgesMat.clone(); m.color = isBlue&&p.isBlue?COL_SPINE:(isBlue?COL_BLUE:COL_RED.clone().multiplyScalar(.8));
+    m.opacity = isBlue&&p.isBlue?0.5:0.28; const ln=new THREE.Line(g,m); ln.userData={a:pos.clone(),b:p.mesh.position.clone(),born:performance.now()};
+    edgeGroup.add(ln); blk.edge=ln; });
+  blocks.push(blk); tips.push(blk); if(tips.length>14) tips.splice(0,tips.length-14);
+  if(isBlue)blueN++; else redN++; height=Math.max(height,h);
+  if(blocks.length>500){ const old=blocks.shift(); dag.remove(old.mesh); blocksByNum.delete(old.h); }
+  frontZ -= 7.0;
+  return blk;
+}
+const haloTex=(()=>{ const cv=document.createElement('canvas'); cv.width=cv.height=128;
+  const ctx=cv.getContext('2d'), g=ctx.createRadialGradient(64,64,0,64,64,64);
+  g.addColorStop(0,'#fff'); g.addColorStop(.25,'#ffffffaa'); g.addColorStop(1,'#ffffff00');
+  ctx.fillStyle=g; ctx.fillRect(0,0,128,128); return new THREE.CanvasTexture(cv); })();
+
+// ---- growth: the REAL DAG — stream this node's actual held blocks (ids, parent edges,
+// selected-chain flags) from the same-origin sovereign feed. Nothing is simulated and nothing is
+// invented: a block renders only with its real id, its real parents draw the real edges, and the
+// only per-block number shown is the CONSTANT 256 cover shape (real activity stays concealed).
+let liveOk=false, lastSeen=new Set(), arrivals=[];
+const blocksEl=document.getElementById('blocks');
+const drawn=new Map(); // real id -> drawn blk (for parent-edge lookup)
+// ISOLATED REALM (2026-10-28): embedded, this document has an opaque origin and fetches nothing itself — the explorer
+// page relays the same public feed over postMessage (`dag-view.js`). Opened standalone it fetches the feed directly.
+let feedSeq=0; const feedWaits=new Map();
+window.addEventListener('message', (ev)=>{
+  if(ev.source!==window.parent) return;
+  const d=ev.data; if(!d||d.t!=='dagview:blocks') return;
+  const w=feedWaits.get(d.id); if(!w) return; feedWaits.delete(d.id);
+  if(d.error) w.reject(new Error(d.error)); else w.resolve(Array.isArray(d.blocks)?d.blocks:[]);
+});
+async function fetchFeed(){
+  if(window.parent!==window){
+    const id=++feedSeq;
+    return new Promise((resolve,reject)=>{
+      feedWaits.set(id,{resolve,reject});
+      setTimeout(()=>{ if(feedWaits.delete(id)) reject(new Error('feed relay timeout')); }, 8000);
+      window.parent.postMessage({t:'dagview:feed', id}, '*');
+    });
+  }
+  const r=await fetch(FEED,{signal:AbortSignal.timeout(7000)});
+  if(!r.ok) throw new Error('feed '+r.status);
+  const j=await r.json(); return Array.isArray(j.blocks)?j.blocks:[];
+}
+function spawnReal(b){
+  // one REAL block -> one DAG node. refs = the REAL parents already on screen (edges are the true
+  // GHOSTDAG structure); selected-chain blocks draw as the spine, merged blocks alongside it.
+  const refs=(b.parents||[]).map(p=>drawn.get(p)).filter(Boolean);
+  const blk=addBlock(!!b.selected, refs, Number(b.blue_score||0), b.id, 256);
+  drawn.set(b.id, blk); blocksByNum.set(blk.h, blk);
+  if(Number(b.ts)>0){ arrivals.push(Number(b.ts)); if(arrivals.length>200) arrivals.shift(); }   /* the block's own stamp (ms) */
+  prependRow(blk);
+  if(drawn.size>600){ const oldest=drawn.keys().next().value; drawn.delete(oldest); }
+}
+async function pollChain(){
+  // poll the real feed; render every NEW held block. Errors leave the DAG intact + retry.
+  try{
+    const list=await fetchFeed(); liveOk=true;
+    // feed is newest-first; apply oldest-first so parents exist before children.
+    for(let i=list.length-1;i>=0;i--){ const b=list[i]; if(!b||!b.id||lastSeen.has(b.id)) continue; lastSeen.add(b.id); spawnReal(b); }
+    if(lastSeen.size>4000){ lastSeen=new Set(Array.from(lastSeen).slice(-1500)); }
+  }catch(e){ liveOk=false; }
+}
+pollChain(); setInterval(pollChain, 2000);               // follow the real DAG every 2s
+
+function escapeHtml(s){ return String(s==null?'':s).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function prependRow(blk){
+  const row=document.createElement('div'); row.className='row';
+  row.innerHTML=`<div class="h">#${Number(blk.h)}</div>
+    <div class="hash">${escapeHtml(blk.hash)}</div>
+    <div class="par">↳ ${blk.parents.length} parent${blk.parents.length!==1?'s':''} · cover 256 · activity concealed</div>
+    <div class="tag ${blk.isBlue?'blue':'red'}">${blk.isBlue?'SPINE':'MERGED'}</div>`;
+  blocksEl.prepend(row); while(blocksEl.children.length>60) blocksEl.lastChild.remove();
+}
+
+// ---- view toggle (block <-> DAG slider) ----
+const knob=document.getElementById('knob'), bBtn=document.getElementById('bView'), dBtn=document.getElementById('dView');
+function setKnob(el){ const r=el.getBoundingClientRect(), pr=el.parentElement.getBoundingClientRect();
+  knob.style.left=(r.left-pr.left)+'px'; knob.style.width=r.width+'px'; }
+let dagMode=true;
+function view(dag_){ dagMode=dag_; bBtn.classList.toggle('on',!dag_); dBtn.classList.toggle('on',dag_);
+  setKnob(dag_?dBtn:bBtn); blocksEl.classList.toggle('show',!dag_);
+  document.getElementById('legend').style.opacity=dag_?1:0; }
+bBtn.onclick=()=>view(false); dBtn.onclick=()=>view(true);
+addEventListener('resize',()=>{ camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight); composer.setSize(innerWidth,innerHeight); setKnob(dagMode?dBtn:bBtn); });
+setTimeout(()=>{ setKnob(dBtn); document.getElementById('title').style.opacity=1;
+  setTimeout(()=>document.getElementById('title').style.opacity=0, 4200); }, 120);
+
+// ---- stats + animate ----
+const $=id=>document.getElementById(id);
+function stats(){
+  /* blocks per second across the held blocks' own timestamps — measured by the chain, not by when this page saw them */
+  let lo=Infinity, hi=-Infinity; for(const t of arrivals){ if(t<lo) lo=t; if(t>hi) hi=t; }
+  const bps=(arrivals.length>1 && hi>lo) ? (arrivals.length-1)/((hi-lo)/1000) : 0;
+  $('sHeight').textContent=height.toLocaleString(); $('sBlocks').textContent=drawn.size.toLocaleString();
+  $('sBR').textContent=blueN.toLocaleString()+' / '+redN.toLocaleString();
+  $('sTps').innerHTML=(bps>0 && bps<1 ? bps.toFixed(2) : bps.toFixed(1))+'<small> blk/s</small>'; }
+setInterval(stats,400);
+
+const clock=new THREE.Clock();
+function animate(){ requestAnimationFrame(animate); const t=clock.getElapsedTime(), now=performance.now();
+  window._stars.uniforms.t.value=t;
+  // pop-in scaling + gentle spin
+  for(const b of blocks){ const m=b.mesh, a=Math.min(1,(now-m.userData.born)/650);
+    const e=1-Math.pow(1-a,3); m.scale.setScalar(0.01+e*m.userData.tgt*(1+0.06*Math.sin(t*2+m.id)));
+    m.rotation.y+=0.006; m.rotation.x+=0.003; }
+  // ---- infinite flow: live = ride the growing front, focus = lock a batch, scrub = history ----
+  let targetZ;
+  if(viewMode==='focus' && focusBlk && focusBlk.mesh.parent) targetZ = focusBlk.mesh.position.z + 6;
+  else if(viewMode==='scrub') targetZ = scrubZ;
+  else targetZ = frontZ + 120;                       // live: stay just ahead of the newest batch -> never empties
+  camZ += (targetZ - camZ) * (viewMode==='live'?0.05:0.10);
+  // click-drag 360 orbit around the look-at (0,0,camZ); auto-drifts slowly when idle
+  if(!_drag && !_userOrbited) orbitAz += 0.0016;
+  const R = ((viewMode==='focus')?64:100)*userZoom, ce=Math.cos(orbitEl);
+  camera.position.x = Math.sin(orbitAz)*ce*R;
+  camera.position.y = 8 + Math.sin(orbitEl)*R;
+  camera.position.z = camZ + Math.cos(orbitAz)*ce*R;
+  camera.lookAt(0, 0, camZ);
+  if(window._starPts) window._starPts.position.z = camZ;          // infinite starfield rides the flow
+  const dt=t-_lastT; _lastT=t; shoot(t, (dt>0&&dt<0.2)?dt:0.016); // periodic shooting star
+  if(window._solar) window._solar(camZ);                          // solar-system flythrough
+  composer.render(); }
+animate();
+
+// ---- interactive batch explorer: click to focus+pause, search, scrub history, jump to latest ----
+(function(){
+  const ray=new THREE.Raycaster(), m2=new THREE.Vector2();
+  const pop=document.createElement('div'); pop.id='blkpop';
+  pop.style.cssText='position:fixed;z-index:30;display:none;min-width:250px;max-width:320px;padding:15px 16px;background:rgba(17,17,17,.96);border:1px solid var(--cyan,#FF6600);border-radius:13px;backdrop-filter:blur(13px);box-shadow:0 16px 54px rgba(0,0,0,.62);font:500 12px Inter,system-ui,sans-serif;color:#f0eeea;pointer-events:auto';
+  document.body.appendChild(pop);
+  const bar=document.createElement('div');
+  bar.style.cssText='position:fixed;top:72px;left:50%;transform:translateX(-50%);z-index:14;display:flex;gap:8px;align-items:center;background:rgba(20,20,20,.72);border:1px solid rgba(255,102,0,.22);border-radius:999px;padding:5px 6px 5px 15px;backdrop-filter:blur(12px);box-shadow:0 8px 30px rgba(0,0,0,.45)';
+  bar.innerHTML='<span style="font:600 10.5px Inter;color:#6f6c66;letter-spacing:.4px;text-transform:uppercase">Batch</span><input id="bsearch" type="number" min="1" placeholder="search #" style="width:92px;background:transparent;border:0;outline:none;color:#f0eeea;font:600 12px JetBrains Mono,monospace"><button id="blatest" style="cursor:pointer;border:0;background:var(--cyan,#FF6600);color:#0a0a0a;font:700 11px Inter;letter-spacing:.2px;padding:7px 13px;border-radius:999px">Latest ▸</button>';
+  document.body.appendChild(bar);
+  const sb=document.createElement('div');
+  sb.style.cssText='position:fixed;bottom:62px;right:18px;z-index:14;width:min(290px,52vw);display:flex;align-items:center;gap:11px;background:rgba(20,20,20,.6);border:1px solid rgba(255,255,255,.08);border-radius:999px;padding:8px 15px;backdrop-filter:blur(10px)';
+  sb.innerHTML='<span style="font:600 9px Inter;color:#6f6c66;letter-spacing:.6px;white-space:nowrap">◂ PAST</span><input id="bscrub" type="range" min="0" max="100" value="100" style="flex:1;accent-color:#FF6600;cursor:pointer;height:3px"><span style="font:600 9px Inter;color:#6f6c66;letter-spacing:.6px;white-space:nowrap">LIVE ▸</span>';
+  document.body.appendChild(sb);
+  const contBtn=document.createElement('button'); contBtn.id='bcontinue'; contBtn.innerHTML='▶ Continue';
+  contBtn.style.cssText='position:fixed;bottom:112px;left:50%;transform:translateX(-50%);z-index:16;display:none;cursor:pointer;border:0;background:linear-gradient(135deg,#FF8533,#FF6600);color:#0a0a0a;font:700 13px Inter;letter-spacing:.3px;padding:11px 26px;border-radius:999px;box-shadow:0 8px 30px rgba(255,102,0,.55)';
+  document.body.appendChild(contBtn);
+  const sIn=document.getElementById('bsearch'), latBtn=document.getElementById('blatest'), scr=document.getElementById('bscrub');
+  const fmt=n=>n?n.toLocaleString():'—';
+  function showPop(b){ const isB=b.isBlue;
+    pop.innerHTML='<button id="bpx" title="resume flow" style="position:absolute;top:9px;right:11px;cursor:pointer;border:0;background:transparent;color:#9a958c;font:700 14px Inter;line-height:1">✕</button><div style="font:700 14px JetBrains Mono,monospace;color:#FF6600;margin-bottom:5px">Batch #'+Number(b.h)+'</div><div style="margin-bottom:9px"><span style="font:700 9px Inter;letter-spacing:.5px;padding:3px 9px;border-radius:999px;'+(isB?'color:#FF6600;background:rgba(255,102,0,.13);border:1px solid rgba(255,102,0,.32)':'color:#ef4444;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.3)')+'">'+(isB?'BLUE · selected':'RED ⊘ forfeited')+'</span></div><div style="font:500 10.5px JetBrains Mono,monospace;color:#b5b2ab;word-break:break-all;margin-bottom:9px">'+b.hash+'</div><div style="display:flex;gap:18px;color:#9a958c;font-size:11px"><span>↳ '+b.parents.length+' parent'+(b.parents.length!==1?'s':'')+'</span><span style="color:#FF8533;font-weight:600">'+fmt(b.txs)+' tx settled</span></div><div style="margin-top:10px;font-size:9.5px;color:#6f6c66;line-height:1.45">Paused on this batch · the DAG keeps forming behind · amounts stay private</div>';
+    if(innerWidth<=640){ // mobile: anchor as a bottom sheet, clear of the top search bar + keyboard, above the scrub/continue controls
+      pop.style.left='12px'; pop.style.right='12px'; pop.style.width='auto'; pop.style.maxWidth='none'; pop.style.top='auto'; pop.style.bottom='168px';
+    } else {
+      pop.style.right='auto'; pop.style.width=''; pop.style.maxWidth='320px'; pop.style.bottom='auto'; pop.style.left=Math.max(14,innerWidth*0.5-160)+'px'; pop.style.top='116px';
+    }
+    pop.style.display='block';
+    document.getElementById('bpx').onclick=resume; }
+  function focusOn(b){ if(!b)return; focusBlk=b; viewMode='focus'; showPop(b); }
+  function resume(){ viewMode='live'; focusBlk=null; pop.style.display='none'; scr.value=100; }
+  function pick(e){ if(_dragged) return; if(bar.contains(e.target)||sb.contains(e.target)||pop.contains(e.target)) return;
+    if(e.target&&e.target.closest&&e.target.closest('.ui,#toggle,#top')) return;
+    m2.x=(e.clientX/innerWidth)*2-1; m2.y=-(e.clientY/innerHeight)*2+1; ray.setFromCamera(m2,camera);
+    const hit=ray.intersectObjects(blocks.map(b=>b.mesh).filter(Boolean),true)[0];
+    if(hit){ const o=hit.object, b=blocks.find(x=>x.mesh===o||x.mesh===o.parent); if(b) focusOn(b); } }
+  sIn.addEventListener('keydown',e=>{ if(e.key==='Enter'||e.keyCode===13){ const b=blocksByNum.get(parseInt(sIn.value,10));
+    if(b){ focusOn(b); sug.style.display='none'; sIn.blur(); } else { sIn.style.color='#ef4444'; setTimeout(function(){sIn.style.color='#f0eeea';},700); } } });
+  // keystroke-based clickable autocomplete of matching batch numbers
+  const sug=document.createElement('div'); sug.id='bsuggest';
+  sug.style.cssText='position:fixed;z-index:15;display:none;background:rgba(20,20,20,.97);border:1px solid rgba(255,102,0,.30);border-radius:11px;overflow-y:auto;box-shadow:0 14px 44px rgba(0,0,0,.6);backdrop-filter:blur(12px);min-width:168px;max-height:248px';
+  document.body.appendChild(sug);
+  function renderSuggest(){ const q=(sIn.value||'').trim(); if(!q){ sug.style.display='none'; return; }
+    const ms=[...blocksByNum.keys()].filter(h=>(''+h).startsWith(q)).sort((a,b)=>b-a).slice(0,7);
+    if(!ms.length){ sug.style.display='none'; return; }
+    sug.innerHTML=ms.map(h=>{ const b=blocksByNum.get(h); const c=b.isBlue?'#FF6600':'#ef4444';
+      return '<div class="bsg" data-h="'+Number(h)+'" style="cursor:pointer;padding:8px 13px;display:flex;align-items:center;gap:9px;border-bottom:1px solid rgba(255,255,255,.05);font:600 12px JetBrains Mono,monospace;color:#f0eeea"><span style="width:7px;height:7px;border-radius:50%;background:'+c+';flex:0 0 auto"></span>Batch #'+Number(h)+'<span style="margin-left:auto;color:#6f6c66;font:500 10px Inter">'+(b.txs?b.txs.toLocaleString():'')+' tx</span></div>'; }).join('');
+    const r=bar.getBoundingClientRect(); sug.style.left=r.left+'px'; sug.style.top=(r.bottom+7)+'px'; sug.style.width=r.width+'px'; sug.style.display='block';
+    sug.querySelectorAll('.bsg').forEach(el=>{ el.onmouseenter=()=>{el.style.background='rgba(255,102,0,.13)';}; el.onmouseleave=()=>{el.style.background='transparent';};
+      // pointerdown (not mousedown): fires natively on touch, BEFORE the input's blur-timeout
+      // hides this list, so tapping a suggestion reliably opens the block modal on mobile.
+      el.onpointerdown=ev=>{ ev.preventDefault(); const b=blocksByNum.get(parseInt(el.dataset.h,10)); if(b){ sIn.value=el.dataset.h; focusOn(b); sug.style.display='none'; sIn.blur(); } }; }); }
+  sIn.addEventListener('input',renderSuggest); sIn.addEventListener('focus',renderSuggest);
+  sIn.addEventListener('blur',()=>setTimeout(()=>{ sug.style.display='none'; },200));
+  latBtn.addEventListener('click',resume);
+  scr.addEventListener('input',function(){ if(!blocks.length)return; if(+scr.value>=99){ resume(); return; }
+    const lo=blocks[0].h, hi=blocks[blocks.length-1].h, target=Math.round(lo+(hi-lo)*(+scr.value)/100);
+    let best=blocks[0],bd=1e9; for(const b of blocks){ const d=Math.abs(b.h-target); if(d<bd){bd=d;best=b;} }
+    viewMode='scrub'; scrubZ=best.mesh.position.z+6; focusBlk=null; pop.style.display='none'; });
+  contBtn.addEventListener('click',resume);
+  setInterval(function(){ if(viewMode==='live') scr.value=100; contBtn.style.display=(viewMode==='live')?'none':'block'; },600);
+  try{ renderer.domElement.style.cursor='crosshair'; }catch(e){}
+  addEventListener('dagtap',function(e){ pick(e.detail||e); });
+  const cv=renderer.domElement;
+  const _tps=new Set();
+  cv.addEventListener('pointerdown',function(e){ if(e.pointerType==='touch')_tps.add(e.pointerId); if(_tps.size>=2){_drag=null;return;} if(bar.contains(e.target)||sb.contains(e.target)||pop.contains(e.target))return; _drag={x:e.clientX,y:e.clientY,az:orbitAz,el:orbitEl}; _dragged=false; });
+  addEventListener('pointermove',function(e){ if(!_drag||_tps.size>=2)return; const ddx=e.clientX-_drag.x, ddy=e.clientY-_drag.y; if(Math.abs(ddx)+Math.abs(ddy)>9){_dragged=true; _userOrbited=true;} orbitAz=_drag.az+ddx*0.006; orbitEl=Math.max(-1.35,Math.min(1.35,_drag.el-ddy*0.006)); });
+  function _tpEnd(e){ const tap=_drag&&!_dragged&&e; if(e&&e.pointerType==='touch')_tps.delete(e.pointerId); _drag=null; if(tap&&_tps.size===0) window.dispatchEvent(new CustomEvent('dagtap',{detail:{clientX:e.clientX,clientY:e.clientY,target:e.target}})); }
+  addEventListener('pointerup',_tpEnd); addEventListener('pointercancel',_tpEnd);
+  // mobile finger pinch-zoom
+  let _pd=0;
+  cv.addEventListener('touchstart',function(e){ if(e.touches.length===2){ const a=e.touches[0],b=e.touches[1]; _pd=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY); } },{passive:true});
+  cv.addEventListener('touchmove',function(e){ if(e.touches.length===2&&_pd>0){ const a=e.touches[0],b=e.touches[1]; const d=Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY); userZoom=Math.max(0.35,Math.min(3.2,userZoom*(_pd/d))); _pd=d; } },{passive:true});
+  cv.addEventListener('touchend',function(e){ if(e.touches.length<2)_pd=0; },{passive:true});
+})();
+</script>
+</body>
+</html>

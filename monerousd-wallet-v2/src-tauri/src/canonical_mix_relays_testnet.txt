@@ -1,0 +1,5 @@
+# Relay faces of OUR OWN NETWORK (pqmix) that a testnet node dials as its first contact, one per line: relay:<address>:<port>
+# Written at release by `python3 scratchpad/seed_list.py --relays --write` from a running node's /get_relay_faces.
+# Public by design: a relay face names a relay, never a hidden address (docs/MONEROUSD-NATIVE-NETWORK-SPEC-20261107.md §1).
+# A node that has reached the chain once also learns relay faces over Tor (ask kind 30) and keeps them across restarts
+# (mix-records.bin), so this list is what a node installed DURING a Tor outage starts from.

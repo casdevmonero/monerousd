@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-send-sat"
+description = "Enables the wallet_send_sat command without any pre-configured scope."
+commands.allow = ["wallet_send_sat"]
+
+[[permission]]
+identifier = "deny-wallet-send-sat"
+description = "Denies the wallet_send_sat command without any pre-configured scope."
+commands.deny = ["wallet_send_sat"]

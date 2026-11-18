@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- macOS DENIES Bluetooth outright to any app whose Info.plist lacks a usage description: CoreBluetooth
+       reports CBManagerState.unauthorized and the radio never powers on. Without these keys the SHIPPED
+       wallet cannot tap-to-pay at all — a user taps and nothing happens, with no error surfaced anywhere.
+       Measured: the real-radio loopback failed with "bluetooth not powered on (state CBManagerState(3))"
+       while system Bluetooth was On.
+       Tauri merges this file automatically because it sits beside tauri.conf.json. -->
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>MoneroUSD uses Bluetooth only for tap-to-pay between two devices in physical range. Nothing is broadcast beyond tap distance, and the charge you tap is sealed to the payer.</string>
+  <!-- A shop's "Pay with MonerousD" button is a `monerousd:pay?…` link. Registering the scheme lets the system hand
+       that link to this wallet, which shows the shop's offer and asks before anything is paid. -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>org.monerousd.wallet.pay</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>monerousd</string>
+      </array>
+    </dict>
+  </array>
+  <key>NSBluetoothPeripheralUsageDescription</key>
+  <string>MoneroUSD advertises a sealed payment charge over Bluetooth so a payer beside you can tap to pay it.</string>
+</dict>
+</plist>

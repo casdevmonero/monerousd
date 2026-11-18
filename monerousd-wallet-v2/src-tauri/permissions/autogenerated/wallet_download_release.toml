@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-download-release"
+description = "Enables the wallet_download_release command without any pre-configured scope."
+commands.allow = ["wallet_download_release"]
+
+[[permission]]
+identifier = "deny-wallet-download-release"
+description = "Denies the wallet_download_release command without any pre-configured scope."
+commands.deny = ["wallet_download_release"]

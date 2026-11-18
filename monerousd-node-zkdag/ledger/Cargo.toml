@@ -1,0 +1,65 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root)
+#
+# usdm-ledger — the MonerousD ledger: every chain object, the block, the nullifier and membership sets, the peg ledger, the DAG
+# order and the validator set, compiled apart from the node that runs them (node split stage B, lane dcash 2026-11-11; user
+# 2026-11-11: "fix the node issue in which 1 edit causes a whole recompile"). Its sources stay in ../src beside the node's own
+# (every path-keyed guard keeps matching); its root is ../src/ledger_lib.rs. A member of the node's workspace, so it builds with
+# the node's Cargo.lock, profiles and patches. Nothing in it names the node.
+[package]
+name = "usdm-ledger"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "MonerousD ledger: chain objects, block, nullifier and membership sets, peg ledger, DAG order, validator set."
+license = "Apache-2.0"
+
+[lib]
+name = "usdm_ledger"
+path = "../src/ledger_lib.rs"
+
+[features]
+# The same test families as the node (lane_run builds one family by its test paths); the node forwards each.
+default = ["pins-core", "pins-node", "pins-harness"]
+pins-core = []
+pins-node = []
+pins-harness = []
+# DEV/TEST ONLY, as on the node: the simulated Bitcoin and its confirmation injector.
+bridge-test-oracle = []
+# The node's TESTS need this crate's `#[cfg(test)]` hooks (a simulated node's own datadir — DB-406 —, the test census recorder,
+# test-only constructors). With `test-hooks` on, build.rs sets `cfg(test)` on this crate, so every gate keeps its spelling and
+# means what it meant in the single crate under test. Only the node's DEV-dependency turns it on: `cargo build --release`
+# (net/build.sh, every real-node binary) never carries a hook.
+test-hooks = []
+
+[dependencies]
+zeroize = { version = "1", features = ["derive"] }  # wipe secret key material (OMR clue secret)
+blake3 = "1"
+sha3 = "0.10"
+k256 = { version = "0.13", default-features = false, features = ["arithmetic", "schnorr", "ecdsa"] } # CLASSICAL-CRYPTO-EXEMPT: Bitcoin's own BIP-340 signature is the ONLY thing that spends the BTC reserve, and Ethereum's own signature the only thing its vault contract can check (src/eth_vault.rs) — a foreign chain admits no post-quantum primitive (user 2026-09-20: external chain work that only allows classical crypto)
+sha2 = "0.10"
+bitcoin_hashes = "0.14"
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc"] } # CLASSICAL-CRYPTO-EXEMPT / CLASSICAL-BRIDGE-ENDPOINT: Ed25519 external Monero bridge-custody curve; base layer stays post-quantum
+ureq = { version = "2", default-features = false, features = ["json", "socks-proxy"] }
+serde_json = "1"
+pqcrypto-mldsa = "0.1.2"
+pqcrypto-mlkem = "0.1.1"
+fips203 = "0.4"
+pqcrypto-traits = "0.3.5"
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+thiserror = "1"
+p3-koala-bear = { path = "../vendor/Plonky3/koala-bear" }
+p3-field = { path = "../vendor/Plonky3/field" }
+p3-symmetric = { path = "../vendor/Plonky3/symmetric" }
+usdm-decider = { path = "../vendor/Plonky3/usdm-decider" }
+libc = "0.2"
+signal-hook = "0.4"
+memory-stats = "1.2"
+
+[dev-dependencies]
+usdm-decider = { path = "../vendor/Plonky3/usdm-decider", features = ["test-support"] }
+
+# lane speed5 2026-11-18: `nix` is Unix-only (it compiles empty on Windows); `oscall` gates its calls on cfg(unix).
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["fs", "process", "signal", "syslog", "time", "user"] }

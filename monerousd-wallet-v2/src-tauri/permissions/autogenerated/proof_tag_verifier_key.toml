@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-proof-tag-verifier-key"
+description = "Enables the proof_tag_verifier_key command without any pre-configured scope."
+commands.allow = ["proof_tag_verifier_key"]
+
+[[permission]]
+identifier = "deny-proof-tag-verifier-key"
+description = "Denies the proof_tag_verifier_key command without any pre-configured scope."
+commands.deny = ["proof_tag_verifier_key"]

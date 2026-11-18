@@ -1,0 +1,362 @@
+/* Copyright (c) 2026, The MoneroUSD Protocol. SPDX-License-Identifier: BUSL-1.1. */
+/* IonSwap's look (2026-11-10). Loaded AFTER styles.css, in four parts:
+     1. the palette and the page behind everything (the ion field)
+     2. the shell: brand, sections, connection
+     3. the native-swap pages, every rule under `.ion` so none of it touches a token, pool or NFT page
+     4. the token, pool and NFT pages moved onto the same palette, surfaces and motion
+   Phone first: every rule is the phone's, and the wide-screen layout is added at the end. Motion is decoration only:
+   nothing needs it to be read, and `prefers-reduced-motion` turns all of it off. */
+
+/* ── 1. palette, page ─────────────────────────────────────────────────────────────────────────────────────── */
+:root {
+  --ion: #ff6a00; --ion-2: #ffa24d; --ion-soft: rgba(255, 106, 0, .14);
+  --veil: #8b7bff; --veil-soft: rgba(139, 123, 255, .16);
+  --good: #3ddc97; --warn: #ffcc4d; --bad: #ff5d6c;
+  --ink: #f4f4f6; --ink-1: #b9b9c6; --ink-2: #7f7f90;
+  --line: rgba(255, 255, 255, .08); --line-2: rgba(255, 255, 255, .14);
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --pad: 16px;
+  /* the older pages' own names, moved onto this palette */
+  --orange: #ff6a00; --orange-hover: #ff8a3d; --orange-soft: rgba(255, 106, 0, .12); --orange-border: rgba(255, 106, 0, .4);
+  --bg-0: #07070a; --bg-1: #0d0d12; --bg-2: #14141b; --bg-3: #1c1c26;
+  --border: rgba(255, 255, 255, .08); --border-strong: rgba(255, 255, 255, .14);
+  --fg: #f4f4f6; --fg-2: #b9b9c6; --muted: #7f7f90; --muted-2: #5f5f70;
+  --ok: #3ddc97; --danger: #ff5d6c;
+  --r-sm: 12px; --r-md: 16px; --r-lg: 20px; --r-xl: 24px;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+body.ion-shell { background: var(--bg-0); color: var(--ink); overflow-x: hidden; overscroll-behavior-y: none; min-height: 100%; height: auto; }
+body.ion-shell::before {
+  inset: -20% -20% auto -20%; height: 70vh;
+  background:
+    radial-gradient(60% 60% at 22% 30%, rgba(255, 106, 0, .20), transparent 70%),
+    radial-gradient(50% 55% at 82% 18%, rgba(139, 123, 255, .16), transparent 70%);
+  filter: blur(10px);
+}
+#field { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; opacity: .9; }
+
+/* ── 2. shell ─────────────────────────────────────────────────────────────────────────────────────────────── */
+.ion-top {
+  position: sticky; top: 0; z-index: 20;
+  display: grid; grid-template-columns: 1fr auto; grid-template-areas: "brand who" "tabs tabs" "links links"; align-items: center; gap: 10px 12px;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) var(--pad) 10px;
+  background: linear-gradient(180deg, rgba(7, 7, 10, .92), rgba(7, 7, 10, .72)); -webkit-backdrop-filter: blur(16px) saturate(1.2); backdrop-filter: blur(16px) saturate(1.2);
+  border-bottom: 1px solid var(--line);
+}
+.ion-brand { grid-area: brand; display: inline-flex; align-items: center; gap: 9px; text-decoration: none; font-size: 20px; font-weight: 500; letter-spacing: -.2px; color: var(--ink); }
+.ion-brand:hover { color: var(--ink); }
+.ion-brand b { font-weight: 800; background: linear-gradient(90deg, var(--ion-2), var(--ion)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.ion-brand img { filter: drop-shadow(0 0 10px rgba(255, 106, 0, .55)); animation: ion-spin 26s linear infinite; }
+.ion-who { grid-area: who; display: inline-flex; align-items: center; gap: 6px; position: relative; min-width: 0; }
+.ion-who .pill { font-size: 11.5px; padding: 5px 9px; border-radius: 999px; border: 1px solid var(--line); background: rgba(255, 255, 255, .03); color: var(--ink-1); white-space: nowrap; }
+.ion-who .btn { padding: 8px 13px; border-radius: 999px; font-size: 13px; white-space: nowrap; }
+body.ion-shell .ion-who .btn.on { display: inline-flex; align-items: center; gap: 7px; background: rgba(61, 220, 151, .08); border: 1px solid rgba(61, 220, 151, .4); color: #b9f3da; opacity: 1; cursor: default; filter: none; }
+body.ion-shell .ion-who .btn.on::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 10px var(--good); }
+.ion select.field { appearance: none; -webkit-appearance: none; }
+.ion-tabs { grid-area: tabs; position: relative; display: flex; gap: 2px; padding: 4px; overflow-x: auto; scrollbar-width: none; border: 1px solid var(--line); border-radius: 14px; background: rgba(13, 13, 18, .72); }
+.ion-tabs::-webkit-scrollbar { display: none; }
+.ion-tabs a { position: relative; z-index: 1; flex: 1 0 auto; padding: 9px 14px; text-align: center; text-decoration: none; font-size: 13.5px; font-weight: 650; color: var(--ink-2); border-radius: 10px; transition: color .2s var(--ease); white-space: nowrap; }
+.ion-tabs a, .ion-tabs a.active { background: none; border: 0; box-shadow: none; }
+.ion-tabs a::after, .ion-links a::after { content: none; }
+.ion-tabs a:hover { color: var(--ink-1); }
+.ion-tabs a.active { color: var(--ink); }
+.ion-tabs a i { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--ion); box-shadow: 0 0 10px var(--ion); }
+.ion-tab-mark { position: absolute; z-index: 0; top: 4px; bottom: 4px; left: 0; width: var(--w, 0); transform: translateX(var(--x, 0)); border-radius: 10px; background: var(--bg-3); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07), 0 0 0 1px rgba(255, 106, 0, .22); transition: transform .38s var(--ease), width .38s var(--ease), opacity .2s var(--ease); }
+.ion-links { grid-area: links; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.ion-links::-webkit-scrollbar { display: none; }
+.ion-links a { flex: none; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--line); font-size: 12.5px; font-weight: 600; color: var(--ink-2); text-decoration: none; transition: color .2s var(--ease), border-color .2s var(--ease), background .2s var(--ease); }
+.ion-links a:hover, .ion-links a.active { color: var(--ink); border-color: rgba(255, 106, 0, .5); background: var(--ion-soft); }
+body.ion-shell #view { position: relative; z-index: 1; display: block; max-width: 1120px; margin: 0 auto; padding: 16px var(--pad) 8px; outline: none; }
+.ion-enter { animation: ion-rise .45s var(--ease) both; }
+.ion-foot { position: relative; z-index: 1; display: flex; align-items: center; gap: 10px; max-width: 1120px; margin: 0 auto; padding: 18px var(--pad) calc(26px + env(safe-area-inset-bottom, 0px)); font-size: 12px; color: var(--ink-2); border: 0; }
+.ion-foot .foot-logo { width: 22px; height: 22px; opacity: .8; }
+
+/* ── 3. the native-swap pages ─────────────────────────────────────────────────────────────────────────────── */
+.ion { font: 15px/1.5 var(--font); color: var(--ink); }
+.ion.page { display: grid; gap: 16px; }
+.ion button, .ion input { font: inherit; color: inherit; }
+.ion .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+.ion .num { font-family: inherit; font-variant-numeric: tabular-nums; }
+.ion .eyebrow { font-size: 11.5px; letter-spacing: 1.4px; text-transform: uppercase; color: var(--ion-2); font-weight: 700; }
+.ion h1 { margin: 2px 0 0; font-size: clamp(26px, 7vw, 44px); line-height: 1.06; letter-spacing: -.9px; font-weight: 800; }
+.ion h1 em { font-style: normal; background: linear-gradient(90deg, #fff, var(--ion-2) 55%, var(--ion)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.ion h2 { margin: 0; font-size: 17px; font-weight: 750; letter-spacing: -.2px; }
+.ion p.lead { margin: 0; color: var(--ink-1); max-width: 56ch; }
+.ion .card { position: relative; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(180deg, rgba(22, 22, 30, .86), rgba(13, 13, 18, .86)); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); padding: 16px; box-shadow: none; }
+.ion .card.glow::before { content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1px; background: linear-gradient(140deg, rgba(255, 162, 77, .7), transparent 34%, transparent 66%, rgba(139, 123, 255, .6)); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; pointer-events: none; }
+.ion .stack { display: grid; gap: 12px; }
+.ion .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ion .muted { color: var(--ink-2); font-size: 12.5px; }
+
+.ion .legs { display: grid; }
+.ion .leg { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; padding: 13px 14px; border-radius: 14px; background: var(--bg-1); border: 1px solid var(--line); transition: border-color .2s var(--ease); }
+.ion .leg:focus-within { border-color: rgba(255, 106, 0, .55); }
+.ion .leg label { grid-column: 1 / -1; font-size: 12px; color: var(--ink-2); font-weight: 650; }
+.ion .leg input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; font-size: 30px; font-weight: 750; letter-spacing: -.5px; padding: 0; }
+.ion .leg input::placeholder { color: #3a3a48; }
+.ion .leg .out { font-size: 30px; font-weight: 750; letter-spacing: -.5px; min-height: 45px; display: flex; align-items: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ion .leg .sub { grid-column: 1 / -1; font-size: 12.5px; color: var(--ink-2); min-height: 18px; }
+.ion .asset { display: inline-flex; align-items: center; gap: 8px; padding: 7px 11px 7px 7px; border: 1px solid var(--line-2); border-radius: 999px; background: var(--bg-3); cursor: pointer; font-weight: 750; transition: transform .15s var(--ease), border-color .2s var(--ease); }
+.ion .asset:hover { border-color: rgba(255, 106, 0, .6); }
+.ion .asset:active { transform: scale(.97); }
+.ion .asset::after { content: ""; width: 7px; height: 7px; border-right: 2px solid var(--ink-2); border-bottom: 2px solid var(--ink-2); transform: rotate(45deg) translateY(-2px); margin-left: 2px; }
+.ion .asset.fixed { cursor: default; padding-right: 11px; }
+.ion .asset.fixed::after { content: none; }
+.ion .coin { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 800; color: #fff; flex: none; box-shadow: inset 0 -6px 10px rgba(0, 0, 0, .28), 0 0 0 1px rgba(255, 255, 255, .12); }
+.ion .coin.logo { background: none; box-shadow: none; overflow: hidden; }
+.ion .coin.logo img { width: 100%; height: 100%; display: block; object-fit: cover; border-radius: 50%; }
+.ion .coin.BTC { background: radial-gradient(circle at 30% 25%, #ffc266, #f7931a 60%, #b86200); }
+.ion .coin.XMR { background: radial-gradient(circle at 30% 25%, #ff9a5c, #f26822 60%, #4c4c4c 61%); }
+.ion .coin.USDm { background: radial-gradient(circle at 30% 25%, #ffb37a, #ff6a00 62%, #8a3200); }
+.ion .coin.SAT { background: radial-gradient(circle at 30% 25%, #c7bcff, #8b7bff 60%, #3d2fb0); }
+.ion .flip { position: relative; z-index: 2; justify-self: center; width: 42px; height: 42px; margin: -11px auto; border-radius: 50%; border: 1px solid var(--line-2); background: var(--bg-3); cursor: pointer; display: grid; place-items: center; transition: transform .45s var(--ease), border-color .2s var(--ease), box-shadow .2s var(--ease); }
+.ion .flip:hover { border-color: var(--ion); box-shadow: 0 0 22px rgba(255, 106, 0, .35); }
+.ion .flip.turn { transform: rotate(180deg); }
+.ion .flip svg { width: 18px; height: 18px; }
+.ion .seg { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; padding: 4px; border-radius: 12px; background: var(--bg-1); border: 1px solid var(--line); }
+.ion .seg button { padding: 9px 8px; border: 0; border-radius: 9px; background: transparent; color: var(--ink-2); font-weight: 650; font-size: 13px; cursor: pointer; transition: background .2s var(--ease), color .2s var(--ease); }
+.ion .seg button.on { background: var(--bg-3); color: var(--ink); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .07); }
+.ion .field { width: 100%; padding: 12px 13px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-1); outline: 0; font-size: 14px; transition: border-color .2s var(--ease); }
+.ion .field:focus { border-color: rgba(255, 106, 0, .55); }
+
+.ion .opsec { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; align-items: center; padding: 13px 14px; border-radius: 14px; border: 1px solid rgba(139, 123, 255, .34); background: linear-gradient(180deg, var(--veil-soft), rgba(139, 123, 255, .05)); transition: border-color .3s var(--ease), background .3s var(--ease); }
+.ion .opsec b { font-size: 14px; }
+.ion .opsec span { grid-column: 1; font-size: 12.5px; color: var(--ink-1); }
+.ion .opsec.off { border-color: rgba(255, 93, 108, .45); background: linear-gradient(180deg, rgba(255, 93, 108, .13), rgba(255, 93, 108, .04)); }
+.ion .switch { grid-row: 1 / span 2; grid-column: 2; position: relative; width: 52px; height: 30px; border-radius: 999px; border: 0; background: var(--veil); cursor: pointer; transition: background .25s var(--ease); }
+.ion .switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; transform: translateX(22px); transition: transform .28s var(--ease); box-shadow: 0 2px 6px rgba(0, 0, 0, .35); }
+.ion .switch[aria-checked="false"] { background: #3a3a48; }
+.ion .switch[aria-checked="false"]::after { transform: none; }
+.ion .switch[disabled] { opacity: .5; cursor: not-allowed; }
+
+.ion .cta { width: 100%; padding: 15px 18px; border: 0; border-radius: 14px; font-weight: 800; font-size: 16px; letter-spacing: .1px; color: #1a0b00; cursor: pointer; background: linear-gradient(180deg, var(--ion-2), var(--ion)); box-shadow: 0 12px 34px -12px rgba(255, 106, 0, .75), inset 0 1px 0 rgba(255, 255, 255, .45); transition: transform .15s var(--ease), filter .2s var(--ease), box-shadow .2s var(--ease); position: relative; overflow: hidden; }
+.ion .cta::after { content: ""; position: absolute; top: 0; bottom: 0; left: -40%; width: 30%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .55), transparent); transform: skewX(-20deg); animation: ion-sheen 3.6s var(--ease) infinite; }
+.ion .cta:hover { filter: brightness(1.06); }
+.ion .cta:active { transform: translateY(1px) scale(.995); }
+.ion .cta[disabled] { cursor: not-allowed; filter: grayscale(.8) brightness(.7); box-shadow: none; }
+.ion .cta[disabled]::after { display: none; }
+.ion .ghost { padding: 10px 14px; border-radius: 12px; border: 1px solid var(--line-2); background: transparent; cursor: pointer; font-weight: 650; font-size: 13.5px; color: var(--ink); }
+.ion .ghost:hover { border-color: var(--ion); color: var(--ink); }
+.ion .note { padding: 11px 13px; border-radius: 12px; font-size: 13px; color: var(--ink-1); background: rgba(255, 255, 255, .04); border: 1px solid var(--line); }
+.ion .note.warn { border-color: rgba(255, 204, 77, .4); background: rgba(255, 204, 77, .08); color: #ffe7a3; }
+.ion .note.bad { border-color: rgba(255, 93, 108, .45); background: rgba(255, 93, 108, .09); color: #ffc2c8; }
+.ion .note.ok { border-color: rgba(61, 220, 151, .4); background: rgba(61, 220, 151, .08); color: #b9f3da; }
+
+.ion .route { display: grid; gap: 12px; }
+.ion .route svg { width: 100%; height: auto; display: block; }
+.ion .route .lane { fill: none; stroke: rgba(255, 255, 255, .13); stroke-width: 1.6; }
+.ion .route .lane.live { stroke: url(#ionG1); stroke-width: 2; stroke-dasharray: 5 9; animation: ion-flow 1.6s linear infinite; }
+.ion .route .lane.veil { stroke: url(#ionG2); }
+.ion .route .core { fill: rgba(139, 123, 255, .12); stroke: rgba(139, 123, 255, .7); stroke-width: 1.4; }
+.ion .route .core.off { fill: rgba(255, 93, 108, .08); stroke: rgba(255, 93, 108, .6); stroke-dasharray: 4 5; }
+.ion .route text { fill: var(--ink-1); font-size: 11.5px; font-weight: 650; }
+.ion .route text.big { fill: var(--ink); font-size: 14px; font-weight: 800; }
+.ion .route .tag { font-size: 10px; letter-spacing: .8px; text-transform: uppercase; fill: var(--ink-2); }
+.ion .facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.ion .fact { padding: 11px 12px; border-radius: 12px; background: var(--bg-1); border: 1px solid var(--line); min-width: 0; }
+/* a figure a person acts on is never cut off with an ellipsis: it wraps inside its tile */
+.ion .fact b { display: block; font-size: 18px; letter-spacing: -.3px; overflow-wrap: anywhere; }
+.ion .fact span { font-size: 11.5px; color: var(--ink-2); }
+
+.ion .list { display: grid; gap: 10px; }
+.ion .item { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; align-items: center; padding: 13px 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg-1); animation: ion-rise .4s var(--ease) both; }
+/* a card that is REPAINTED (its words changed, or it moved) does not rise in again: only a new card does (native.js `paint`) */
+.ion .item.still, .ion .tile.still { animation: none; }
+.ion .item .t { font-weight: 750; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ion .item .s { grid-column: 2 / -1; font-size: 12.5px; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+.ion .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; border: 1px solid var(--line-2); color: var(--ink-1); white-space: nowrap; background: transparent; }
+.ion .chip.live { color: var(--ion-2); border-color: rgba(255, 106, 0, .5); }
+.ion .chip.done { color: var(--good); border-color: rgba(61, 220, 151, .45); }
+/* the liquidity lock (spec §14): green closed lock on a locked pool, orange open lock on an unlocked one, with its figure */
+.ion .lockchip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 700; white-space: nowrap; vertical-align: middle; }
+.ion .lockchip svg { flex: none; }
+.ion .lockchip.locked { color: var(--good); background: rgba(61, 220, 151, .1); border: 1px solid rgba(61, 220, 151, .45); }
+.ion .lockchip.unlocked { color: var(--ion-2); background: rgba(255, 106, 0, .08); border: 1px solid rgba(255, 106, 0, .5); }
+.ion .tokenomics { display: grid; grid-template-columns: minmax(0, 45%) minmax(0, 1fr); gap: 8px 12px; align-items: baseline; }
+.ion .tokenomics .lockchip { white-space: normal; text-align: left; }
+.ion .tokenomics > span { color: var(--ink-2); font-size: 13px; }
+.ion .tokenomics > b { text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ion .tokenomics .bar { grid-column: 1 / -1; }
+.ion .alloc { grid-column: 1 / -1; display: flex; height: 10px; border-radius: 999px; overflow: hidden; background: var(--bg-3); }
+.ion .alloc i { display: block; height: 100%; }
+.ion .alloc i.pool { background: var(--ion); } .ion .alloc i.curve { background: var(--ion-2); } .ion .alloc i.owed { background: var(--warn); }
+.ion .alloc i.burned { background: var(--ink-2); } .ion .alloc i.wallets { background: var(--veil); }
+.ion .legend { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--ink-2); }
+.ion .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.ion .chip.live::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ion); animation: ion-ping 1.8s var(--ease) infinite; }
+.ion .bar { grid-column: 1 / -1; height: 6px; border-radius: 999px; background: var(--bg-3); overflow: hidden; }
+.ion .bar i { display: block; height: 100%; width: var(--p, 0%); border-radius: inherit; background: linear-gradient(90deg, var(--veil), var(--ion-2)); transition: width .8s var(--ease); }
+
+.ion .meter { display: grid; gap: 10px; }
+.ion .meter .m { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; align-items: baseline; }
+.ion .meter .m span { font-size: 13px; color: var(--ink-1); }
+.ion .meter .m b { font-size: 15px; }
+.ion .meter .track { grid-column: 1 / -1; height: 10px; border-radius: 999px; background: var(--bg-3); overflow: hidden; }
+.ion .meter .track i { display: block; height: 100%; width: 0; min-width: 6px; border-radius: inherit; transition: width 1.2s var(--ease); }
+.ion .meter .bad i { background: linear-gradient(90deg, #ff8a5c, var(--bad)); }
+.ion .meter .good i { background: linear-gradient(90deg, var(--veil), var(--good)); }
+.ion .steps { display: grid; gap: 10px; counter-reset: s; }
+.ion .steps > div { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start; }
+.ion .steps > div::before { counter-increment: s; content: counter(s); width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 12.5px; font-weight: 800; background: var(--ion-soft); color: var(--ion-2); border: 1px solid rgba(255, 106, 0, .4); }
+.ion .steps b { display: block; }
+.ion .steps span { color: var(--ink-1); font-size: 13.5px; }
+.ion .qr { justify-self: center; width: 208px; height: 208px; padding: 10px; border-radius: 16px; background: #fff; display: grid; place-items: center; }
+.ion .qr svg { width: 100%; height: 100%; }
+.ion .addr { padding: 12px; border-radius: 12px; background: var(--bg-1); border: 1px solid var(--line); font-size: 13px; overflow-wrap: anywhere; user-select: all; }
+
+/* a link inside a sentence is told apart from the words around it: the accent colour and an underline (a row or a
+   button that is a link keeps its own look) */
+.ion p a, .ion .note a:not(.btn):not(.ghost) { color: var(--ion-2); text-decoration: underline; text-decoration-color: rgba(255, 162, 77, .45); text-underline-offset: 2px; }
+.ion p a:hover, .ion .note a:not(.btn):not(.ghost):hover { text-decoration-color: currentColor; }
+
+/* tokens, NFTs, pools */
+.ion a.item { text-decoration: none; color: inherit; transition: border-color .2s var(--ease), transform .15s var(--ease); }
+.ion a.item:hover { border-color: rgba(255, 106, 0, .55); }
+.ion a.item:active { transform: scale(.995); }
+.ion .item .amt { font-weight: 750; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ion .head { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; align-items: center; }
+.ion .head .coin { width: 48px; height: 48px; font-size: 20px; grid-row: 1 / span 2; }
+.ion .coin.pic { overflow: hidden; padding: 0; background: var(--bg-3); }
+.ion .coin.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ion .head h1 { font-size: clamp(24px, 6vw, 36px); }
+.ion .head .muted { grid-column: 2; }
+.ion .lab { display: grid; gap: 6px; font-size: 12.5px; color: var(--ink-2); font-weight: 650; }
+.ion .inline { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.ion .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.ion h2.pair { display: flex; align-items: center; gap: 0; }
+.ion h2.pair .coin + .coin { margin-left: -8px; }
+.ion h2.pair span:last-child { margin-left: 10px; }
+/* a value never pushes past the card: the label takes at most 45 % and wraps, the value takes the rest and wraps (it ran off
+   the right edge on a 375 px phone: "500,000 ORBIT and $", measured 2026-11-12) */
+.ion .kv { display: grid; grid-template-columns: minmax(0, 45%) minmax(0, 1fr); gap: 6px 12px; font-size: 13.5px; }
+.ion .kv .lockchip { white-space: normal; text-align: left; }
+.ion .kv span { color: var(--ink-2); }
+.ion .kv b { text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.ion .levels { display: grid; gap: 6px; }
+.ion .levels .lv { display: grid; grid-template-columns: 92px 1fr auto; gap: 10px; align-items: center; font-size: 12.5px; color: var(--ink-1); }
+.ion .levels .lv i { display: block; height: 8px; border-radius: 999px; width: var(--p, 0%); min-width: 4px; background: linear-gradient(90deg, var(--ion), var(--ion-2)); transition: width .8s var(--ease); }
+.ion .levels.bids .lv i { background: linear-gradient(90deg, var(--veil), #b7adff); }
+.ion .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.ion .tile { display: grid; gap: 8px; padding: 10px; border-radius: 16px; border: 1px solid var(--line); background: var(--bg-1); animation: ion-rise .4s var(--ease) both; cursor: pointer; text-align: left; transition: border-color .2s var(--ease), transform .2s var(--ease); }
+.ion .tile:hover { border-color: rgba(255, 106, 0, .55); transform: translateY(-2px); }
+.ion .tile.on { border-color: var(--ion); box-shadow: 0 0 0 1px var(--ion), 0 14px 40px -22px rgba(255, 106, 0, .8); }
+.ion .art { aspect-ratio: 1; border-radius: 12px; position: relative; overflow: hidden; display: grid; place-items: center; font-size: 34px; font-weight: 800; color: rgba(255, 255, 255, .92); text-shadow: 0 2px 14px rgba(0, 0, 0, .45); }
+.ion .art::after { content: ""; position: absolute; inset: -40%; background: conic-gradient(from 0deg, transparent, rgba(255, 255, 255, .22), transparent 30%); animation: ion-spin 9s linear infinite; }
+.ion .tile b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ion .spark { width: 100%; height: 64px; display: block; }
+.ion .spark path.l { fill: none; stroke: var(--ion-2); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: ion-draw 1.4s var(--ease) forwards; }
+.ion .spark path.a { fill: url(#ionSpark); opacity: .5; }
+.ion .cardtext { padding: 10px 12px; border-radius: 12px; background: var(--bg-1); border: 1px solid var(--line); font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; max-height: 92px; overflow-y: auto; user-select: all; color: var(--ink-1); }
+.ion textarea.field { min-height: 76px; resize: vertical; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ion .stepline { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-1); font-size: 13.5px; }
+.ion .stepline em { font-style: normal; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 800; background: var(--ion-soft); color: var(--ion-2); border: 1px solid rgba(255, 106, 0, .4); }
+.ion .stepline.done em { background: rgba(61, 220, 151, .14); color: var(--good); border-color: rgba(61, 220, 151, .45); }
+/* the NFT studio */
+.ion .drop { display: grid; gap: 4px; place-items: center; padding: 22px 14px; border-radius: 14px; border: 1.5px dashed var(--line-2); background: var(--bg-1); text-align: center; cursor: pointer; transition: border-color .2s var(--ease), background .2s var(--ease), transform .15s var(--ease); }
+.ion .drop:hover, .ion .drop.over { border-color: var(--ion); background: var(--ion-soft); }
+.ion .drop.over { transform: scale(1.01); }
+.ion .drop b { font-size: 15px; }
+.ion .drop span { font-size: 12.5px; color: var(--ink-2); }
+.ion i.tier { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; box-shadow: 0 0 8px currentColor; }
+.ion .art.pic { box-shadow: 0 0 0 1.5px var(--tier, var(--line-2)), 0 10px 30px -18px var(--tier, transparent); background: var(--bg-3); }
+.ion .art.pic::after { content: none; }
+.ion .art.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ion .art.pic.big { max-width: 320px; width: 100%; justify-self: center; }
+@keyframes ion-draw { to { stroke-dashoffset: 0; } }
+
+/* a sheet: the coin picker */
+.ion-sheet { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-end; justify-content: center; background: rgba(4, 4, 7, .66); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: ion-fade .2s var(--ease); }
+.ion-sheet .sheet-card { width: min(520px, 100%); max-height: 86dvh; overflow-y: auto; padding: 18px 16px calc(18px + env(safe-area-inset-bottom, 0px)); border-radius: 22px 22px 0 0; border: 1px solid var(--line-2); border-bottom: 0; background: var(--bg-2); animation: ion-up .32s var(--ease); display: grid; gap: 12px; }
+.ion-sheet .pick { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 12px; align-items: center; width: 100%; padding: 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--bg-1); cursor: pointer; text-align: left; }
+.ion-sheet .pick:hover { border-color: rgba(255, 106, 0, .55); }
+.ion-sheet .pick small { grid-column: 2; color: var(--ink-2); }
+.ion-sheet .pick .coin { grid-row: 1 / span 2; width: 36px; height: 36px; }
+.ion-sheet .pick .coin.logo img { width: 100%; height: 100%; display: block; object-fit: cover; border-radius: 50%; }
+
+/* ── 4. the token, pool and NFT pages, on the same surfaces ───────────────────────────────────────────────── */
+body.ion-shell .card,
+body.ion-shell .page-card,
+body.ion-shell .swap-card,
+body.ion-shell .portfolio-card,
+body.ion-shell .sov-card,
+body.ion-shell .nft-card {
+  border: 1px solid var(--line); border-radius: 18px;
+  background: linear-gradient(180deg, rgba(22, 22, 30, .86), rgba(13, 13, 18, .86));
+  -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  box-shadow: 0 18px 50px -30px rgba(0, 0, 0, .9);
+}
+body.ion-shell .sub-card, body.ion-shell .stat-box, body.ion-shell .swap-input, body.ion-shell .info-list, body.ion-shell .fee-breakdown { border-radius: 14px; border-color: var(--line); background: var(--bg-1); transition: border-color .2s var(--ease); }
+body.ion-shell .swap-input:focus-within { border-color: rgba(255, 106, 0, .55); }
+body.ion-shell .btn { border-radius: 12px; transition: transform .15s var(--ease), filter .2s var(--ease), border-color .2s var(--ease), background .2s var(--ease); }
+body.ion-shell .btn:active { transform: translateY(1px) scale(.995); }
+body.ion-shell .btn.primary { color: #1a0b00; border: 0; background: linear-gradient(180deg, var(--ion-2), var(--ion)); box-shadow: 0 12px 34px -14px rgba(255, 106, 0, .75), inset 0 1px 0 rgba(255, 255, 255, .45); font-weight: 800; }
+body.ion-shell .btn.primary:hover { filter: brightness(1.06); }
+body.ion-shell .btn[disabled], body.ion-shell .btn.primary[disabled] { filter: grayscale(.8) brightness(.7); box-shadow: none; cursor: not-allowed; }
+body.ion-shell .asset-pill, body.ion-shell .pill, body.ion-shell .chip { border-radius: 999px; transition: border-color .2s var(--ease), background .2s var(--ease); }
+body.ion-shell .asset-pill:hover { border-color: rgba(255, 106, 0, .6); }
+body.ion-shell .trade-tabs, body.ion-shell .tab-bar, body.ion-shell .tabs { border-radius: 14px; }
+body.ion-shell .trade-tab, body.ion-shell .tabs > * { border-radius: 10px; transition: background .2s var(--ease), color .2s var(--ease); }
+body.ion-shell .swap-arrow { transition: transform .45s var(--ease), border-color .2s var(--ease), box-shadow .2s var(--ease); }
+body.ion-shell .swap-arrow:hover { transform: rotate(180deg); border-color: var(--ion); box-shadow: 0 0 22px rgba(255, 106, 0, .35); }
+body.ion-shell .notice { border-radius: 12px; }
+body.ion-shell .empty-state { border-radius: 16px; border: 1px dashed var(--line-2); }
+body.ion-shell .port-table tr { transition: background .2s var(--ease); }
+body.ion-shell .network-popover { border-radius: 14px; border: 1px solid var(--line-2); background: var(--bg-2); right: 0; }
+
+@keyframes ion-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes ion-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes ion-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ion-spin { to { transform: rotate(360deg); } }
+@keyframes ion-ping { 0% { box-shadow: 0 0 0 0 rgba(255, 106, 0, .55); } 70%, 100% { box-shadow: 0 0 0 9px rgba(255, 106, 0, 0); } }
+@keyframes ion-flow { to { stroke-dashoffset: -28; } }
+@keyframes ion-sheen { 0%, 55% { left: -40%; } 100% { left: 130%; } }
+
+/* a wide screen: brand, sections and connection on one line; the swap card beside its route */
+@media (min-width: 880px) {
+  :root { --pad: 28px; }
+  .ion-top { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "brand tabs who" "links links links"; gap: 10px 22px; padding-top: 16px; }
+  .ion-tabs { justify-self: center; width: min(560px, 100%); }
+  .ion-links { justify-content: center; }
+  .ion .swap-grid { display: grid; grid-template-columns: minmax(0, 460px) minmax(0, 1fr); gap: 26px; align-items: start; }
+  .ion .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+  .ion-sheet { align-items: center; }
+  .ion-sheet .sheet-card { border-radius: 22px; border-bottom: 1px solid var(--line-2); }
+}
+@media (max-width: 879px) {
+  .ion .swap-grid { display: grid; gap: 16px; }
+  .ion .two { display: grid; gap: 16px; }
+}
+@media (max-width: 560px) {
+  .ion-who #tor-badge { display: none; }
+  .ion .levels .lv { grid-template-columns: 78px 1fr auto; }
+  /* three tiles side by side cut a dollar figure at phone widths (390 to 430 px): one tile a row, figure and label on one line */
+  .ion .facts { grid-template-columns: 1fr; }
+  .ion .fact { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .ion .fact span { text-align: right; }
+}
+@media (max-width: 380px) {
+  .ion .leg input, .ion .leg .out { font-size: 25px; }
+  .ion .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.ion-shell *, body.ion-shell *::before, body.ion-shell *::after { animation: none !important; transition: none !important; }
+  #field { display: none; }
+}
+
+/* the chain's price for each coin of the pair, and the plain reason when one is missing */
+.ion .rates { display: grid; gap: 4px; padding: 10px 12px; border-radius: 12px; background: rgba(255, 255, 255, .035); border: 1px solid var(--line); font-size: 13px; color: var(--ink-1); }
+.ion .rates .num { color: var(--ink); font-variant-numeric: tabular-nums; }
+.ion .rates .why { color: var(--warn); }
+
+/* ── Connect a wallet: the panel the header's button opens, and the note a page shows where a wallet is needed ── */
+.connect-panel { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-start; justify-content: flex-end; padding: 68px 16px 16px; background: rgba(4, 6, 10, .55); }
+.connect-panel[hidden] { display: none; }
+.connect-card { width: min(380px, 100%); display: grid; gap: 12px; padding: 20px; border-radius: 18px; border: 1px solid var(--line-2, #2a2f3a); background: var(--bg-2, #12151c); box-shadow: 0 18px 60px rgba(0, 0, 0, .55); }
+.connect-card h3 { margin: 0; font-size: 17px; }
+.connect-card p { margin: 0; font-size: 13.5px; line-height: 1.5; }
+.connect-card .small { font-size: 12px; }
+.connect-card a { color: inherit; word-break: break-all; }
+.connect-card .btn { width: 100%; justify-content: center; }
+.ion .note.connect-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+@media (max-width: 640px) { .connect-panel { align-items: flex-end; justify-content: center; padding: 16px; } }
+@media (prefers-reduced-motion: no-preference) { .connect-card { animation: connect-in .18s ease-out; } @keyframes connect-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } } }

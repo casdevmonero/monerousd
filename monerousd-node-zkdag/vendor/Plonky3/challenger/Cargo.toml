@@ -1,0 +1,34 @@
+[package]
+name = "p3-challenger"
+description = "A Fiat–Shamir transcript and challenger framework used to derive random challenges in proof systems."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+p3-field.workspace = true
+p3-maybe-rayon.workspace = true
+p3-monty-31.workspace = true
+p3-symmetric.workspace = true
+p3-util.workspace = true
+
+# MonerousD 2026-09-28: the proof-of-work grind searches in parallel through rayon DIRECTLY — the `p3-maybe-rayon`
+# `parallel` feature stays off graph-wide (workspace Cargo.toml, §CA: it made proving nondeterministic). The grind's
+# answer is the SMALLEST valid witness, the same element the serial scan returns, so proof bytes are unchanged.
+rayon.workspace = true
+
+tracing.workspace = true
+
+[dev-dependencies]
+p3-baby-bear = { path = "../baby-bear" }
+p3-bn254 = { path = "../bn254" }
+p3-goldilocks = { path = "../goldilocks" }
+
+num-bigint.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,66 @@
+<!doctype html>
+<!--
+   Copyright (c) 2026, The MoneroUSD Protocol
+
+   This file is an original work of the MoneroUSD Protocol — a post-quantum,
+   GHOSTDAG block-DAG, zero-knowledge confidential-value protocol. It is NOT part
+   of the Monero Project. Licensed under the Business Source License 1.1
+   (SPDX-License-Identifier: BUSL-1.1); see the LICENSE file in this directory;
+   Apache-2.0 from 2029-12-01.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="referrer" content="no-referrer" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="description" content="IonSwap: swap Bitcoin, Monero and MoneroUSD coin for coin, trade tokens and NFTs, and provide liquidity. Nobody watching the chains can match what came in to what went out." />
+  <title>IonSwap — swap coins, leave no trail</title>
+  <link rel="icon" type="image/svg+xml" href="assets/ion-logo.svg" />
+  <link rel="stylesheet" href="styles.css?v=36" />
+  <link rel="stylesheet" href="ion.css?v=10" />
+  <!-- The wallet's bridge (answers when this page is framed by the MoneroUSD wallet) and the page-back script its Back button asks. -->
+  <script src="lib/wallet-bridge.js?v=2"></script>
+  <script src="lib/wallet-nav.js?v=1"></script>
+  <!-- sov-offline-cache-installed -->
+  <script src="js/offline-cache.js"></script>
+</head>
+<body class="ion-shell">
+  <canvas id="field" aria-hidden="true"></canvas>
+  <!-- A thin bar whenever IonSwap is talking to a network that is not mainnet. -->
+  <div id="network-strip" class="network-strip" hidden></div>
+  <header class="ion-top">
+    <a class="ion-brand" href="#/swap" aria-label="IonSwap, home">
+      <img src="assets/ion-logo.svg" alt="" width="34" height="34" />
+      <span>Ion<b>Swap</b></span>
+    </a>
+    <nav class="nav-primary ion-tabs" id="tabs" aria-label="Sections">
+      <a href="#/swap">Swap</a>
+      <a href="#/tokens">Tokens</a>
+      <a href="#/pools">Pools</a>
+      <a href="#/nfts">NFTs</a>
+      <a href="#/activity">Activity<i id="activityDot" hidden></i></a>
+      <span class="ion-tab-mark" aria-hidden="true"></span>
+    </nav>
+    <div class="connect ion-who">
+      <span id="tor-badge" class="pill" title="How this page reaches the network">…</span>
+      <button id="network-selector" class="pill network-pill" type="button" aria-haspopup="true" aria-expanded="false" title="MoneroUSD network">…</button>
+      <div id="network-popover" class="network-popover" hidden></div>
+      <button id="connect-btn" class="btn">Connect</button>
+    </div>
+    <nav class="nav-secondary ion-links" aria-label="More">
+      <a href="#/create">Launch a token</a>
+      <a href="#/market">NFT marketplace</a>
+      <a href="#/studio">NFT studio</a>
+      <a href="#/privacy">How it stays private</a>
+    </nav>
+  </header>
+  <main id="view" tabindex="-1"></main>
+  <footer class="foot ion-foot">
+    <img class="foot-logo" src="assets/monerousd-logo.svg" alt="MoneroUSD" />
+    <span>Your own node is the backend. Your own wallet signs. No account, no memo, no trail.</span>
+  </footer>
+  <script type="module" src="lib/ion-shell.js?v=1"></script>
+  <script type="module" src="app.js?v=54"></script>
+</body>
+</html>

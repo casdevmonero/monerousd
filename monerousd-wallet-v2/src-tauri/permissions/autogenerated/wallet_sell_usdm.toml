@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-sell-usdm"
+description = "Enables the wallet_sell_usdm command without any pre-configured scope."
+commands.allow = ["wallet_sell_usdm"]
+
+[[permission]]
+identifier = "deny-wallet-sell-usdm"
+description = "Denies the wallet_sell_usdm command without any pre-configured scope."
+commands.deny = ["wallet_sell_usdm"]

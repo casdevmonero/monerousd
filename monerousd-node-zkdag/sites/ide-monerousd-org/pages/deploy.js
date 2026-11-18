@@ -1,0 +1,980 @@
+// Copyright (c) 2026, The MoneroUSD Protocol
+// SPDX-License-Identifier: Apache-2.0
+//
+// This file is an original work of the MoneroUSD Protocol, a post-quantum GHOSTDAG block-DAG
+// zero-knowledge confidential-value protocol. It is NOT part of the Monero Project. Licensed under
+// the Apache License, Version 2.0; see the LICENSE and NOTICE files at the repository root.
+
+/* Deploy & Run activity — the centerpiece.
+ *
+ * Side panel:    connection state + Deploy CTA + Deployed contracts list
+ * Plugin panel:  selected contract's per-entrypoint Call form + on-chain state
+ *
+ * Flow:
+ *   1. User compiles a .dsol contract (compiler.js stores bytecode + abi).
+ *   2. User connects a MoneroUSD wallet (window.monerousd).
+ *   3. User clicks "Deploy on-chain" → provider.deployContract(...).
+ *      The wallet renders `buildOpFields('DC_DEPLOY')` (IDE-9). On approval,
+ *      we receive { contractId, txHash } and add the contract to
+ *      `store.deployed.contracts`.
+ *   4. We poll `${indexerUrl}/v1/contracts/:contractId` per rule 17 with a
+ *      tx-hash explorer link fallback if polling times out.
+ *   5. User can call any entrypoint of any deployed contract (commit-reveal
+ *      or direct mode). Each call is a separate approval.
+ *
+ * Persistence: `store.deployed.contracts` mirrors to localStorage via the
+ * "monerousd-ide.deployed" key, scoped per project so different projects
+ * don't see each other's contracts. State refresh is best-effort — the chain
+ * is the source of truth.
+ */
+
+import * as store from '../lib/store.js';
+import * as provider from '../lib/provider.js';
+import { setSidePanelContent, setSideHeader }     from '../components/side-panel.js';
+import { setPluginPanelContent, setPluginHeader } from '../components/plugin-panel.js';
+import { showToast }     from '../components/toast.js';
+import { showModal, hideModal, confirmModal } from '../components/modal.js';
+import { terminalApi }   from '../components/terminal.js';
+import { activateActivity } from '../lib/router.js';
+import { ContractsClient, parseIndexerList } from '../lib/contracts-client.js';
+import { DagPqClient } from '../lib/dag-pq-sdk.js'; // first-party SDK copy (source of truth: /monerousd-dag-pq-sdk/index.js); the lib/vendor copy that pulled a noble SHA-512 shim is gone
+import { sanitizeHtml } from '../lib/sanitize.js';
+
+/* ─── Decentralized read clients ─────────────────────────────────────────
+ * Contract reads go through a FAILOVER indexer client (no single-operator
+ * hard-pin — decentralization pillar). DAG reads go through the shared SDK so
+ * a deploy can be anchored to the GHOSTDAG BLOCK-HASH tuple, never to a bare
+ * height (height is not a total order under DAG width > 1). Both are rebuilt
+ * lazily from the current settings so a Settings change takes effect without a
+ * reload. */
+function _settings() { return store.get('settings') || {}; }
+
+function _indexerList() {
+  const s = _settings();
+  // Prefer the failover list; fall back to the single primary; never silently
+  // empty (ContractsClient throws loudly on an empty list).
+  const list = parseIndexerList(s.indexerUrls && s.indexerUrls.length ? s.indexerUrls : s.indexerUrl);
+  return list;
+}
+
+let _contractsClient = null;
+let _contractsClientKey = '';
+function indexerClient() {
+  const key = _indexerList().join('|');
+  if (!_contractsClient || _contractsClientKey !== key) {
+    _contractsClient = new ContractsClient(_indexerList());
+    _contractsClientKey = key;
+  }
+  return _contractsClient;
+}
+
+let _dagClient = null;
+let _dagClientKey = '';
+function dagClient() {
+  const url = _settings().daemonUrl || 'http://127.0.0.1:28080';
+  if (!_dagClient || _dagClientKey !== url) {
+    _dagClient = new DagPqClient(url);
+    _dagClientKey = url;
+  }
+  return _dagClient;
+}
+
+/**
+ * Resolve a deploy's anchoring GHOSTDAG block to its HASH TUPLE via the live
+ * DAG daemon. Settlement/ordering binds to the block hash + its full parent
+ * set, NEVER to a bare height (CARDINAL: height is not a total order when the
+ * DAG width > 1). Best-effort: returns null if the daemon is unreachable or the
+ * height isn't a single canonical block — the deploy is still valid; this only
+ * enriches the local record so the UI can show the mergeset-aware anchor.
+ * @param {number|string} heightOrHash
+ * @returns {Promise<{hash:string, prevHash:string|null, mergeset:string[], tuple:string[], height:number}|null>}
+ */
+async function resolveDagAnchor(heightOrHash) {
+  if (heightOrHash == null) return null;
+  try {
+    const c = dagClient();
+    const block = await c.getBlock(heightOrHash);
+    return c.settlementAnchor(block); // { hash, prevHash, parents, mergeset, height, tuple }
+  } catch (_) {
+    return null; // no-halts: DAG enrichment is optional, never blocks the flow
+  }
+}
+
+let activated = false;
+const POLL_DEPLOY_TIMEOUT_MS = 60_000;
+const POLL_INTERVAL_MS = 2_500;
+const STORAGE_KEY = (projectId) => `monerousd-ide.deployed.${projectId || 'no-project'}`;
+
+export async function activate({ sideEl, pluginEl }) {
+  if (!activated) {
+    store.subscribe('compile',    () => render());
+    store.subscribe('connection', () => render());
+    store.subscribe('deployed',   () => render());
+    store.subscribe('project',    (p, prev) => {
+      if (p.id !== prev?.id) {
+        loadDeployedFromStorage(p.id);
+        render();
+      }
+    });
+    activated = true;
+    loadDeployedFromStorage(store.get('project').id);
+  }
+  setSideHeader('Deploy & Run');
+  setPluginHeader('Deployed contracts');
+  render();
+}
+
+/* ─── Render ─────────────────────────────────────────────────────────── */
+
+function render() {
+  renderSide();
+  renderPlugin();
+}
+
+function renderSide() {
+  const compile = store.get('compile');
+  const conn = store.get('connection');
+  const deployed = store.get('deployed').contracts || [];
+
+  let connBlock;
+  if (conn.status === 'connected') {
+    connBlock = `
+      <div class="deploy-conn ok">
+        <span class="conn-dot connected"></span>
+        <div class="deploy-conn-text">
+          <div class="conn-headline">Connected</div>
+          <code class="conn-addr" title="${escapeAttr(conn.fullAddress || '')}">${escapeHtml(conn.address || '')}</code>
+        </div>
+        <button data-action="disconnect-wallet" class="btn-link">Disconnect</button>
+      </div>
+    `;
+  } else if (conn.status === 'connecting') {
+    connBlock = `<div class="deploy-conn"><span class="conn-dot connecting"></span><div>Connecting…</div></div>`;
+  } else if (conn.status === 'present') {
+    connBlock = `
+      <div class="deploy-conn">
+        <span class="conn-dot present"></span>
+        <div class="deploy-conn-text">
+          <div class="conn-headline">Wallet detected</div>
+          <div class="conn-sub">Click connect to sign deploys + calls.</div>
+        </div>
+        <button data-action="connect-wallet" class="btn btn-primary btn-sm">Connect MoneroUSD</button>
+      </div>
+    `;
+  } else if (conn.status === 'error') {
+    connBlock = `
+      <div class="deploy-conn err">
+        <span class="conn-dot error"></span>
+        <div class="deploy-conn-text">
+          <div class="conn-headline">Connection error</div>
+          <div class="conn-sub">${escapeHtml(conn.error || 'Unknown error')}</div>
+        </div>
+        <button data-action="connect-wallet" class="btn btn-primary btn-sm">Retry</button>
+      </div>
+    `;
+  } else {
+    connBlock = `
+      <div class="deploy-conn absent">
+        <span class="conn-dot"></span>
+        <div class="deploy-conn-text">
+          <div class="conn-headline">No MoneroUSD wallet</div>
+          <div class="conn-sub">Install the desktop wallet or the monerousd-chrome extension.</div>
+        </div>
+        <button data-action="connect-wallet" class="btn btn-primary btn-sm">How to install</button>
+      </div>
+    `;
+  }
+
+  const canDeploy = compile.status === 'ok' && conn.status === 'connected';
+  const deployTitle = compile.status !== 'ok'
+    ? 'Compile a .dsol file first'
+    : conn.status !== 'connected'
+      ? 'Connect a MoneroUSD wallet first'
+      : 'Deploys go through your wallet';
+
+  const html = `
+    <div class="deploy-side">
+      ${connBlock}
+      <div class="deploy-cta">
+        <button data-act="do-deploy" class="btn btn-primary btn-md ${canDeploy ? '' : 'soft'}" title="${escapeAttr(deployTitle)}">
+          ${ICON_CLOUD}<span>Deploy on-chain</span>
+        </button>
+        <button data-act="goto-compiler" class="btn btn-secondary btn-sm">${ICON_HAMMER}<span>Compiler</span></button>
+      </div>
+      ${compile.status === 'ok' ? `
+        <div class="deploy-summary">
+          <div><span>Bytecode</span><code>${compile.bytecode?.length ?? 0} B</code></div>
+          <div><span>codeHash</span><code title="${escapeAttr(compile.codeHash || '')}">${truncMiddle(compile.codeHash || '', 10, 6)}</code></div>
+          <div><span>Entrypoints</span><code>${compile.abi?.entrypoints?.length ?? 0}</code></div>
+        </div>
+      ` : ''}
+      <div class="deploy-list">
+        <div class="deploy-list-head"><span>Deployed contracts</span><span class="muted">${deployed.length}</span></div>
+        ${deployed.length ? deployed.map(renderDeployedRow).join('') : `
+          <div class="deploy-list-empty">
+            <p>Nothing deployed yet from this project.</p>
+            <p class="muted">After deploy, contracts appear here with explorer links and per-entrypoint call forms in the right panel.</p>
+          </div>
+        `}
+      </div>
+      <div class="deploy-fineprint muted">
+        Every deploy/call goes through your wallet's existing approval popup. The IDE never sees your keys.
+      </div>
+    </div>
+  `;
+  setSidePanelContent(html);
+
+  const root = document.getElementById('side-content');
+  if (!root) return;
+  root.querySelector('[data-act="do-deploy"]')?.addEventListener('click', doDeploy);
+  root.querySelector('[data-act="goto-compiler"]')?.addEventListener('click', () => activateActivity('compiler'));
+  root.querySelectorAll('[data-act="select-contract"]').forEach(el => {
+    el.addEventListener('click', () => {
+      store.set('deployed', { active: el.dataset.id });
+    });
+  });
+  root.querySelectorAll('[data-act="forget-contract"]').forEach(el => {
+    el.addEventListener('click', async (ev) => {
+      ev.stopPropagation();
+      await forgetContract(el.dataset.id);
+    });
+  });
+  root.querySelectorAll('[data-act="explorer-link"]').forEach(el => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+    });
+  });
+}
+
+function renderDeployedRow(c) {
+  const active = store.get('deployed').active === c.contractId ? 'active' : '';
+  const explorer = `https://explorer.monerousd.org/contract/${encodeURIComponent(c.contractId)}`;
+  const txExplorer = c.txHash ? `https://explorer.monerousd.org/tx/${encodeURIComponent(c.txHash)}` : null;
+  return `
+    <div class="deploy-row ${active}" data-act="select-contract" data-id="${escapeAttr(c.contractId)}" tabindex="0">
+      <div class="deploy-row-top">
+        <div class="deploy-row-name">${escapeHtml(c.name || 'Contract')}</div>
+        <div class="deploy-row-status">${c.status === 'pending' ? `<span class="badge pending">Pending…</span>` :
+                                       c.status === 'confirmed' ? `<span class="badge ok">On-chain</span>` :
+                                       c.status === 'destroyed' ? `<span class="badge gone">Destroyed</span>` :
+                                       `<span class="badge">Unknown</span>`}</div>
+      </div>
+      <div class="deploy-row-id"><code title="${escapeAttr(c.contractId)}">${truncMiddle(c.contractId, 10, 6)}</code></div>
+      <div class="deploy-row-meta">
+        <span>v${escapeHtml(String(c.version || 1))}</span>
+        ${c.block != null ? `<span>blk ${c.block}</span>` : ''}
+        <a class="log-link" href="${explorer}" target="_blank" rel="noopener" data-act="explorer-link">Explorer ↗</a>
+        ${txExplorer ? `<a class="log-link" href="${txExplorer}" target="_blank" rel="noopener" data-act="explorer-link">tx ↗</a>` : ''}
+        <button class="btn-link danger" data-act="forget-contract" data-id="${escapeAttr(c.contractId)}" title="Remove from this list (chain unaffected)">Forget</button>
+      </div>
+    </div>
+  `;
+}
+
+/* ─── Plugin (per-contract Call form + state) ────────────────────────── */
+
+function renderPlugin() {
+  const deployed = store.get('deployed').contracts || [];
+  const activeId = store.get('deployed').active;
+  const c = deployed.find(x => x.contractId === activeId) || deployed[0];
+  if (!c) {
+    setPluginPanelContent(`
+      <div class="plugin-empty">
+        <p>Deploy a contract or select one from the list to call its entrypoints.</p>
+      </div>
+    `);
+    return;
+  }
+
+  const fns = c.abi?.entrypoints || [];
+  const html = `
+    <div class="deploy-plugin">
+      <div class="deploy-plugin-head">
+        <div class="deploy-plugin-title">${escapeHtml(c.name || 'Contract')}</div>
+        <code class="deploy-plugin-id" title="${escapeAttr(c.contractId)}">${truncMiddle(c.contractId, 10, 6)}</code>
+      </div>
+      ${fns.length ? `
+        <div class="call-cards">
+          ${fns.map(fn => renderCallCard(c, fn)).join('')}
+        </div>` : `
+        <p class="abi-empty">No entrypoints in ABI.</p>
+      `}
+      <details class="onchain-state">
+        <summary>On-chain state</summary>
+        <div data-state-for="${escapeAttr(c.contractId)}" class="state-body"><em class="muted">Loading…</em></div>
+      </details>
+      <div class="deploy-plugin-foot">
+        <button data-act="destroy" class="btn-link danger">Destroy contract (DC_DESTROY)</button>
+      </div>
+    </div>
+  `;
+  setPluginPanelContent(html);
+
+  const root = document.getElementById('plugin-body');
+  if (!root) return;
+  root.querySelectorAll('form[data-call]').forEach(form => {
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const fnName = form.dataset.call;
+      const fn = fns.find(f => f.name === fnName);
+      if (!fn) return;
+      const argv = collectArgs(form, fn);
+      const mode = form.querySelector('select[name="mode"]')?.value || (modeFor(fn));
+      doCall(c, fn, argv, mode);
+    });
+  });
+  root.querySelector('[data-act="destroy"]')?.addEventListener('click', () => doDestroy(c));
+
+  // Kick off state fetch.
+  void refreshState(c).catch(err => {
+    const slot = root.querySelector(`[data-state-for="${cssAttrEsc(c.contractId)}"]`);
+    if (slot) slot.innerHTML = `<em class="muted">State unavailable: ${escapeHtml(err.message)}</em>`;
+  });
+}
+
+function renderCallCard(contract, fn) {
+  // The compiler ABI (lib/dsol-compiler.js, search "entrypoints.push") emits
+  // entries shaped as:
+  //   { name, selector, batch: boolean, highRisk: boolean, returns, args: [{name,type}] }
+  // No `params` field, no `attrs` field. We derive UI flags from `batch` /
+  // `highRisk`, and we synthesize `@batch` / `@direct` / `@highrisk` tag
+  // strings purely for display so the user sees the same syntax they wrote.
+  const args = fn.args || [];
+  const defaultMode = modeFor(fn);
+  const showMode = fn.batch === true;
+  const tags = [
+    fn.batch ? '@batch' : '@direct',
+    ...(fn.highRisk ? ['@highrisk'] : []),
+  ];
+  return `
+    <form class="call-card" data-call="${escapeAttr(fn.name)}">
+      <div class="call-card-head">
+        <span class="abi-name">${escapeHtml(fn.name)}</span>
+        <span class="abi-params">(${args.map(a => `${escapeHtml(a.type)} ${escapeHtml(a.name)}`).join(', ')})</span>
+        <span class="abi-tags">${tags.map(t => `<span class="abi-tag">${escapeHtml(t)}</span>`).join('')}</span>
+      </div>
+      ${args.length ? `<div class="call-args">
+        ${args.map((a) => `
+          <label class="form-row">
+            <span>${escapeHtml(a.name)}<small>${escapeHtml(a.type)}</small></span>
+            <input name="${escapeAttr(a.name)}" type="text" autocomplete="off" data-type="${escapeAttr(a.type)}">
+          </label>`).join('')}
+      </div>` : ''}
+      ${showMode ? `<label class="form-row">
+        <span>Mode</span>
+        <select name="mode">
+          <option value="commit-reveal" ${defaultMode === 'commit-reveal' ? 'selected' : ''}>Commit-reveal</option>
+          <option value="direct" ${defaultMode === 'direct' ? 'selected' : ''}>Direct</option>
+        </select>
+      </label>` : ''}
+      <div class="call-foot">
+        <button type="submit" class="btn btn-primary btn-sm">${ICON_BOLT}<span>Call</span></button>
+      </div>
+    </form>
+  `;
+}
+
+/* ─── Actions ────────────────────────────────────────────────────────── */
+
+/**
+ * Pre-deploy preview modal — Remix-style.
+ *
+ * User clicks "Deploy on-chain" → this modal opens FIRST, showing
+ * the contract metadata + bond preview. They have a chance to verify
+ * the codeHash matches what they expected BEFORE the wallet's
+ * approval popup lands. Click Deploy in the modal → resolves with
+ * the collected constructor args (if any), and doDeploy proceeds to
+ * call provider.deployContract().
+ *
+ * Returns Promise<{ args: any[] } | null> — null on user cancel.
+ *
+ * IDE-9 note: this is NOT a substitute for the wallet's approval
+ * popup. It's a PRE-CHECK so the user can sanity-test the bytecode
+ * + codeHash against what they expect before signing. The wallet's
+ * buildOpFields('DC_DEPLOY') case is still what gates the actual
+ * signature; this is a courtesy preview.
+ */
+function openDeployPreviewModal({ compile, name }) {
+  return new Promise((resolve) => {
+    const entrypoints = compile.abi?.entrypoints || [];
+    const ctor = entrypoints.find(e => e.name === 'constructor');
+    const ctorArgs = ctor?.args || [];
+
+    const fnsExceptCtor = entrypoints.filter(e => e.name !== 'constructor');
+    const entrySummary = fnsExceptCtor.length
+      ? fnsExceptCtor.map(e => e.name).join(', ')
+      : 'none';
+
+    const codeHashFull = compile.codeHash || '';
+    const codeHashShort = truncMiddle(codeHashFull, 12, 8);
+
+    const ctorInputsHtml = ctorArgs.length === 0 ? '' : `
+      <fieldset class="deploy-preview-ctor">
+        <legend>Constructor arguments</legend>
+        ${ctorArgs.map((arg, i) => `
+          <label class="ctor-arg">
+            <span class="ctor-arg-name">${escapeHtml(arg.name)}</span>
+            <span class="ctor-arg-type">${escapeHtml(arg.type)}</span>
+            <input
+              type="text"
+              data-ctor-arg="${i}"
+              data-ctor-type="${escapeAttr(arg.type)}"
+              placeholder="${escapeAttr(placeholderFor(arg.type))}"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+        `).join('')}
+        <p class="ctor-note">
+          These values are passed verbatim to the contract's constructor.
+          They are also visible in the wallet's approval popup. Constructor
+          args ride in the same DC_DEPLOY attestation as the bytecode.
+        </p>
+      </fieldset>
+    `;
+
+    const body = `
+      <div class="deploy-preview">
+        <header class="deploy-preview-head">
+          <div class="deploy-preview-name">${escapeHtml(name)}</div>
+          <div class="deploy-preview-kind">Dark Contract · v1</div>
+        </header>
+
+        <dl class="deploy-preview-meta">
+          <dt>Code hash</dt>
+          <dd><code title="${escapeAttr(codeHashFull)}">${escapeHtml(codeHashShort)}</code></dd>
+          <dt>Bytecode</dt>
+          <dd>${compile.bytecode.length.toLocaleString()} bytes</dd>
+          <dt>Entrypoints</dt>
+          <dd>${fnsExceptCtor.length} <span class="entry-list">(${escapeHtml(entrySummary)})</span></dd>
+        </dl>
+
+        ${ctorInputsHtml}
+
+        <div class="deploy-preview-bond">
+          <strong>Deployment bond:</strong> 10 USDm
+          <div class="deploy-preview-bond-note">
+            100% routes to the protocol reserve. Non-refundable. The bond
+            charge is part of the carrier tx your wallet signs next.
+          </div>
+        </div>
+
+        <p class="deploy-preview-trust">
+          Your wallet will show an approval popup with this exact code
+          hash — verify the prefix matches before approving. If it
+          doesn't, reject the popup.
+        </p>
+
+        <div class="deploy-preview-error" hidden></div>
+      </div>
+    `;
+
+    showModal({
+      title: 'Deploy ' + name + ' on-chain',
+      size: 'md',
+      body,
+      onClose: () => { try { resolve(null); } catch (_) {} },
+      actions: [
+        {
+          label: 'Cancel',
+          kind: 'secondary',
+          dataAct: 'deploy-preview-cancel',
+          onClick: ({ hide }) => {
+            // `silent:true` skips the onClose handler so we don't
+            // double-resolve the promise (onClose resolves with null
+            // FIRST, beating any later resolve({args}) — exactly the
+            // bug that made the v1.2.211 modal silently skip the
+            // wallet popup before this fix landed).
+            hide({ silent: true });
+            resolve(null);
+          },
+        },
+        {
+          label: 'Deploy on-chain',
+          kind: 'primary',
+          dataAct: 'deploy-preview-confirm',
+          onClick: ({ hide }) => {
+            // Collect constructor args (if any). Validate non-empty
+            // strings; surface a single-line error inline if missing.
+            const inputs = Array.from(document.querySelectorAll('[data-ctor-arg]'));
+            const args = [];
+            const errors = [];
+            for (const inp of inputs) {
+              const idx = Number(inp.dataset.ctorArg);
+              const ty = inp.dataset.ctorType;
+              const raw = (inp.value || '').trim();
+              if (!raw) {
+                errors.push(`${ctorArgs[idx]?.name || ('arg ' + idx)} (${ty}) is required`);
+                continue;
+              }
+              try {
+                args.push(parseCtorArg(raw, ty));
+              } catch (err) {
+                errors.push(`${ctorArgs[idx]?.name}: ${err.message}`);
+              }
+            }
+            if (errors.length) {
+              const errBox = document.querySelector('.deploy-preview-error');
+              if (errBox) {
+                errBox.hidden = false;
+                errBox.textContent = errors.join(' · ');
+              }
+              return; // keep modal open
+            }
+            // Resolve FIRST, then hide with silent:true so the
+            // modal's onClose handler can't race ahead and resolve
+            // the promise with null. The native Promise contract
+            // makes the first resolve() win, but the order here
+            // is structurally important: a future maintainer who
+            // removes the silent:true would re-introduce the
+            // v1.2.211 ship-day bug (Deploy modal would close but
+            // the wallet popup would never fire).
+            resolve({ args });
+            hide({ silent: true });
+          },
+        },
+      ],
+    });
+  });
+}
+
+function placeholderFor(type) {
+  switch (type) {
+    case 'string':          return 'e.g. SYMBOL';
+    case 'uint64':
+    case 'uint8':
+    case 'int64':           return 'positive integer';
+    case 'bool':            return 'true / false';
+    case 'stealth':         return 'recipient base58 address';
+    case 'wallet_identity': return '64-char hex pubkey';
+    case 'bytes':           return 'hex-encoded bytes';
+    default:                return type;
+  }
+}
+
+function parseCtorArg(raw, type) {
+  switch (type) {
+    case 'string':          return raw;
+    case 'uint64':
+    case 'uint8':
+    case 'int64': {
+      if (!/^[0-9]+$/.test(raw)) throw new Error('must be a non-negative integer');
+      return raw; // pass as decimal-string so amounts > 2^53 round-trip cleanly
+    }
+    case 'bool': {
+      const v = raw.toLowerCase();
+      if (v === 'true' || v === '1') return true;
+      if (v === 'false' || v === '0') return false;
+      throw new Error('must be true or false');
+    }
+    case 'stealth':         return raw;
+    case 'wallet_identity':
+    case 'bytes': {
+      const v = raw.replace(/^0x/, '').toLowerCase();
+      if (!/^[0-9a-f]*$/.test(v)) throw new Error('must be hex');
+      if (v.length % 2 !== 0) throw new Error('hex length must be even');
+      return v;
+    }
+    default:                return raw;
+  }
+}
+
+async function doDeploy() {
+  const compile = store.get('compile');
+  if (compile.status !== 'ok') {
+    showToast({ kind: 'warning', title: 'Compile first' });
+    return;
+  }
+  const conn = store.get('connection');
+  if (conn.status !== 'connected') {
+    showToast({ kind: 'warning', title: 'Connect a MoneroUSD wallet first' });
+    return;
+  }
+  const name = compile.abi?.name || 'Contract';
+
+  // Pre-deploy preview modal — Remix-style. User confirms metadata
+  // + provides any constructor args before the wallet popup fires.
+  const previewResult = await openDeployPreviewModal({ compile, name });
+  if (previewResult === null) {
+    terminalApi().info('Deploy canceled in preview modal.');
+    return;
+  }
+  const constructorArgs = previewResult.args || [];
+
+  showToast({ kind: 'info', title: `Deploying ${name}…`, body: 'Approve in your wallet popup.' });
+  terminalApi().info(`Deploy → wallet popup for ${name} (${compile.bytecode.length} B, codeHash ${truncMiddle(compile.codeHash, 8, 4)})`
+    + (constructorArgs.length ? ` constructor(${constructorArgs.length} arg${constructorArgs.length === 1 ? '' : 's'})` : ''));
+
+  // ──────── deploy with daemon-disconnect retry ────────
+  // The wallet's wallet-rpc has a stalled-keep-alive failure mode
+  // ("no connection to daemon" after long idle). v1.2.192 added a
+  // server-side retry but older wallets still surface it; we add a
+  // client-side single retry as defense-in-depth so the user
+  // doesn't have to click twice.
+  async function deployWithRetry() {
+    try {
+      return await provider.deployContract({
+        bytecode: compile.bytecode,
+        abi:      compile.abi,
+        codeHash: compile.codeHash,
+        name,
+        constructorArgs,
+      });
+    } catch (err) {
+      const msg = String(err?.message || err || '');
+      if (/no connection to daemon|daemon is busy|daemon.*not responding|connection to daemon/i.test(msg)) {
+        terminalApi().info('Wallet daemon transient — retrying once…');
+        await new Promise((r) => setTimeout(r, 1500));
+        return await provider.deployContract({
+          bytecode: compile.bytecode,
+          abi:      compile.abi,
+          codeHash: compile.codeHash,
+          name,
+        });
+      }
+      throw err;
+    }
+  }
+
+  let res;
+  try {
+    res = await deployWithRetry();
+  } catch (err) {
+    if (err?.name === 'ProviderUnavailableError' || err?.name === 'NotConnectedError') {
+      showToast({ kind: 'error', title: 'Wallet not available', body: err.message });
+    } else if (/reject|cancel|denied|user/i.test(String(err?.message))) {
+      showToast({ kind: 'info', title: 'Deploy canceled' });
+    } else {
+      showToast({ kind: 'error', title: 'Deploy failed', body: err?.message || String(err) });
+      terminalApi().error(`Deploy failed: ${err?.message || err}`);
+    }
+    return;
+  }
+
+  // The wallet's deployContract returns only the carrier tx hash
+  // immediately. The contractId materializes ~15-30s later when the
+  // chain monitor processes DC_DEPLOY. Per build-1261/CLAUDE.md
+  // rule 17 (success requires materialization, not optimism) we
+  // poll the indexer's /v1/contracts/by-tx/:hash endpoint until
+  // the contract row appears, then promote the deploy from
+  // pending → live. We DO NOT show "Deploy failed" just because
+  // contractId is missing — that was a misclassification.
+  const txHash = res?.txHash || res?.tx_hash || res?.txid || res?.hash || null;
+  let contractId = res?.contractId || null;
+  if (!contractId && !txHash) {
+    showToast({ kind: 'error', title: 'Deploy returned neither contractId nor txHash', body: JSON.stringify(res || {}) });
+    terminalApi().error('Deploy returned neither contractId nor txHash — wallet contract.');
+    return;
+  }
+  if (!contractId && txHash) {
+    showToast({ kind: 'info', title: `Deploy broadcast`, body: `tx ${truncMiddle(txHash, 8, 4)} — waiting for materialization…` });
+    terminalApi().info(`Deploy broadcast — polling /v1/contracts/by-tx/${txHash.slice(0,16)}…`);
+    contractId = await pollByTxHash(txHash);
+    if (!contractId) {
+      showToast({ kind: 'warning', title: 'Materialization timed out', body: `Tx ${truncMiddle(txHash, 8, 4)} broadcast but contract did not appear within 5 minutes. The deploy may still succeed — refresh in a few minutes.` });
+      terminalApi().error(`Materialization timeout for ${txHash}`);
+      return;
+    }
+  }
+  res = res || {};
+  res.contractId = contractId;
+  res.txHash = txHash;
+  const contract = {
+    contractId: res.contractId,
+    txHash:     res.txHash || null,
+    name:       name,
+    abi:        compile.abi,
+    codeHash:   compile.codeHash,
+    bytecodeSize: compile.bytecode?.length ?? 0,
+    version:    1,
+    block:      null,
+    status:     'pending',
+    deployedAt: Date.now(),
+    onChainState: null,
+  };
+  appendDeployed(contract);
+  showToast({ kind: 'success', title: 'Deploy broadcast', body: `tx ${truncMiddle(res.txHash || res.contractId, 8, 4)}` });
+  terminalApi().success(`Deploy submitted — contractId ${truncMiddle(res.contractId, 10, 6)}, tx ${truncMiddle(res.txHash || '', 8, 4)}`);
+  // Poll for materialization.
+  void pollContractMaterialization(contract);
+}
+
+async function doCall(contract, fn, argv, mode) {
+  const conn = store.get('connection');
+  if (conn.status !== 'connected') {
+    showToast({ kind: 'warning', title: 'Connect a MoneroUSD wallet first' });
+    return;
+  }
+  showToast({ kind: 'info', title: `Calling ${fn.name}()…`, body: 'Approve in your wallet popup.' });
+  terminalApi().info(`Call → ${contract.name}.${fn.name}(${argv.length} args) mode=${mode} — wallet popup`);
+  let res;
+  try {
+    res = await provider.callContract({
+      contractId: contract.contractId,
+      entrypoint: fn.name,
+      argv,
+      mode,
+    });
+  } catch (err) {
+    if (/reject|cancel|denied|user/i.test(String(err?.message))) {
+      showToast({ kind: 'info', title: 'Call canceled' });
+    } else {
+      showToast({ kind: 'error', title: 'Call failed', body: err?.message || String(err) });
+      terminalApi().error(`Call ${fn.name}() failed: ${err?.message || err}`);
+    }
+    return;
+  }
+  showToast({ kind: 'success', title: `Call broadcast`, body: `tx ${truncMiddle(res.txHash || '', 8, 4)}` });
+  terminalApi().success(`Call ${fn.name}() submitted — tx ${truncMiddle(res.txHash || '', 8, 4)}`);
+  // Refresh state shortly.
+  setTimeout(() => { void refreshState(contract); }, 4_000);
+}
+
+async function doDestroy(contract) {
+  const ok = await confirmModal({
+    title: 'Destroy contract?',
+    body: `<p>Destroying <strong>${escapeHtml(contract.name)}</strong> emits a DC_DESTROY op on chain. The contract will no longer accept calls.</p>
+           <p style="color:var(--text-muted);font-size:var(--fs-xs);">This requires your wallet's approval. State up to this point is preserved on-chain (auditable in the explorer).</p>`,
+    danger: true,
+    confirmLabel: 'Destroy',
+  });
+  if (!ok) return;
+  try {
+    const res = await provider.destroyContract({ contractId: contract.contractId });
+    showToast({ kind: 'success', title: 'Destroy broadcast', body: `tx ${truncMiddle(res?.txHash || '', 8, 4)}` });
+    contract.status = 'destroyed';
+    persistDeployed();
+    render();
+  } catch (err) {
+    if (/reject|cancel|denied|user/i.test(String(err?.message))) {
+      showToast({ kind: 'info', title: 'Destroy canceled' });
+    } else {
+      showToast({ kind: 'error', title: 'Destroy failed', body: err?.message || String(err) });
+    }
+  }
+}
+
+async function forgetContract(contractId) {
+  const ok = await confirmModal({
+    title: 'Forget this contract?',
+    body: `<p>Remove from this list. The contract on-chain is unaffected — you can re-add it later.</p>`,
+    confirmLabel: 'Remove',
+  });
+  if (!ok) return;
+  const list = (store.get('deployed').contracts || []).filter(c => c.contractId !== contractId);
+  store.set('deployed', {
+    contracts: list,
+    active: list[0]?.contractId || null,
+  });
+  persistDeployed();
+  showToast({ kind: 'info', title: 'Removed from list' });
+}
+
+/* ─── Polling materialization (rule 17) ──────────────────────────────── */
+
+// Resolve a deploy tx hash → contractId by polling the indexer's
+// /v1/contracts/by-tx/:hash endpoint. Returns the contractId on
+// success, null on timeout. Used by doDeploy() when the wallet
+// returns only the carrier tx hash without an immediate
+// contractId (which is the canonical case in v1.2.190+).
+async function pollByTxHash(txHash, timeoutMs = 5 * 60 * 1000) {
+  const client = indexerClient(); // failover across configured indexers
+  const start = Date.now();
+  let pollIndex = 0;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      // ContractsClient.getContractByTx returns null on a reachable 404
+      // (pending) and rotates indexers on transport failure; it only throws
+      // when EVERY indexer is down (which we treat as a transient blip here).
+      const j = await client.getContractByTx(txHash);
+      const id = j?.contractId || j?.id;
+      if (id) return id;
+      // null = pending on a reachable indexer; keep polling.
+    } catch { /* all indexers unreachable this round — keep polling */ }
+    pollIndex++;
+    if (pollIndex % 6 === 0) {
+      const elapsed = Math.round((Date.now() - start) / 1000);
+      terminalApi().info(`Still waiting for materialization (${elapsed}s)…`);
+    }
+    // Faster poll for the first minute (5s), slower after (15s).
+    await sleep((Date.now() - start) < 60_000 ? 5000 : 15_000);
+  }
+  return null;
+}
+
+async function pollContractMaterialization(contract) {
+  const client = indexerClient(); // failover across configured indexers
+  const start = Date.now();
+  while (Date.now() - start < POLL_DEPLOY_TIMEOUT_MS) {
+    try {
+      const j = await client.getContract(contract.contractId);
+      if (j?.contractId === contract.contractId) {
+        contract.status = 'confirmed';
+        contract.block = j.block ?? contract.block;
+        contract.version = j.version ?? contract.version;
+        // DAG-AWARE ANCHOR: settlement/ordering binds to the BLOCK HASH tuple,
+        // never to a bare height (GHOSTDAG width > 1 ⇒ height is not a total
+        // order). Resolve the indexer-reported height to its hash+mergeset via
+        // the live daemon and record the tuple. Best-effort — never blocks the
+        // "materialized" transition (no-halts).
+        const anchor = await resolveDagAnchor(contract.block);
+        if (anchor) {
+          contract.dagAnchor = {
+            blockHash: anchor.hash,
+            prevHash: anchor.prevHash,
+            mergeset: anchor.mergeset,
+            tuple: anchor.tuple,
+          };
+        }
+        persistDeployed();
+        render();
+        const anchorNote = contract.dagAnchor
+          ? ` (DAG block ${truncMiddle(contract.dagAnchor.blockHash, 8, 4)}, ` +
+            `${contract.dagAnchor.mergeset.length} merged parent(s))`
+          : '';
+        terminalApi().success(
+          `Materialized ${truncMiddle(contract.contractId, 10, 6)} — blk ${contract.block}${anchorNote}`
+        );
+        showToast({ kind: 'success', title: 'On-chain', body: `${contract.name} live at blk ${contract.block}` });
+        return;
+      }
+    } catch { /* all indexers unreachable this round — keep polling */ }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  // Timed out — fall back to explorer link per rule 17.
+  terminalApi().warn(`Polling for ${truncMiddle(contract.contractId, 10, 6)} timed out — verify in explorer.`);
+  showModal({
+    title: 'Still confirming…',
+    body: `<p>Your contract has been broadcast but hasn't been seen by the indexer yet.</p>
+           <p>Tx: <code>${escapeHtml(contract.txHash || 'unknown')}</code></p>
+           <p>Open the <a href="https://explorer.monerousd.org/tx/${encodeURIComponent(contract.txHash || '')}" target="_blank" rel="noopener">explorer</a> to track confirmation. Once mined, the contract will appear here automatically on the next refresh.</p>`,
+    actions: [{ label: 'OK', kind: 'primary', onClick: hideModal }],
+  });
+}
+
+async function refreshState(contract) {
+  const client = indexerClient(); // failover across configured indexers
+  const root = document.getElementById('plugin-body');
+  const slot = root?.querySelector(`[data-state-for="${cssAttrEsc(contract.contractId)}"]`);
+  if (!slot) return;
+  try {
+    // Private slots come back as commitment hex + rangeProofHash only (DC-6 —
+    // never plaintext); the renderer surfaces them as opaque. getContractState
+    // returns null on a reachable 404 (no state yet) and rotates indexers on
+    // transport failure.
+    const j = await client.getContractState(contract.contractId);
+    if (!j) {
+      slot.innerHTML = `<em class="muted">No state available yet</em>`;
+      return;
+    }
+    contract.onChainState = j;
+    slot.innerHTML = sanitizeHtml(renderStateMap(j));
+  } catch (err) {
+    slot.innerHTML = `<em class="muted">State unavailable (all indexers): ${escapeHtml(err.message)}</em>`;
+  }
+}
+
+function renderStateMap(j) {
+  const slots = j?.slots || j?.state || {};
+  const entries = Object.entries(slots);
+  if (!entries.length) return `<em class="muted">No state slots populated yet.</em>`;
+  return `<ul class="abi-list">${entries.map(([k, v]) => `
+    <li class="abi-item">
+      <div class="abi-sig">
+        <span class="abi-name" title="${escapeAttr(k)}">${escapeHtml(truncMiddle(k, 8, 6))}</span>
+        <span class="abi-params">${escapeHtml(typeof v === 'object' ? JSON.stringify(v) : String(v))}</span>
+      </div>
+    </li>`).join('')}</ul>`;
+}
+
+/* ─── Storage ─────────────────────────────────────────────────────────── */
+
+function appendDeployed(contract) {
+  const cur = store.get('deployed');
+  const list = [contract, ...(cur.contracts || []).filter(c => c.contractId !== contract.contractId)];
+  store.set('deployed', { contracts: list, active: contract.contractId });
+  persistDeployed();
+}
+
+function persistDeployed() {
+  try {
+    const projectId = store.get('project').id;
+    const list = store.get('deployed').contracts || [];
+    // Strip non-serializable fields (e.g. function refs in abi.sourceMap).
+    const safe = list.map(c => ({
+      contractId: c.contractId,
+      txHash: c.txHash,
+      name: c.name,
+      abi: c.abi,
+      codeHash: c.codeHash,
+      bytecodeSize: c.bytecodeSize,
+      version: c.version,
+      block: c.block,
+      status: c.status,
+      deployedAt: c.deployedAt,
+    }));
+    localStorage.setItem(STORAGE_KEY(projectId), JSON.stringify(safe));
+  } catch { /* private mode — ignore */ }
+}
+
+function loadDeployedFromStorage(projectId) {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY(projectId));
+    if (!raw) {
+      store.set('deployed', { contracts: [], active: null });
+      return;
+    }
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) return;
+    store.set('deployed', { contracts: list, active: list[0]?.contractId || null });
+  } catch { /* ignore */ }
+}
+
+/* ─── Helpers ─────────────────────────────────────────────────────────── */
+
+function modeFor(fn) {
+  // Default to commit-reveal for @batch entrypoints (which can mutate
+  // private state) and direct for @direct (read-only / non-mutating).
+  // The compiler ABI exposes this as a boolean: see the renderCallCard
+  // header comment.
+  return fn.batch ? 'commit-reveal' : 'direct';
+}
+
+function collectArgs(form, fn) {
+  const out = [];
+  for (const a of (fn.args || [])) {
+    const inp = form.querySelector(`input[name="${cssAttrEsc(a.name)}"]`);
+    const raw = (inp?.value || '').trim();
+    out.push(parseArg(raw, a.type));
+  }
+  return out;
+}
+
+function parseArg(raw, type) {
+  if (/^u?int(8|16|32|64|128|256)$/.test(type)) {
+    return { tag: 'u64', value: raw === '' ? '0' : raw };
+  }
+  if (type === 'bool') return { tag: 'u64', value: raw && raw !== 'false' && raw !== '0' ? '1' : '0' };
+  return { tag: type === 'stealth' ? 'stealth' : 'bytes', value: raw };
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function truncMiddle(s, head, tail) {
+  if (!s) return '—';
+  if (s.length <= head + tail + 1) return s;
+  return `${s.slice(0, head)}…${s.slice(-tail)}`;
+}
+
+function cssAttrEsc(s) { return String(s).replace(/[^\w-]/g, '_'); }
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[c]);
+}
+function escapeAttr(s) { return escapeHtml(s); }
+
+const ICON_CLOUD  = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 16h2a4 4 0 0 0 0-8 6 6 0 0 0-11.6-1.5A4.5 4.5 0 0 0 7 16h2"/><path d="M12 12v9M9 18l3 3 3-3"/></svg>';
+const ICON_HAMMER = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3l7 7M10 7l4-4 7 7-4 4-7-7zM3 21l8-8"/></svg>';
+const ICON_BOLT   = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>';

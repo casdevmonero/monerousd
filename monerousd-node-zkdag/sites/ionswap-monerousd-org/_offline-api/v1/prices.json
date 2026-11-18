@@ -1,0 +1,5 @@
+{
+  "_offline": true,
+  "_note": "Sovereign offline fallback — no pool-derived prices available without a live indexer.",
+  "prices": {}
+}

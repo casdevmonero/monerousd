@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-moneropay-ble-start-merchant"
+description = "Enables the moneropay_ble_start_merchant command without any pre-configured scope."
+commands.allow = ["moneropay_ble_start_merchant"]
+
+[[permission]]
+identifier = "deny-moneropay-ble-start-merchant"
+description = "Denies the moneropay_ble_start_merchant command without any pre-configured scope."
+commands.deny = ["moneropay_ble_start_merchant"]

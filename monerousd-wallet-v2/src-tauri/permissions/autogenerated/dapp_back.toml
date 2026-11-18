@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-back"
+description = "Enables the dapp_back command without any pre-configured scope."
+commands.allow = ["dapp_back"]
+
+[[permission]]
+identifier = "deny-dapp-back"
+description = "Denies the dapp_back command without any pre-configured scope."
+commands.deny = ["dapp_back"]

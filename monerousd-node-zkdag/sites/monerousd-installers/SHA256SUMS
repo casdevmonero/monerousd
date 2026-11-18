@@ -1,0 +1,9 @@
+# MoneroUSD Installers · SHA-256 manifest
+# Format: <hex sha256>  <filename>
+#
+# Empty in the shipped fallback. The release pipeline overwrites this
+# with the real per-platform installer hashes at SITE_PUBLISH time —
+# the on-chain rootHash anchors the SHA256SUMS file itself, so users
+# can verify the installer in two places: against this file (which is
+# itself hash-anchored on chain) and against the manifest.json the
+# site-updater reads programmatically.

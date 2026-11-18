@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-proof-tags-make"
+description = "Enables the proof_tags_make command without any pre-configured scope."
+commands.allow = ["proof_tags_make"]
+
+[[permission]]
+identifier = "deny-proof-tags-make"
+description = "Denies the proof_tags_make command without any pre-configured scope."
+commands.deny = ["proof_tags_make"]

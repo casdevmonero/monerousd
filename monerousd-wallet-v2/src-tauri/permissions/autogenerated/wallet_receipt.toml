@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-receipt"
+description = "Enables the wallet_receipt command without any pre-configured scope."
+commands.allow = ["wallet_receipt"]
+
+[[permission]]
+identifier = "deny-wallet-receipt"
+description = "Denies the wallet_receipt command without any pre-configured scope."
+commands.deny = ["wallet_receipt"]

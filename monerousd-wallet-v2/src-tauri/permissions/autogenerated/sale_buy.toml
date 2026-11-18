@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sale-buy"
+description = "Enables the sale_buy command without any pre-configured scope."
+commands.allow = ["sale_buy"]
+
+[[permission]]
+identifier = "deny-sale-buy"
+description = "Denies the sale_buy command without any pre-configured scope."
+commands.deny = ["sale_buy"]

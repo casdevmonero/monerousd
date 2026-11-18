@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-set-remix"
+description = "Enables the wallet_set_remix command without any pre-configured scope."
+commands.allow = ["wallet_set_remix"]
+
+[[permission]]
+identifier = "deny-wallet-set-remix"
+description = "Denies the wallet_set_remix command without any pre-configured scope."
+commands.deny = ["wallet_set_remix"]

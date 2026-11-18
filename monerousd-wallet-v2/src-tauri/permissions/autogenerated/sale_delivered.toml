@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-sale-delivered"
+description = "Enables the sale_delivered command without any pre-configured scope."
+commands.allow = ["sale_delivered"]
+
+[[permission]]
+identifier = "deny-sale-delivered"
+description = "Denies the sale_delivered command without any pre-configured scope."
+commands.deny = ["sale_delivered"]

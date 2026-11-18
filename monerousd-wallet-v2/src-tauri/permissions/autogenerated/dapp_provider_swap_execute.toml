@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-swap-execute"
+description = "Enables the dapp_provider_swap_execute command without any pre-configured scope."
+commands.allow = ["dapp_provider_swap_execute"]
+
+[[permission]]
+identifier = "deny-dapp-provider-swap-execute"
+description = "Denies the dapp_provider_swap_execute command without any pre-configured scope."
+commands.deny = ["dapp_provider_swap_execute"]

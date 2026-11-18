@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-register-dir"
+description = "Enables the wallet_register_dir command without any pre-configured scope."
+commands.allow = ["wallet_register_dir"]
+
+[[permission]]
+identifier = "deny-wallet-register-dir"
+description = "Denies the wallet_register_dir command without any pre-configured scope."
+commands.deny = ["wallet_register_dir"]

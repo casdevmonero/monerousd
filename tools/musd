@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""musd: run a MonerousD node and wallet from the command line.
+
+  musd build                          build the node and wallet programs once
+  musd chain up [N]                   start a private chain of N nodes on this machine (default 2)
+  musd chain status | down | wipe     see, stop, or delete that chain
+  musd node start [--seeds S] [--new-chain]   run one node (joins the network the seed line names)
+  musd node stop | status | seed | log
+  musd wallet new | restore | address | balance | send <to> <amount> | history | faucet <amount>
+  musd network [auto|tor|own]         show or pick the network the node travels on
+
+Everything lives in ~/.musd (MUSD_HOME). The steps, in order, are in docs/CLI-RUN-LIST.md. Same programs, same checks and same chain
+rules as the desktop wallet: the wallet commands run the app's own wallet code (`wallet-harness`), and the node is `usdmd-node`."""
+import getpass, hashlib, hmac, json, os, secrets, shutil, signal, subprocess, sys, time, urllib.error, urllib.request
+
+HOME = os.path.expanduser(os.environ.get("MUSD_HOME", "~/.musd"))
+NET = os.environ.get("MUSD_NET", "testnet")
+SRC = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+BUILD = os.path.join(HOME, "build")
+MAIN_PORT = 27780  # the port the desktop wallet looks for, so the app can use a node started here
+LOCAL_BASE = 28400  # a local chain's nodes: 28400, 28401, ...
+ATOMIC = 100_000_000  # atomic units per USDm
+# A send refused with one of these is waiting for the chain (its money is still settling), never a real refusal: the command waits.
+WAITING = ("still being built", "not available yet", "deletion witness", "not folded", "NOT in the unspent tree", "copath", "membership",
+           "NOT_FOLDED_YET", "anchor ring", "MEMBERSHIP_PROOF_MISSING", "right now (503)", "did not answer", "still in flight",
+           "the send goes once the claim confirms", "the send goes once the slot", "first key is still forming")
+
+
+def die(msg):
+    print(f"musd: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def say(msg):
+    print(msg, flush=True)
+
+
+# ---------------------------------------------------------------- programs
+
+def program(name):
+    """The node or wallet program: MUSD_NODE_BIN / MUSD_WALLET_BIN, then what `musd build` made, then PATH."""
+    env = {"usdmd-node": "MUSD_NODE_BIN", "wallet-harness": "MUSD_WALLET_BIN"}[name]
+    for p in (os.environ.get(env), os.path.join(BUILD, "release", name), shutil.which(name)):
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    die(f"{name} is not built yet. Run: musd build")
+
+
+def cmd_build(_args):
+    for crate, binary in (("monerousd-node-zkdag", "usdmd-node"), ("monerousd-wallet-v2/src-tauri", "wallet-harness")):
+        say(f"building {binary} (the first build takes a while)...")
+        r = subprocess.run(["cargo", "build", "--release", "--bin", binary], cwd=os.path.join(SRC, crate), env=dict(os.environ, CARGO_TARGET_DIR=BUILD))
+        if r.returncode:
+            die(f"building {binary} failed")
+    say(f"built: {BUILD}/release/usdmd-node and wallet-harness")
+
+
+# ---------------------------------------------------------------- nodes
+
+def node_dir(name):
+    return os.path.join(HOME, "nodes", name)
+
+
+def node_meta(name):
+    try:
+        return json.load(open(os.path.join(node_dir(name), "musd.json")))
+    except (OSError, ValueError):
+        return None
+
+
+def node_pid(name):
+    try:
+        pid = int(open(os.path.join(node_dir(name), "pid")).read())
+        try:
+            if os.waitpid(pid, os.WNOHANG)[0] == pid:
+                return None  # a node this process started and that has exited: unreaped, it would still read as alive
+        except ChildProcessError:
+            pass
+        os.kill(pid, 0)
+        return pid
+    except (OSError, ValueError):
+        return None
+
+
+def rpc(port, route, body=None, timeout=20):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{route}", data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode() or "{}")
+
+
+def answering(port):
+    try:
+        rpc(port, "/get_height", timeout=5)
+        return True
+    except Exception:
+        return False
+
+
+def port_taken(port):
+    import socket
+    with socket.socket() as s:
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def spawn(name, port, seeds="", new_chain=False):
+    d = node_dir(name)
+    os.makedirs(d, exist_ok=True)
+    if node_pid(name):
+        return node_pid(name)
+    if port_taken(port):
+        die(f"port {port} is already in use by another program; pick another with --port")
+    env = dict(os.environ, MONEROUSD_NODE_DATA=d, MONEROUSD_RPC_PORT=str(port), MONEROUSD_LIBP2P_SEED_PEERS=seeds, MONEROUSD_NET=NET,
+               MONEROUSD_VALIDATOR_BOND="200000", HOME=d)  # HOME: the node's own files stay in its folder
+    if new_chain:
+        env["MONEROUSD_MESH_BOOTSTRAP"] = "1"
+    log = open(os.path.join(d, "node.log"), "ab")
+    p = subprocess.Popen([program("usdmd-node"), "serve"], env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+    open(os.path.join(d, "pid"), "w").write(str(p.pid))
+    json.dump({"port": port, "seeds": seeds, "new_chain": new_chain}, open(os.path.join(d, "musd.json"), "w"))
+    return p.pid
+
+
+def stop(name):
+    """The node's own shutdown file, then wait: it saves its state and exits by itself. TERM only if it ignores that for 5 minutes."""
+    pid, meta = node_pid(name), node_meta(name)
+    if not pid:
+        return False
+    state = os.path.join(node_dir(name), ".usdmd-node")
+    if meta and os.path.isdir(state):
+        open(os.path.join(state, f"shutdown-{meta['port']}"), "w").close()
+    else:
+        os.kill(pid, signal.SIGTERM)
+    t = time.time()
+    while node_pid(name) and time.time() - t < 300:
+        time.sleep(1)
+    if node_pid(name):
+        os.kill(pid, signal.SIGTERM)
+    return True
+
+
+def wait_for(what, ok, limit=1800):
+    t, last = time.time(), 0.0
+    while not ok():
+        if time.time() - t > limit:
+            die(f"gave up waiting for {what} after {time.time() - t:.0f} s; see the node log (musd node log)")
+        if time.time() - last >= 30:
+            say(f"  waiting for {what}... {time.time() - t:.0f} s")
+            last = time.time()
+        time.sleep(2)
+
+
+def height(port):
+    try:
+        return int(rpc(port, "/get_height", timeout=10).get("height", 0))
+    except Exception:
+        return 0
+
+
+def peer_line(port):
+    r = rpc(port, "/peer_record")
+    if not r.get("addr"):
+        return None
+    return f"{r['peer_id']}|{r['addr']}|{r['x_pk_hex']}|{r['ek_hex']}"
+
+
+def describe(name):
+    meta, pid = node_meta(name), node_pid(name)
+    if not meta:
+        return f"{name}: never started"
+    if not pid:
+        return f"{name}: stopped (port {meta['port']})"
+    try:
+        i = rpc(meta["port"], "/get_info", timeout=10)
+        n = rpc(meta["port"], "/network_choice", timeout=10)
+    except Exception:
+        return f"{name}: starting (port {meta['port']}, pid {pid})"
+    on = {"tor": "on Tor", "mix": "on our network"}.get(n.get("carrying"), "finding a network")
+    return f"{name}: running on port {meta['port']} | height {i.get('height')} | peers {i.get('peers')} | network {n.get('choice')}, {on}"
+
+
+def flag(args, name, default=None):
+    if name in args:
+        i = args.index(name)
+        if i + 1 >= len(args):
+            die(f"{name} needs a value")
+        v = args[i + 1]
+        del args[i:i + 2]
+        return v
+    return default
+
+
+def cmd_node(args):
+    name = flag(args, "--name", "main")
+    sub = args[0] if args else "status"
+    meta = node_meta(name)
+    if sub == "start":
+        port = int(flag(args, "--port", str(meta["port"] if meta else MAIN_PORT)))
+        seeds = flag(args, "--seeds", meta["seeds"] if meta else "")
+        if seeds and os.path.isfile(seeds):
+            seeds = open(seeds).read().strip()
+        new_chain = "--new-chain" in args
+        if not seeds and not new_chain:
+            die("a node needs the seed line of a node already on the network (--seeds \"...\" or a file), or --new-chain to start one")
+        spawn(name, port, seeds, new_chain)
+        wait_for(f"node {name} to answer on port {port}", lambda: answering(port), 300)
+        say(describe(name))
+        say("Its seed line, once its onion address is published: musd node seed" + ("" if name == "main" else f" --name {name}"))
+    elif sub == "stop":
+        say(f"{name}: stopping (it saves its state first)..." if stop(name) else f"{name}: not running")
+    elif sub == "status":
+        say(describe(name))
+    elif sub == "seed":
+        if not meta or not node_pid(name):
+            die(f"node {name} is not running")
+        wait_for("its onion address to publish", lambda: peer_line(meta["port"]) is not None, 900)
+        say(peer_line(meta["port"]))
+    elif sub == "log":
+        log = os.path.join(node_dir(name), "node.log")
+        os.execvp("tail", ["tail", "-n", "40", "-f", log] if "-f" in args else ["tail", "-n", "40", log])
+    else:
+        die(f"unknown node command: {sub}")
+
+
+def local_names():
+    d = os.path.join(HOME, "nodes")
+    return sorted((n for n in os.listdir(d) if n.startswith("local")), key=lambda n: int(n[5:])) if os.path.isdir(d) else []
+
+
+def cmd_chain(args):
+    sub = args[0] if args else "status"
+    if sub == "up":
+        n = int(args[1]) if len(args) > 1 else 2
+        names = [f"local{i}" for i in range(n)]
+        ports = [LOCAL_BASE + i for i in range(n)]
+        seedfile = os.path.join(HOME, "local-seeds")
+        if os.path.exists(seedfile) and all(node_meta(x) for x in names):
+            seeds = open(seedfile).read().strip()
+            for x, p in zip(names, ports):
+                spawn(x, p, seeds)
+            for x, p in zip(names, ports):
+                wait_for(f"{x} to answer", lambda p=p: answering(p), 300)
+            say("resumed the same chain")
+        else:
+            # A node's onion identity is made on its first start and seeds are read at startup, so: start, collect, restart.
+            say(f"starting {n} new nodes; publishing their onion addresses takes a few minutes the first time")
+            for x, p in zip(names, ports):
+                spawn(x, p)
+            for x, p in zip(names, ports):
+                wait_for(f"{x} to answer", lambda p=p: answering(p), 300)
+            lines = {}
+            for x, p in zip(names, ports):
+                wait_for(f"{x}'s onion address", lambda p=p: peer_line(p) is not None, 1200)
+                lines[x] = peer_line(p)
+            for x in names:
+                stop(x)
+            seeds = ",".join(lines[x] for x in names)
+            open(seedfile, "w").write(seeds)
+            # One node starts the chain and holds a few blocks; the others join a running network, as a real new node does.
+            spawn(names[0], ports[0], seeds, new_chain=True)
+            wait_for(f"{names[0]} to answer", lambda: answering(ports[0]), 300)
+            wait_for(f"{names[0]} to make its first 16 blocks", lambda: height(ports[0]) >= 16)
+            for x, p in zip(names[1:], ports[1:]):
+                spawn(x, p, seeds)
+                wait_for(f"{x} to join", lambda p=p: answering(p) and height(p) >= height(ports[0]) - 8 and height(p) > 0)
+        for x in names:
+            say(describe(x))
+        say("The wallet uses local0 while main is not running. Next: musd wallet new")
+    elif sub == "status":
+        for x in local_names() or die("no local chain yet. Run: musd chain up"):
+            say(describe(x))
+    elif sub == "down":
+        for x in local_names():
+            if stop(x):
+                say(f"{x}: stopped")
+        say("stopped; `musd chain up` resumes the same chain")
+    elif sub == "wipe":
+        for x in local_names():
+            stop(x)
+            shutil.rmtree(node_dir(x), ignore_errors=True)
+        if os.path.exists(os.path.join(HOME, "local-seeds")):
+            os.remove(os.path.join(HOME, "local-seeds"))
+        say("the local chain is deleted; wallets made on it hold nothing on the next chain")
+    else:
+        die(f"unknown chain command: {sub}")
+
+
+def node_port(args):
+    """--node NAME, else main if it runs, else the first local node that runs."""
+    name = flag(args, "--node")
+    for x in [name] if name else ["main"] + local_names():
+        meta = node_meta(x)
+        if meta and node_pid(x):
+            return meta["port"]
+    die(f"node {name} is not running" if name else "no node is running. Start one: musd chain up  (or musd node start ...)")
+
+
+def cmd_network(args):
+    port = node_port(args)
+    if args:
+        if args[0] not in ("auto", "tor", "own"):
+            die("the choice is auto, tor or own")
+        if args[0] == "tor":
+            say("Tor only: if Tor goes down or is attacked, payments wait until it returns or you switch back. Money stays safe.")
+        rpc(port, "/network_choice", {"choice": args[0]})
+    n = rpc(port, "/network_choice")
+    on = {"tor": "Tor", "mix": "our own network", "none": "no network yet"}.get(n.get("carrying"), n.get("carrying"))
+    say(f"choice: {n.get('choice')} | travelling on: {on}")
+    crowd, large = n.get("crowd", 0), n.get("crowd_large", 0)
+    if n.get("carrying") == "mix" and large and crowd < large:
+        say(f"our network is small right now: {crowd} relays of the {large} it needs to hide you well. Payments stay encrypted and money safe.")
+
+
+# ---------------------------------------------------------------- wallets
+# A wallet is its 24-word recovery phrase plus a folder of what it has found. The phrase is kept only encrypted, under a passphrase:
+# key = PBKDF2-HMAC-SHA3-256 (400,000 rounds), cipher = SHAKE-256 keystream, tag = SHA3-256 over the ciphertext.
+
+ROUNDS = 400_000
+
+
+def kdf(passphrase, salt):
+    m = hmac.new(passphrase.encode(), digestmod=hashlib.sha3_256)
+    u = salt + b"\x00\x00\x00\x01"
+    out = bytes(32)
+    for _ in range(ROUNDS):
+        h = m.copy()
+        h.update(u)
+        u = h.digest()
+        out = bytes(a ^ b for a, b in zip(out, u))
+    return hashlib.shake_256(out + b"enc").digest(32), hashlib.shake_256(out + b"mac").digest(32)
+
+
+def seal(phrase, passphrase):
+    salt, nonce = secrets.token_bytes(16), secrets.token_bytes(16)
+    k_enc, k_mac = kdf(passphrase, salt)
+    data = phrase.encode()
+    ct = bytes(a ^ b for a, b in zip(data, hashlib.shake_256(k_enc + nonce).digest(len(data))))
+    tag = hashlib.sha3_256(k_mac + nonce + ct).digest()
+    return {"v": 1, "salt": salt.hex(), "nonce": nonce.hex(), "ct": ct.hex(), "tag": tag.hex()}
+
+
+def unseal(box, passphrase):
+    salt, nonce, ct = bytes.fromhex(box["salt"]), bytes.fromhex(box["nonce"]), bytes.fromhex(box["ct"])
+    k_enc, k_mac = kdf(passphrase, salt)
+    if not hmac.compare_digest(hashlib.sha3_256(k_mac + nonce + ct).digest(), bytes.fromhex(box["tag"])):
+        die("wrong passphrase")
+    return bytes(a ^ b for a, b in zip(ct, hashlib.shake_256(k_enc + nonce).digest(len(ct)))).decode()
+
+
+def ask_passphrase(new):
+    p = os.environ.get("MUSD_PASSPHRASE")
+    if p is not None:
+        return p
+    p = getpass.getpass("New wallet passphrase: " if new else "Wallet passphrase: ")
+    if new and getpass.getpass("Again: ") != p:
+        die("the two passphrases differ")
+    return p
+
+
+def wallet_dir(name):
+    return os.path.join(HOME, "wallets", name)
+
+
+class Wallet:
+    """The app's own wallet code, run for one command and closed again, as a user opens and closes the app."""
+
+    def __init__(self, port, name, phrase):
+        os.makedirs(os.path.join(wallet_dir(name), "data"), exist_ok=True)
+        env = dict(os.environ, MONEROUSD_NODE_URL=f"http://127.0.0.1:{port}", MONEROUSD_WALLET_DATA=os.path.join(wallet_dir(name), "data"),
+                   MONEROUSD_NET=NET, HARNESS_SEED_STDIN="1")
+        env.pop("HARNESS_SEED", None)
+        self.log = open(os.path.join(wallet_dir(name), "wallet.log"), "ab")
+        self.p = subprocess.Popen([program("wallet-harness")], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log, text=True)
+        self.p.stdin.write(phrase + "\n")
+        self.p.stdin.flush()
+        r = self.read("restore")
+        if not r.get("ok"):
+            die(f"the wallet did not open: {r.get('error')}")
+
+    def read(self, op):
+        while True:
+            line = self.p.stdout.readline()
+            if not line:
+                die(f"the wallet program ended; see {self.log.name}")
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("op") == op:
+                return r
+
+    def run(self, line, op=None):
+        self.p.stdin.write(line + "\n")
+        self.p.stdin.flush()
+        return self.read(op or line.split()[0])
+
+    def close(self):
+        self.p.stdin.write("quit\n")
+        self.p.stdin.close()
+        self.p.wait()
+
+
+def open_wallet(args, name):
+    path = os.path.join(wallet_dir(name), "phrase.sealed")
+    if not os.path.exists(path):
+        die(f"no wallet named {name}. Make one: musd wallet new" + ("" if name == "default" else f" --wallet {name}"))
+    return Wallet(node_port(args), name, unseal(json.load(open(path)), ask_passphrase(False)))
+
+
+def usdm(atomic):
+    return f"{int(atomic) / ATOMIC:,.2f} USDm"
+
+
+def cmd_wallet(args):
+    name = flag(args, "--wallet", "default")
+    sub = args[0] if args else "balance"
+    path = os.path.join(wallet_dir(name), "phrase.sealed")
+    if sub in ("new", "restore"):
+        if os.path.exists(path):
+            die(f"a wallet named {name} already exists here; pick another name with --wallet NAME")
+        port = node_port(args)
+        if sub == "new":
+            env = dict(os.environ, MONEROUSD_NODE_URL=f"http://127.0.0.1:{port}", MONEROUSD_NET=NET, HARNESS_GENERATE="1",
+                       MONEROUSD_WALLET_DATA=os.path.join(wallet_dir(name), "data"))
+            os.makedirs(env["MONEROUSD_WALLET_DATA"], exist_ok=True)
+            r = subprocess.run([program("wallet-harness")], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True)
+            got = next((json.loads(x) for x in r.stdout.splitlines() if '"op":"generate"' in x), {})
+            res = got.get("result") or {}
+            phrase = res.get("seed") or res.get("mnemonic")
+            if not phrase:
+                die(f"making the wallet failed: {(r.stdout + r.stderr)[-300:]}")
+            pw = ask_passphrase(True)
+            json.dump(seal(phrase, pw), open(path, "w"))
+            os.chmod(path, 0o600)
+            say("Your recovery phrase. Write it on paper and keep it safe; anyone who has it has your money. It is shown once:\n")
+            say("  " + phrase + "\n")
+            say(f"Your address: {res.get('address')}")
+        else:
+            # From a terminal it asks with the words hidden; from a script it reads one line on stdin.
+            raw = getpass.getpass("Recovery phrase (24 words, hidden): ") if sys.stdin.isatty() else sys.stdin.readline()
+            phrase = " ".join(raw.split())
+            w = Wallet(port, name, phrase)
+            addr = w.run("address").get("result")
+            w.close()
+            json.dump(seal(phrase, ask_passphrase(True)), open(path, "w"))
+            os.chmod(path, 0o600)
+            say(f"restored. Address: {addr.get('address') if isinstance(addr, dict) else addr}")
+        return
+    w = open_wallet(args, name)
+    try:
+        if sub in ("address", "receive"):
+            r = w.run("address").get("result")
+            say(r.get("address") if isinstance(r, dict) else r)
+        elif sub == "balance":
+            w.run("refresh")
+            r = w.run("balance").get("result") or {}
+            say(f"spendable: {usdm(r.get('atomic', 0))}")
+            # Other assets this wallet holds, by the start of their id; the all-zero id is USDm itself, already shown.
+            units = r.get("asset_units") or {}
+            for k, v in sorted((r.get("assets") or {}).items()):
+                if k.strip("0") and v:
+                    say(f"  also holds {v} {units.get(k, k[:8])}")
+        elif sub == "send":
+            if len(args) < 3:
+                die("usage: musd wallet send <address> <amount in USDm>")
+            to, amount = args[1], args[2]
+            w.run("detect")
+            w.run("balance")
+            said, t = "", time.time()
+            while True:
+                r = w.run(f"send {to} {amount}", "send")
+                if r.get("ok"):
+                    say(f"sent {amount} USDm. It is final once the next blocks fold it in (about a minute); check with: musd wallet history")
+                    break
+                why = json.dumps(r.get("error") or r.get("result"))
+                if not any(k in why for k in WAITING):
+                    die(f"the send was refused: {why[:400]}")
+                if time.time() - t > 900:
+                    die(f"the send waited 15 minutes for your money to settle and it has not: {why[:300]}")
+                if why != said:
+                    say("waiting for your last money to settle on the chain before it can be spent...")
+                    said = why
+                w.run("hold 3000", "hold")
+                w.run("refresh")
+        elif sub == "history":
+            w.run("refresh")
+            r = w.run("activity").get("result")
+            rows = r.get("rows", r.get("activity", r)) if isinstance(r, dict) else r
+            if not rows:
+                say("no activity yet")
+            for row in rows if isinstance(rows, list) else [rows]:
+                if not isinstance(row, dict):
+                    say(json.dumps(row))
+                    continue
+                sign = "+" if row.get("direction") == "in" else "-"
+                say(f"  {sign}{row.get('usdm', 0)} {row.get('unit', 'USDm')}  {row.get('kind', '')}  {row.get('status', '')}")
+        elif sub == "faucet":
+            if len(args) < 2:
+                die("usage: musd wallet faucet <amount in USDm>  (test networks only)")
+            r = w.run(f"faucet {args[1]}")
+            say(f"the faucet sent {args[1]} test USDm; it is spendable in about a minute" if r.get("ok") else f"the faucet refused: {r.get('error')}")
+        else:
+            die(f"unknown wallet command: {sub}")
+    finally:
+        w.close()
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help", "help"):
+        say(__doc__)
+        return
+    table = {"build": cmd_build, "node": cmd_node, "chain": cmd_chain, "wallet": cmd_wallet, "network": cmd_network}
+    if args[0] not in table:
+        die(f"unknown command {args[0]}; see: musd help")
+    try:
+        table[args[0]](args[1:])
+    except urllib.error.URLError as e:
+        die(f"the node did not answer: {e}")
+    except KeyboardInterrupt:
+        sys.exit(130)
+
+
+if __name__ == "__main__":
+    main()

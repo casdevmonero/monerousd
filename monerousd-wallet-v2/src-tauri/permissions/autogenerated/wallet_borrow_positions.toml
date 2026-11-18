@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-borrow-positions"
+description = "Enables the wallet_borrow_positions command without any pre-configured scope."
+commands.allow = ["wallet_borrow_positions"]
+
+[[permission]]
+identifier = "deny-wallet-borrow-positions"
+description = "Denies the wallet_borrow_positions command without any pre-configured scope."
+commands.deny = ["wallet_borrow_positions"]

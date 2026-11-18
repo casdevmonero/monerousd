@@ -1,0 +1,21 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root)
+#
+# The goods and services layer's off-chain core (docs/GOODS-AND-SERVICES-LAYER-SPEC-20261109.md):
+# the merchant-signed offer, the purchase rules, and the check of a carrier's own signed delivery notice.
+# It depends on no node, no prover and no network, so the wallet and the checkout helper share one copy.
+[package]
+name = "monerousd-goods"
+version = "0.1.0"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+blake3 = "1"
+fips204 = "0.4"
+sha2 = "0.10"
+base64 = "0.22"
+num-bigint = "0.4"

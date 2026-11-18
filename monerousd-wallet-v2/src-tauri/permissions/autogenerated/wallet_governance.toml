@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-governance"
+description = "Enables the wallet_governance command without any pre-configured scope."
+commands.allow = ["wallet_governance"]
+
+[[permission]]
+identifier = "deny-wallet-governance"
+description = "Denies the wallet_governance command without any pre-configured scope."
+commands.deny = ["wallet_governance"]

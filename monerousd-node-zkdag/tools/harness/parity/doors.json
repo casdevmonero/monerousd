@@ -1,0 +1,132 @@
+{
+  "_comment": "LANE C / F - THE PARITY MATRIX door table. Rows = doors that admit a class, columns = the checks a door of that class must run. The EMPTY CELLS ARE THE FINDING. Adding a class here is how the matrix grows; a door absent from this table is a door the matrix says nothing about, which is why `classes[].doors` must list EVERY admitting door for the class and `unlisted_doors_note` must say how that was established.",
+
+  "_honesty_rules": [
+    "A cell is FILLED only by a CALL in production source, found over comment-masked lines. A check named in a doc comment can never fill a cell.",
+    "An unproven reachability claim ('a framed blob cannot have passed the caller's precheck, so this arm should be unreachable') is an EMPTY CELL, NOT A FILLED ONE. The generator scans for claim language and annotates the empty cell with it; it never converts it.",
+    "The only thing that legitimately empties a cell is an EXEMPTION with a stated reason of NON-COMPUTABILITY at that door (e.g. a jumping adopter cannot compute the DAA equality: it holds no ancestry). An exemption whose reason is itself a reachability claim is REFUSED by the generator and the cell stays EMPTY.",
+    "Call-graph edges are followed only through receivers the reader can resolve honestly (`self.`, `Self::`, `crate::..::`, bare free fn). Every other receiver is left UNRESOLVED, which biases the matrix toward EMPTY - the direction that produces a candidate hole to disprove, never the direction that hides one.",
+    "cfg(test) modules and test-attributed functions are neither doors nor resolution targets: a door filled by its own test is not a door that runs the check."
+  ],
+
+  "max_call_depth": 6,
+
+  "checks": {
+    "pow_verified": {
+      "title": "proof-of-work / header grind",
+      "symbols": ["verify_block_pow", "preverify_block", "header_grind_admits", "hash_meets_target"],
+      "invariant": "I-4 FORK CHOICE INTEGRITY - only VERIFIED work moves the tip"
+    },
+    "ts_structural": {
+      "title": "timestamp drift (validate_structural)",
+      "symbols": ["validate_structural", "validate_header_structural", "header_door_admits"],
+      "_symbols_note": "`validate_header_structural` is the REDUCED form of `validate_structural` that carries the same timestamp-drift rule for the doors moving objects this chain deliberately ships without their body (header_shell, build_sync_bundle, unfolded_carry). It fills this cell; the residual - a STRIPPED part - is named on the shared function and reported open there, not here.",
+      "invariant": "I-11 DOOR PARITY / I-6 - a far-future shell drives adaptive_work away from the mesh"
+    },
+    "ts_contextual": {
+      "title": "median-time-past (validate_contextual)",
+      "symbols": ["validate_contextual"],
+      "invariant": "I-11 / I-6"
+    },
+    "tx_merkle": {
+      "title": "tx list hashes to the header's commitment",
+      "symbols": ["tx_merkle_root"],
+      "invariant": "I-12 ONE OBJECT ONE ENCODING"
+    },
+    "parents_present": {
+      "title": "every named parent is held",
+      "symbols": ["add_wanted_shell", "has_all_parents", "parents_present"],
+      "invariant": "I-4 - a tip on a block with absent parents"
+    },
+    "class_admissible": {
+      "title": "chain_object::admissible - the class rule",
+      "symbols": ["admissible"],
+      "invariant": "I-1 CONSERVATION - a namable chain-authorised justifier"
+    },
+    "wrapper_binds": {
+      "title": "wrapper_binds_object - identity covers the carried effect",
+      "symbols": ["wrapper_binds_object"],
+      "invariant": "I-12"
+    },
+    "root_fold_binding": {
+      "title": "the row's notes are folded to a root and closed against a CERTIFIED target",
+      "symbols": ["fold_leaves_to_root", "note_membership_step_new_acc", "block_leaves_from_notes"],
+      "invariant": "I-1 / I-10 - bytes reach the shared fold sink only if a chain-certified accumulator closes over them"
+    },
+    "ordinal_placement": {
+      "title": "the row's ordinal is PLACED against the chain's own ordinal space, not taken from the sender",
+      "symbols": ["da_ordinal_at_membership_acc", "da_record_ordinal_top"],
+      "invariant": "I-11 / I-4 - a position taken from the wire is not a position the chain agreed to"
+    },
+    "read_guard": {
+      "title": "the body read is wrapped in a timeout",
+      "symbols": ["timeout"],
+      "invariant": "I-5 BOUNDED RESOURCE - the inbound form of the 23 GB blowup"
+    }
+  },
+
+  "classes": {
+    "block": {
+      "_comment": "A block/shell entering the DAG. E-8 (descent door x pow_verified) and A2 (descent door x timestamp) both live here.",
+      "checks": ["pow_verified", "ts_structural", "ts_contextual", "tx_merkle", "parents_present"],
+      "files": ["src/node.rs", "src/dag.rs", "src/consensus.rs", "src/pow.rs", "src/node_runtime.rs", "src/relay.rs"],
+      "doors": [
+        { "fn": "receive_bounded",                 "file": "src/relay.rs", "role": "REFERENCE - the gossip door proper; the row every other row of this class is compared against" },
+        { "fn": "ingest_block_inner",              "file": "src/node.rs", "role": "the node-side gossip ingest lane (calls preverify_block, then hands to the relay)" },
+        { "fn": "preverify_block",                 "file": "src/node.rs", "role": "the shared gossip preverify body (header + proof only, holds no DAG)" },
+        { "fn": "graft_wanted_block_shell",        "file": "src/node.rs", "role": "the 7u8 block-lane / block-locator DESCENT door (E-8, A2)" },
+        { "fn": "graft_block_shell_from_trusted_id","file": "src/node.rs", "role": "the descent door's shared body (present only after the 2026-09-07 fix)", "optional": true },
+        { "fn": "instant_sync",                    "file": "src/node.rs", "role": "the certified-bundle adopt door (D-2, D-3)" },
+        { "fn": "pump_parked_page",                "file": "src/node_runtime.rs", "role": "the parked-page apply loop (C-H1)" },
+        { "fn": "on_block_page",                   "file": "src/node_runtime.rs", "role": "the served block-page loop (E-8's carrier)" },
+        { "fn": "graft_unfolded_carry",            "file": "src/node.rs", "role": "the fold carry's ancestor + carried-block install door (Dag::add_ancestor_anchor below it is the PLACEMENT, not the decision)" }
+      ],
+      "unlisted_doors_note": "Established by `grep -n 'fn .*block' src/node.rs src/dag.rs src/node_runtime.rs` for functions that place a Block into the DAG. Any door NOT in this list is outside the matrix and the matrix makes NO claim about it."
+    },
+
+    "tx": {
+      "_comment": "A transaction entering the pool. B3 (ingest_tx_prechecked x class_admissible) lives here.",
+      "checks": ["class_admissible", "wrapper_binds"],
+      "files": ["src/node.rs", "src/chain_object.rs", "src/mempool.rs"],
+      "doors": [
+        { "fn": "ingest_tx",            "file": "src/node.rs", "role": "reference - the gossip tx door" },
+        { "fn": "ingest_tx_prechecked", "file": "src/node.rs", "role": "the precheck-trusting sibling (B3)" },
+        { "fn": "ingest_tx_unverified", "file": "src/node.rs", "role": "the internal arm" }
+      ],
+      "unlisted_doors_note": "The three `fn ingest_tx*` arms in src/node.rs; no other production caller inserts into the pool through node.rs."
+    },
+
+    "record_page": {
+      "_comment": "A record/sidecar row reaching the shared fold sink. C-H2 lives here.",
+      "checks": ["root_fold_binding", "ordinal_placement", "class_admissible"],
+      "_checks_note": "The three ROOT-BINDING RELATIONS the 2026-09-07 audit names on the reference door, read out of `accept_fetched_record` itself rather than assumed: the certified-target close, the per-ordinal fold-to-root walk, and the ordinal placement. C-H2's finding is that the sidecar door runs NONE of them.",
+      "files": ["src/node.rs", "src/chain_object.rs", "src/spend_frontier.rs"],
+      "doors": [
+        { "fn": "accept_fetched_record", "file": "src/node.rs", "role": "reference - the record door" },
+        { "fn": "adopt_sidecar_row",     "file": "src/node.rs", "role": "the kind-5 sidecar page door (C-H2)" }
+      ],
+      "unlisted_doors_note": "Both named by the 2026-09-07 door audit as the two doors reaching the fold sink for this class."
+    },
+
+    "bulk_stream": {
+      "_comment": "The 16 MiB bulk body read. D-6 lives here: inbound x read_guard is empty, outbound x read_guard is filled.",
+      "checks": ["read_guard"],
+      "files": ["src/arti_transport.rs"],
+      "doors": [
+        { "fn": "bulk_exchange",     "file": "src/arti_transport.rs", "role": "reference - the OUTBOUND twin, wraps both reads in timeout(60s)" },
+        { "fn": "serve_bulk_stream", "file": "src/arti_transport.rs", "role": "the INBOUND door (D-6)" }
+      ],
+      "unlisted_doors_note": "The two halves of the same 4-byte-length + body wire exchange in src/arti_transport.rs."
+    }
+  },
+
+  "exemptions": [
+    {
+      "_schema": "Every exemption needs door, check, class and noncomputable_because. The generator REFUSES a reason written as a reachability claim and leaves the cell EMPTY.",
+      "class": "block",
+      "door": "preverify_block",
+      "check": "parents_present",
+      "noncomputable_because": "preverify_block is a pure header+proof function taking no &self: it holds no DAG, so parent presence is not a quantity in scope at this door. Its caller ingest_block_inner is the door that owns placement, and the matrix scores that row separately."
+    }
+  ]
+}

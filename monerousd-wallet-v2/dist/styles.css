@@ -1,0 +1,1936 @@
+/* Copyright (c) 2026, The MoneroUSD Protocol
+   SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root).
+   =========================================================================================
+   MonerousD Wallet V2 — design system. First-ever PQ desktop wallet (clean-room, Tauri).
+   Keeps the palette the user likes (dark charcoal + orange M) and the welcome-page layout,
+   and surpasses the prior visual polish: depth, motion, glass, precise type scale.
+   ========================================================================================= */
+
+:root {
+  /* ---- palette ---- */
+  --bg-0:        #0b0b0d;   /* app base, near-black charcoal */
+  --bg-1:        #101013;   /* raised surface */
+  --bg-2:        #17171b;   /* card */
+  --bg-3:        #1e1e24;   /* input / hover */
+  --stroke:      #26262e;   /* hairline borders */
+  --stroke-soft: #1c1c22;
+
+  --orange:      #ff6a00;   /* primary brand */
+  --orange-2:    #ff8a33;   /* lighter step for gradients */
+  --orange-deep: #d94e00;   /* pressed */
+  --orange-glow: rgba(255, 106, 0, 0.35);
+
+  --text-0:  #f5f5f7;       /* headings */
+  --text-1:  #c7c7cf;       /* body */
+  --text-2:  #8a8a95;       /* muted */
+  --text-3:  #5c5c66;       /* faint / placeholder */
+
+  --good:    #34d399;
+  --warn:    #fbbf24;
+  --bad:     #f87171;
+
+  --radius-s: 8px;
+  --radius:   14px;
+  --radius-l: 20px;
+
+  --shadow-1: 0 1px 0 rgba(255,255,255,0.03) inset, 0 8px 24px rgba(0,0,0,0.45);
+  --shadow-2: 0 20px 60px rgba(0,0,0,0.55);
+
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+  --mono: "SF Mono", "JetBrains Mono", "Roboto Mono", ui-monospace, Menlo, monospace;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font);
+  color: var(--text-1);
+  background: var(--bg-0);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  user-select: none;
+}
+button, input { font-family: inherit; }
+a { color: inherit; text-decoration: none; }
+
+/* Ambient depth: a warm orange glow low + a cool top vignette, layered under everything. */
+.ambient {
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(120% 80% at 50% 118%, rgba(255,106,0,0.16) 0%, rgba(255,106,0,0.05) 30%, transparent 60%),
+    radial-gradient(90% 60% at 50% -10%, rgba(120,140,255,0.05) 0%, transparent 55%),
+    var(--bg-0);
+}
+.ambient::after { /* faint film grain / star specks like the welcome bg */
+  content: ""; position: absolute; inset: 0; opacity: 0.5;
+  background-image: radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,0.05) 50%, transparent),
+                    radial-gradient(1px 1px at 70% 60%, rgba(255,255,255,0.04) 50%, transparent),
+                    radial-gradient(1px 1px at 40% 80%, rgba(255,255,255,0.03) 50%, transparent);
+}
+
+/* ============================= brand mark ============================= */
+.brand-mark { position: relative; width: 108px; height: 108px; }
+.brand-mark .ring {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at 50% 35%, #26262c, #0e0e11 70%);
+  box-shadow: 0 0 0 1px var(--stroke), 0 0 42px 2px var(--orange-glow), var(--shadow-2);
+}
+.brand-mark .m {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-weight: 800; font-size: 58px; letter-spacing: -2px;
+  background: linear-gradient(180deg, var(--orange-2), var(--orange) 55%, var(--orange-deep));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 2px 10px var(--orange-glow));
+}
+
+/* ============================= welcome screen ============================= */
+.welcome {
+  position: relative; z-index: 1;
+  min-height: 100vh; display: grid; place-items: center; padding: 40px 20px;
+}
+.welcome-card {
+  width: 100%; max-width: 460px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  animation: rise 0.6s var(--ease) both;
+}
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+.wordmark { margin-top: 26px; font-size: 30px; font-weight: 700; letter-spacing: -0.5px; color: var(--text-0); }
+.tagline { color: var(--text-2); font-size: 15px; margin-top: 2px; }
+
+.net-label { margin-top: 30px; font-size: 11px; letter-spacing: 2px; color: var(--text-3); font-weight: 600; }
+.net-toggle {
+  margin-top: 10px; display: inline-flex; padding: 4px; gap: 2px;
+  background: var(--bg-2); border: 1px solid var(--stroke); border-radius: 999px;
+}
+.net-toggle button {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 18px; border: 0; border-radius: 999px; cursor: pointer;
+  background: transparent; color: var(--text-2); font-size: 13px; font-weight: 600;
+  transition: color 0.2s var(--ease), background 0.2s var(--ease);
+}
+.net-toggle button .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.net-toggle button.active { background: var(--bg-3); color: var(--text-0); }
+.net-toggle button.active .dot { background: var(--orange); box-shadow: 0 0 8px var(--orange-glow); }
+/* A network that has not launched (MAINNET_OPEN in app.js): visibly there, plainly not selectable. */
+.net-toggle button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.status-line { margin-top: 16px; font-family: var(--mono); font-size: 12px; color: var(--text-3); min-height: 16px; }
+.status-line .blink { color: var(--orange); animation: blink 1.4s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0.25; } }
+
+.actions { margin-top: 22px; width: 100%; display: flex; flex-direction: column; gap: 12px; }
+
+/* ============================= buttons ============================= */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  border: 0; cursor: pointer; border-radius: var(--radius);
+  font-size: 15px; font-weight: 650; letter-spacing: 0.1px;
+  transition: transform 0.12s var(--ease), box-shadow 0.2s var(--ease), background 0.2s var(--ease);
+}
+.btn:active { transform: translateY(1px) scale(0.995); }
+.btn-primary {
+  padding: 16px 20px; color: #fff;
+  background: linear-gradient(180deg, var(--orange-2), var(--orange) 60%);
+  box-shadow: 0 10px 26px -8px var(--orange-glow), 0 1px 0 rgba(255,255,255,0.25) inset;
+}
+.btn-primary:hover { box-shadow: 0 14px 34px -8px var(--orange-glow), 0 1px 0 rgba(255,255,255,0.3) inset; }
+.btn-primary .sub { display: block; font-size: 12px; font-weight: 500; opacity: 0.85; margin-top: 2px; }
+
+.btn-ghost {
+  padding: 14px 18px; color: var(--text-1); text-align: left; justify-content: flex-start;
+  background: var(--bg-2); border: 1px solid var(--stroke);
+}
+.btn-ghost:hover { background: var(--bg-3); border-color: #33333d; }
+.btn-ghost .ic {
+  width: 38px; height: 38px; flex: 0 0 38px; border-radius: 10px; display: grid; place-items: center;
+  background: rgba(255,106,0,0.12); color: var(--orange); font-size: 17px;
+}
+.btn-ghost .txt { display: flex; flex-direction: column; }
+.btn-ghost .txt b { color: var(--text-0); font-size: 14px; font-weight: 650; }
+.btn-ghost .txt span { color: var(--text-2); font-size: 12px; font-weight: 500; }
+
+/* pill / tag for PQ badge */
+.pq-badge {
+  margin-top: 26px; display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 14px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+  color: var(--text-2); background: rgba(255,255,255,0.03); border: 1px solid var(--stroke-soft);
+}
+.pq-badge b { color: var(--text-1); }
+.pq-badge .shield { color: var(--orange); }
+
+/* ============================= sheets (create / restore) ============================= */
+.sheet {
+  width: 100%; max-width: 460px; position: relative; z-index: 1;
+  display: flex; flex-direction: column; gap: 14px;
+  /* Legible glass card so the Create / Restore form reads cleanly over the persistent starfield backdrop. */
+  background: rgba(13,13,18,0.78); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border: 1px solid var(--stroke); border-radius: var(--radius-l);
+  padding: 22px 22px 26px; box-shadow: 0 22px 64px rgba(0,0,0,0.5);
+  animation: rise 0.5s var(--ease) both;
+}
+.sheet-head { display: flex; align-items: center; gap: 12px; }
+.sheet-head h2 { color: var(--text-0); font-size: 22px; font-weight: 700; letter-spacing: -0.4px; }
+.icon-btn {
+  width: 38px; height: 38px; flex: 0 0 38px; border-radius: 10px; cursor: pointer;
+  background: var(--bg-2); border: 1px solid var(--stroke); color: var(--text-1); font-size: 18px;
+  transition: background 0.2s var(--ease);
+}
+.icon-btn:hover { background: var(--bg-3); }
+.sheet-sub { color: var(--text-2); font-size: 13.5px; line-height: 1.55; }
+
+.field-label { color: var(--text-2); font-size: 12px; font-weight: 600; letter-spacing: 0.3px; margin-top: 2px; }
+.field {
+  width: 100%; background: var(--bg-2); border: 1px solid var(--stroke); border-radius: var(--radius);
+  color: var(--text-0); font-size: 14px; padding: 14px 16px; resize: none; outline: none;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.field:focus { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(255,106,0,0.14); }
+.field::placeholder { color: var(--text-3); }
+.seed-input { font-family: var(--mono); line-height: 1.5; }
+
+.seed-box {
+  background: var(--bg-1); border: 1px dashed var(--stroke); border-radius: var(--radius);
+  color: var(--orange-2); font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  padding: 16px; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto;
+  user-select: text;
+}
+.btn.full { width: 100%; }
+.msg { min-height: 18px; font-size: 13px; color: var(--text-2); text-align: center; line-height: 1.5; }
+
+.hidden { display: none !important; }
+
+/* ============================ HOME (desktop two-pane app) ============================ */
+.app {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  position: relative;   /* above the fixed .ambient (z-index:0) — else the opaque ambient paints over */
+  z-index: 1;
+}
+/* --- left sidebar: brand + nav + live status + logout --- */
+.sidebar {
+  display: flex; flex-direction: column; gap: 20px;
+  padding: 22px 16px;
+  background: var(--bg-1);
+  border-right: 1px solid var(--stroke);
+}
+.sidebar .brand-mini { padding: 4px 8px; }
+.nav { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.nav-item {
+  display: flex; align-items: center; gap: 11px;
+  padding: 11px 12px; border-radius: 10px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--text-2);
+  font-size: 14px; font-weight: 600; text-align: left;
+  transition: background .16s var(--ease), color .16s var(--ease), border-color .16s var(--ease);
+}
+.nav-item:hover { background: var(--bg-2); color: var(--text-1); }
+.nav-item.active { background: var(--bg-2); color: var(--text-0); border-color: var(--stroke); }
+.nav-item.active .nav-ic { color: var(--orange); }
+.nav-ic { width: 18px; text-align: center; font-size: 15px; color: var(--text-3); }
+.sidebar-foot { margin-top: auto; display: flex; flex-direction: column; gap: 12px; padding: 0 4px; }
+.btn-logout {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; width: 100%; cursor: pointer;
+  padding: 9px 12px; border-radius: 9px;
+  background: var(--bg-2); border: 1px solid var(--stroke); color: var(--text-2);
+  font-size: 12.5px; font-weight: 600; letter-spacing: .2px;
+  transition: background 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.btn-logout:hover { background: var(--bg-3); color: var(--text-1); border-color: var(--orange); }
+.btn-logout:active { transform: translateY(1px); }
+.btn-logout .lo-ic { font-size: 14px; line-height: 1; color: var(--orange); }
+.brand-mini { display: flex; align-items: center; gap: 9px; font-weight: 700; color: var(--text-1); letter-spacing: .2px; }
+.m-mini {
+  display: grid; place-items: center;
+  width: 26px; height: 26px; border-radius: 8px;
+  background: linear-gradient(150deg, var(--orange), var(--orange-deep));
+  color: #fff; font-weight: 800; font-size: 15px;
+  box-shadow: 0 0 14px var(--orange-glow);
+}
+.status-line.small { font-size: 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace; padding: 0 4px; }
+
+/* --- right content area: one active view at a time (nav switches it) --- */
+.content { padding: 26px clamp(24px, 4vw, 56px) 44px; overflow-y: auto; height: 100vh; }
+.view { display: none; max-width: 720px; }
+.view.active { display: block; animation: viewIn .18s var(--ease); }
+@keyframes viewIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.view-head { margin-bottom: 20px; }
+.view-head h1 { font-size: 26px; font-weight: 800; letter-spacing: -.4px; color: var(--text-0); }
+.view-sub { margin-top: 4px; font-size: 13px; color: var(--text-3); }
+
+.card {
+  padding: 22px; border-radius: var(--radius-l);
+  background: var(--bg-1); border: 1px solid #22222a;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.card-note { color: var(--text-3); font-size: 12.5px; line-height: 1.55; }
+/* Earn — the live stake terms row (governance-set lock + reward rate, mirrored from the node). */
+.stake-terms { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 10px 0 8px; padding: 9px 12px; border: 1px solid var(--stroke); border-radius: var(--radius-m);
+  background: rgba(255,255,255,0.02); font-size: 12.5px; font-weight: 600; }
+.stake-terms .st-lock { color: var(--text-2); }
+.stake-terms .st-apr { color: var(--good, #43d17a); }
+/* Earn — lock-tier selector + claimable-reward row (match the action-card / stake-terms language) */
+.lock-tier-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 2px 0 10px; }
+.lock-tier-lbl { color: var(--text-2); font-size: 12.5px; font-weight: 600; }
+.lock-tier-select {
+  flex: 1; max-width: 64%; box-sizing: border-box; padding: 10px 12px;
+  border-radius: var(--radius-s); background: var(--bg-0); border: 1px solid var(--stroke);
+  color: var(--text-1, #eaeaf0); font-size: 13px; font-weight: 600; font-family: var(--font); cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-2) 50%), linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
+  background-position: calc(100% - 16px) center, calc(100% - 11px) center; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+}
+.lock-tier-select:focus { outline: none; border-color: var(--orange); }
+.reward-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin: 12px 0 4px; padding: 12px 14px; border: 1px solid var(--stroke); border-radius: var(--radius);
+  background: linear-gradient(120deg, rgba(52,211,153,.06), rgba(255,255,255,.015)); }
+.reward-info { display: flex; flex-direction: column; gap: 2px; }
+.reward-lbl { color: var(--text-2); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.reward-val { color: var(--good, #34d399); font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.reward-claim { min-width: 92px; padding: 9px 18px; font-size: 13px; flex: 0 0 auto; }
+.reward-row.has-reward { border-color: rgba(52,211,153,.42); box-shadow: 0 0 0 1px rgba(52,211,153,.15) inset; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; margin: 28px 0 12px; font-size: 13px; color: var(--text-2); font-weight: 600; }
+.link-btn { background: none; border: none; color: var(--orange-2); font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 4px; }
+.link-btn:hover { color: var(--orange); }
+
+.balance-card {
+  padding: 28px;
+  border-radius: var(--radius-l);
+  background:
+    radial-gradient(130% 130% at 8% -20%, rgba(255,106,0,.12), transparent 55%),
+    var(--bg-2);
+  border: 1px solid #24242b;
+}
+.balance-label { font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-3); }
+.balance-amount {
+  margin: 8px 0 6px;
+  font-size: clamp(38px, 5vw, 54px);
+  font-weight: 800;
+  letter-spacing: -1px;
+  color: var(--text-0);
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+}
+.balance-sub { font-size: 12.5px; color: var(--text-2); }
+.balance-actions { display: flex; gap: 10px; margin-top: 18px; }
+.chip {
+  padding: 10px 20px; border-radius: 10px; cursor: pointer;
+  background: var(--bg-3); border: 1px solid var(--stroke); color: var(--text-1);
+  font-size: 13.5px; font-weight: 600;
+  transition: background .16s var(--ease), transform .1s var(--ease);
+}
+.chip:hover { background: #303038; }
+.chip:active { transform: translateY(1px); }
+.chip-primary { background: linear-gradient(150deg, var(--orange), var(--orange-deep)); border-color: transparent; color: #fff; box-shadow: 0 0 16px var(--orange-glow); }
+.chip-primary:hover { filter: brightness(1.06); background: linear-gradient(150deg, var(--orange), var(--orange-deep)); }
+
+/* Activity — received PQ notes, read live from the incremental owned-note set (real on-chain data). */
+.activity-list { display: flex; flex-direction: column; gap: 8px; }
+.activity-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-radius: var(--radius-s);
+  background: var(--bg-0); border: 1px solid #22222a;
+}
+.activity-left { display: flex; flex-direction: column; gap: 3px; }
+.activity-kind { color: var(--text-1, var(--text-2)); font-weight: 600; font-size: 14px; }
+.activity-meta { color: var(--text-3); font-size: 12px; }
+.activity-amt { color: var(--good); font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; }
+/* Direction-aware activity: received (in) keeps the green amount; sent/staked (out) is neutral; a pending send
+   (its input note not yet nullified on-chain) shows amber until the live nullifier check confirms it. */
+.activity-amt.out { color: var(--text-1, var(--text-2)); }
+.activity-amt.pending { color: var(--warn, #d9a441); }
+/* A received note that has since been spent on-chain (chain-derived from the node's public nullifier set, so it
+   survives restart): mute + strike the amount so the timeline honestly shows the money came in but has left. */
+.activity-amt.spent { color: var(--text-2); text-decoration: line-through; opacity: 0.65; }
+.activity-kind.k-out { color: var(--text-2); }
+/* A Buy is a SWAP, not a credit — neutral amount (never the green +USDm of a real Received note) + a distinct
+   orange "Swap" chip, so the swap row and the note it settles never read as a double count. */
+.activity-amt.swap { color: var(--text-1, var(--text-2)); }
+/* A swap the live node no longer backs (chain was reset below its settled block) — voided, never a phantom confirm. */
+.activity-amt.stale { color: var(--text-2); text-decoration: line-through; opacity: 0.55; }
+.activity-kind.k-swap { color: var(--orange); display: inline-flex; align-items: center; }
+
+/* ── Real MoneroUSD coin mark, painted into every brand mount ([data-usdm-logo]) ── */
+[data-usdm-logo] svg { width: 100%; height: 100%; display: block; }
+.brand-mark[data-usdm-logo] { border-radius: 50%; box-shadow: 0 0 42px 2px var(--orange-glow), var(--shadow-2); }
+.m-mini[data-usdm-logo], .dc-logo[data-usdm-logo] { background: none; border: none; }
+/* Paired asset logos in the unified swap activity row (from-asset + to-asset, overlapped like a coin pair). */
+.asset-logo { display: inline-flex; width: 16px; height: 16px; vertical-align: middle; }
+.asset-logo svg { width: 100%; height: 100%; display: block; border-radius: 50%; }
+.swap-logos { display: inline-flex; align-items: center; margin-right: 6px; }
+.swap-logos .asset-logo + .asset-logo { margin-left: -5px; }
+.activity-empty { color: var(--text-3); font-size: 13px; padding: 8px 2px; }
+/* Governance — propose row + one row per open proposal with its live tally + a Vote button. */
+.gov-propose { display: flex; gap: 8px; margin-bottom: 10px; }
+.gov-propose > * { flex: 1; }
+.gov-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px;
+  border-radius: var(--radius-s); background: var(--bg-0); border: 1px solid #22222a; margin-bottom: 8px; }
+.gov-meta { font-size: 14px; color: var(--text-1, var(--text-2)); }
+.gov-vote { width: auto; flex: 0 0 auto; padding: 8px 18px; }
+/* Settings — live wallet + node facts (never cached); Lock wipes the in-process keys. */
+.settings-rows { display: flex; flex-direction: column; gap: 8px; }
+.settings-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding: 11px 13px; border-radius: var(--radius-s);
+  background: var(--bg-0); border: 1px solid #22222a;
+}
+.settings-k { color: var(--text-2); font-size: 12.5px; flex: 0 0 auto; }
+.settings-v {
+  color: var(--text-1, var(--text-0)); font-size: 12px; text-align: right;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace; word-break: break-all;
+}
+.settings-empty { color: var(--text-3); font-size: 13px; padding: 8px 2px; }
+.earn-note { color: var(--text-3); font-size: 12px; line-height: 1.5; padding: 2px 2px 0; }
+.field-label { font-size: 12px; letter-spacing: .4px; color: var(--text-2); text-transform: uppercase; }
+
+/* MonerousD DEBIT CARD — the Pay hub: live balance + the wallet's @username handle, Apple-Pay-card aesthetic. */
+.debit-card {
+  position: relative; overflow: hidden;
+  /* Real payment-card proportions (ISO/IEC 7810 ID-1 = 85.6mm × 54mm ≈ 1.585:1), so it reads as a CARD, not a
+     stretched banner. Capped width keeps it card-sized on the wide desktop content pane. */
+  width: 100%; max-width: 400px; margin: 0 auto 6px; aspect-ratio: 1.585 / 1;
+  padding: 22px 24px; border-radius: var(--radius-l);
+  background:
+    radial-gradient(120% 150% at 88% -15%, rgba(255,106,0,.30), transparent 55%),
+    linear-gradient(155deg, #1d1d23, #111116);
+  border: 1px solid #2b2b34;
+  box-shadow: 0 12px 34px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.05);
+  display: flex; flex-direction: column; justify-content: space-between; gap: 14px;
+}
+.debit-card::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(122deg, transparent 42%, rgba(255,255,255,.05) 50%, transparent 58%);
+}
+.dc-top { display: flex; align-items: center; justify-content: space-between; }
+.dc-brand { display: flex; align-items: center; gap: 10px; font-weight: 800; letter-spacing: -.3px; color: var(--text-0); font-size: 15px; }
+.dc-logo { width: 30px; height: 30px; border-radius: 9px; background: radial-gradient(circle at 30% 25%, #2a2a30, #101014); border: 1px solid #33333c; display: grid; place-items: center; color: var(--orange); font-weight: 900; box-shadow: 0 0 12px var(--orange-glow); }
+.dc-chip { width: 34px; height: 24px; border-radius: 6px; background: linear-gradient(135deg, #dcae4c, #b9822a); box-shadow: inset 0 1px 1px rgba(255,255,255,.45), inset 0 -1px 2px rgba(0,0,0,.3); }
+.dc-bal-label { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text-3); }
+.dc-bal { font-size: clamp(30px, 4.4vw, 42px); font-weight: 800; letter-spacing: -1px; color: var(--text-0); font-variant-numeric: tabular-nums; line-height: 1.05; }
+.dc-bal-cur { font-size: 16px; font-weight: 700; color: var(--text-2); margin-left: 7px; }
+.dc-bottom { display: flex; align-items: flex-end; justify-content: space-between; }
+.dc-holder { font-size: 13px; font-weight: 700; color: var(--text-1); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.dc-holder .muted { color: var(--text-3); font-weight: 400; }
+.dc-net { font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--text-3); }
+
+/* Pay / Request segmented control */
+.seg { display: flex; gap: 4px; padding: 4px; background: var(--bg-1); border: 1px solid #22222a; border-radius: 12px; margin: 18px 0 8px; }
+.seg-btn { flex: 1; padding: 9px; border: none; background: transparent; color: var(--text-2); font-size: 13.5px; font-weight: 700; border-radius: 9px; cursor: pointer; transition: background .15s var(--ease), color .15s var(--ease); }
+.seg-btn.active { background: linear-gradient(150deg, var(--orange), var(--orange-deep)); color: #fff; box-shadow: 0 0 14px var(--orange-glow); }
+
+/* Compact @username claimer — a slim bar directly under the debit card (a tradeable chain asset, not a bulky card). */
+.uname { margin: 6px 0 2px; }
+.uname-row { display: flex; align-items: center; gap: 8px; background: var(--bg-1); border: 1px solid #22222a; border-radius: 12px; padding: 5px 6px 5px 12px; }
+.uname-at { color: var(--text-3); font-weight: 700; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.uname-input { flex: 1; background: transparent; border: none; outline: none; color: var(--text-0); font-size: 14px; padding: 7px 0; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.uname-input::placeholder { color: var(--text-3); }
+.uname-btn { padding: 8px 18px; font-size: 13px; border-radius: 9px; flex: 0 0 auto; }
+.uname-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 4px 0; }
+.uname-note { color: var(--text-3); font-size: 11.5px; }
+.uname-owned { color: #3fbf72; font-size: 11.5px; font-weight: 700; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.uname-status { padding: 3px 4px 0; }
+.uname-status:empty { display: none; }
+/* External block-explorer link (BTC/XMR bridge chains) — opened via the OS opener command, not target=_blank. */
+.explorer-link { color: var(--orange); cursor: pointer; text-decoration: none; }
+.explorer-link:hover { text-decoration: underline; }
+
+/* Buy — atomic-swap card: a big amount field, asset toggle, then the action directly under it. */
+.buy-card { display: flex; flex-direction: column; }
+.buy-amount-field {
+  display: flex; align-items: baseline; gap: 12px;
+  background: var(--bg-1); border: 1px solid #22222a; border-radius: var(--radius);
+  padding: 16px 20px;
+}
+.buy-amount-field:focus-within { border-color: var(--orange); box-shadow: 0 0 0 2px var(--orange-glow); }
+.buy-amount-label { color: var(--text-2); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.buy-amount-input {
+  flex: 1; min-width: 0; border: none; background: transparent; outline: none;
+  color: var(--text-0); font-size: 30px; font-weight: 700; letter-spacing: -0.6px;
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+.buy-amount-input::placeholder { color: var(--text-3); }
+.buy-amount-input::-webkit-outer-spin-button,
+.buy-amount-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.buy-amount-unit { color: var(--text-1); font-size: 15px; font-weight: 700; min-width: 34px; text-align: right; }
+/* Small icon to flip the deposit input between a USD amount and a crypto (BTC/XMR) amount — user's choice, live-converted. */
+.buy-unit-toggle {
+  flex: none; width: 26px; height: 26px; padding: 0; border-radius: 8px; cursor: pointer;
+  border: 1px solid #2c2c36; background: var(--bg-2); color: var(--text-2);
+  font-size: 14px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+  transition: border-color .12s, color .12s, background .12s;
+}
+.buy-unit-toggle:hover { border-color: var(--orange); color: var(--orange); background: var(--orange-glow); }
+/* Live "you'll receive N USDm" — small orange, recomputed from the live price as the deposit amount is typed. */
+.buy-receive { margin: 8px 2px 2px; font-size: 12.5px; font-weight: 600; color: var(--orange-2); min-height: 16px; }
+.buy-receive b { color: var(--orange); font-weight: 800; }
+.buy-paywith { margin-top: 18px; }
+.buy-seg { margin: 8px 0 0; }
+.buy-asset-mark { font-weight: 800; opacity: .92; margin-right: 3px; }
+.buy-go { margin-top: 16px; }
+.buy-rows:empty { display: none; }
+.buy-note { margin-top: 16px; }
+
+/* Swap — id bar + live bidirectional stage tracker + history. */
+.swap-idbar { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; font-size: 13px; color: var(--text-1); }
+.swap-idbar > span { margin-right: auto; } /* push the id left so Copy + Cancel group on the right */
+.swap-idbar b { color: var(--text-0); font-family: var(--mono, ui-monospace, monospace); letter-spacing: .3px; }
+.swap-copy { border: 1px solid #2a2a32; background: var(--bg-1); color: var(--text-2); font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 8px; cursor: pointer; }
+.swap-copy:hover { color: var(--text-0); border-color: var(--orange); }
+.swap-cancel { border: 1px solid #3a2530; background: rgba(220,60,80,.12); color: #e5738a; font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 8px; cursor: pointer; }
+.swap-cancel:hover { color: #fff; background: rgba(220,60,80,.85); border-color: rgba(220,60,80,.85); }
+.swap-cancel.armed { color: #fff; background: rgba(220,60,80,.95); border-color: rgba(220,60,80,.95); }
+.swap-cancel:disabled { opacity: .6; cursor: default; }
+.swap-tracker { position: relative; display: flex; justify-content: space-between; gap: 6px; margin: 14px 2px 18px; padding-top: 6px; }
+.swap-tracker::before { content: ""; position: absolute; top: 17px; left: 24px; right: 24px; height: 2px; background: #24242c; border-radius: 2px; }
+.swap-track-fill { position: absolute; top: 17px; left: 24px; height: 2px; background: linear-gradient(90deg, var(--good), #1f8f5f); border-radius: 2px; transition: width .5s var(--ease); max-width: calc(100% - 48px); }
+.swap-step { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; text-align: center; flex: 1; min-width: 0; }
+.swap-dot { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--bg-3); border: 2px solid #2a2a32; color: var(--text-3); font-size: 12px; font-weight: 800; transition: all .3s var(--ease); }
+.swap-step.done .swap-dot { background: linear-gradient(150deg, var(--good), #1f8f5f); border-color: transparent; color: #fff; }
+.swap-step.now .swap-dot { position: relative; border-color: var(--orange); color: transparent; box-shadow: 0 0 0 4px var(--orange-glow); animation: swapPulse 1.4s var(--ease) infinite; }
+/* A live, MOVING green dot layered ON TOP of the orange "now" ring — the completed steps are solid green, and this
+   pulsing green core is the leading edge, so the in-progress step reads unmistakably as "progressing to green". */
+.swap-step.now .swap-dot::after { content: ""; position: absolute; inset: 5px; border-radius: 50%; background: var(--good); box-shadow: 0 0 8px 1px rgba(52,211,153,.9); animation: swapDotGreen 1.05s var(--ease) infinite; }
+@keyframes swapDotGreen { 0%, 100% { transform: scale(.4); opacity: .45; } 50% { transform: scale(1); opacity: 1; } }
+@keyframes swapPulse { 0%,100% { box-shadow: 0 0 0 3px var(--orange-glow); } 50% { box-shadow: 0 0 0 7px transparent; } }
+.swap-step-label { margin-top: 7px; font-size: 11px; font-weight: 700; color: var(--text-2); line-height: 1.2; }
+.swap-step.done .swap-step-label, .swap-step.now .swap-step-label { color: var(--text-0); }
+.swap-step-sub { font-size: 10px; color: var(--text-3); margin-top: 1px; }
+.swap-ok { color: var(--text-0); border-color: rgba(255,150,60,.35) !important; }
+.swap-history { margin-top: 8px; }
+.swap-hist-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: var(--bg-2); border: 1px solid #1f1f26; border-radius: var(--radius-s); margin-bottom: 6px; cursor: pointer; transition: border-color .15s var(--ease); }
+.swap-hist-row:hover { border-color: var(--orange); }
+.swap-hist-left { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.swap-hist-id { font-family: var(--mono, ui-monospace, monospace); font-size: 12.5px; font-weight: 700; color: var(--text-0); }
+.swap-hist-meta { font-size: 12px; color: var(--text-2); }
+.swap-hist-status { font-size: 11.5px; font-weight: 700; color: var(--text-2); white-space: nowrap; }
+.swap-hist-status.ok { color: #4ec77f; }
+.swap-hist-status.pending { color: var(--orange); }
+
+/* Send form */
+.send-avail { color: var(--orange-2); font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.addr-input, .amt-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border-radius: var(--radius-s);
+  background: var(--bg-0);
+  border: 1px solid #22222a;
+  color: var(--text-1);
+  font-size: 13px;
+  outline: none;
+  resize: vertical;
+}
+.addr-input { font-family: ui-monospace, "SF Mono", Menlo, monospace; line-height: 1.5; }
+.addr-input:focus, .amt-input:focus { border-color: var(--orange); box-shadow: 0 0 0 2px var(--orange-glow); }
+.send-status { min-height: 18px; font-size: 12.5px; font-weight: 600; }
+.send-status.ok { color: #46c46a; }
+.send-status.err { color: #e5544b; }
+
+.addr-box {
+  margin: 0;
+  padding: 14px;
+  border-radius: var(--radius-s);
+  background: var(--bg-0);
+  border: 1px solid #22222a;
+  color: var(--orange-2);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+  white-space: pre-wrap;
+  max-height: 140px;
+  overflow-y: auto;
+}
+/* Scannable reserve-deposit QR (inline SVG from wallet_qr_svg) + block-explorer link on the Buy swap card. */
+.dep-qr {
+  display: flex;
+  justify-content: center;
+  margin: 10px auto 12px;
+  padding: 12px;
+  width: fit-content;
+  background: #ffffff;
+  border-radius: var(--radius-s);
+  border: 1px solid #22222a;
+}
+.dep-qr svg { width: 176px; height: 176px; display: block; }
+.dep-explorer { margin-top: 10px; text-align: center; font-size: 12px; }
+/* Receive-address QR — same white-tile treatment as the Buy deposit QR so the receive address is phone-scannable. */
+.recv-qr {
+  display: flex;
+  justify-content: center;
+  margin: 4px auto 12px;
+  padding: 12px;
+  width: fit-content;
+  background: #ffffff;
+  border-radius: var(--radius-s);
+  border: 1px solid #22222a;
+}
+.recv-qr:empty { display: none; }
+.recv-qr svg { width: 188px; height: 188px; display: block; }
+/* Pending-mint amount in the balance sub-line: USDm whose BTC/XMR deposit is confirming — visible, not spendable. */
+.bal-pending { color: var(--warn); font-weight: 600; }
+.dep-explorer a { color: var(--orange-2); text-decoration: none; }
+.dep-explorer a:hover { text-decoration: underline; }
+
+/* ── POS · private post-quantum tap-to-pay terminal (Apple-Pay / Stripe analog) ───────────────────────────── */
+.pos-amt-input { text-align: center; font-size: 26px; font-weight: 700; letter-spacing: -.5px; }
+.pos-terminal { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 6px 0 2px; }
+.pos-amount { font-size: 52px; font-weight: 800; letter-spacing: -1.5px; color: var(--text-0, #f4f4f6); line-height: 1.05; }
+.pos-amount-cur { font-size: 18px; font-weight: 600; color: var(--text-2); margin-left: 8px; letter-spacing: 0; }
+.pos-merchant { margin-top: 4px; font-size: 13px; color: var(--text-2); }
+.pos-tap { margin: 22px 0 10px; display: flex; flex-direction: column; align-items: center; }
+.pos-tap-ring {
+  width: 128px; height: 128px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 42%, rgba(255,106,0,.20), rgba(255,106,0,.04) 60%, transparent 72%);
+  border: 2px solid var(--orange); box-shadow: 0 0 0 0 var(--orange-glow);
+  animation: pos-pulse 1.8s ease-out infinite;
+}
+.pos-tap-ico { font-size: 46px; line-height: 1; filter: drop-shadow(0 2px 6px rgba(255,106,0,.45)); }
+@keyframes pos-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--orange-glow); }
+  70%  { box-shadow: 0 0 0 22px rgba(255,106,0,0); }
+  100% { box-shadow: 0 0 0 0 rgba(255,106,0,0); }
+}
+.pos-tap-label { margin-top: 16px; font-size: 15px; font-weight: 600; color: var(--text-1); }
+.pos-tap-sub { margin-top: 3px; font-size: 12px; color: var(--text-3); letter-spacing: .3px; }
+.pos-status { margin-top: 8px; font-size: 14px; font-weight: 600; color: var(--text-2); min-height: 20px; }
+.pos-status.ok { color: var(--good); }
+.pos-status.err { color: var(--bad); }
+.pos-expiry { margin-top: 4px; font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.pos-actions { width: 100%; margin-top: 16px; }
+/* Paid: the pulsing NFC ring turns solid green with a check — the terminal's "approved" state. */
+.pos-tap.paid .pos-tap-ring {
+  border-color: var(--good); background: radial-gradient(circle at 50% 42%, rgba(52,211,153,.22), transparent 72%);
+  animation: none; box-shadow: 0 0 22px rgba(52,211,153,.35);
+}
+.pos-tap.paid .pos-tap-ico::after { content: '✓'; }
+.pos-tap.paid .pos-tap-ico { font-size: 0; }
+.pos-tap.paid .pos-tap-ico::after { font-size: 52px; color: var(--good); }
+.pos-tap.paid .pos-tap-label { color: var(--good); }
+
+/* ── Earn / Governance redesign — stat heroes + action cards + cross-link CTA ──────────────────────────────── */
+.stat-hero { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
+.stat-card {
+  background: linear-gradient(160deg, rgba(255,106,0,.07), rgba(23,23,27,.6) 55%);
+  border: 1px solid var(--stroke); border-radius: 16px; padding: 16px 12px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+}
+.stat-ic {
+  width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; font-size: 17px;
+  background: rgba(255,106,0,.12); color: var(--orange-2); margin-bottom: 4px;
+}
+.stat-val { font-size: 19px; font-weight: 750; color: var(--text-0, #f4f4f6); letter-spacing: -.4px; line-height: 1.1; }
+.stat-lbl { font-size: 10.5px; color: var(--text-3); letter-spacing: .4px; text-transform: uppercase; }
+
+.action-card .ac-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; gap: 10px; }
+.action-card .ac-title { font-size: 15px; font-weight: 650; color: var(--text-1); }
+.action-card .ac-head .send-avail { margin: 0; font-size: 12px; }
+
+.cta-link {
+  display: flex; align-items: center; gap: 14px; margin-top: 16px; padding: 15px 18px; cursor: pointer;
+  border: 1px solid var(--stroke); border-radius: 16px;
+  background: linear-gradient(120deg, rgba(255,106,0,.10), rgba(23,23,27,.4));
+  transition: border-color .15s, transform .15s, background .15s;
+}
+.cta-link:hover { border-color: rgba(255,106,0,.6); transform: translateY(-1px); background: linear-gradient(120deg, rgba(255,106,0,.17), rgba(23,23,27,.4)); }
+.cta-ic { font-size: 25px; line-height: 1; }
+.cta-txt { flex: 1; display: flex; flex-direction: column; }
+.cta-txt b { font-size: 14px; color: var(--text-0, #f0f0f2); }
+.cta-txt span { font-size: 12.5px; color: var(--text-2); margin-top: 2px; }
+.cta-arrow { font-size: 19px; color: var(--orange-2); }
+
+/* ── Welcome deep-space flythrough — a WebGL-free <canvas> of scientifically-coloured planets drifting past as
+      the camera travels through space, lit by a distant orange sun (painted by WelcomeSpace in app.js). Black
+      stays dominant; the card sits above a soft scrim so text always stays crisp. ──────────────────────────── */
+.welcome-card { position: relative; z-index: 2; }
+.welcome-space {
+  position: fixed; inset: 0; z-index: 0; display: block; width: 100vw; height: 100vh;
+  pointer-events: none; background: #05050a;
+}
+/* Readability scrim: a gentle dark lens over the canvas but under the card — guarantees text contrast no matter
+   which world drifts behind, and keeps the black-space feel. Also the graceful fallback if <canvas> is absent. */
+.space-scrim {
+  position: fixed; inset: 0; z-index: 1; pointer-events: none;
+  background:
+    radial-gradient(42% 40% at 50% 50%, rgba(4,4,10,.60), transparent 72%),
+    radial-gradient(135% 120% at 50% 40%, transparent 46%, rgba(2,2,6,.72));
+}
+
+/* ── Tap to Pay (payer side of the POS tap-to-pay) — reads a charge, biometric-authorizes, withdraws USDm ── */
+/* Apple-Pay present: the debit card FLIP-moves to center screen (JS owns the motion); dc-ready = glow + reveal NFC. */
+.debit-card { position: relative; transition: box-shadow .45s var(--ease); }
+.debit-card.dc-ready { box-shadow: 0 30px 70px -14px rgba(0,0,0,.7), 0 0 0 1px var(--orange), 0 0 44px var(--orange-glow); z-index: 5; }
+.dc-nfc { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  border-radius: inherit; background: rgba(10,10,14,.72); backdrop-filter: blur(3px); text-align: center; }
+.debit-card.dc-ready .dc-nfc, .debit-card.dc-paid .dc-nfc { display: flex; }
+.debit-card.dc-paid .dc-nfc { background: rgba(6,20,12,.82); }
+/* The pulse runs for as long as the buyer holds the phone near the reader (up to the 18s BLE window), and it
+   sits INSIDE `.dc-nfc`, which carries a backdrop-filter. Without its own layer the browser repaints that
+   blurred region on every frame of the pulse for the whole wait — steady, visible stutter behind the prompt.
+   `will-change: transform` composites the pulse instead; it is scoped to this 34px glyph, not the card. */
+.dc-nfc-ico { font-size: 34px; line-height: 1; animation: nfc-pulse 1.3s var(--ease) infinite; will-change: transform; }
+.debit-card.dc-paid .dc-nfc-ico { animation: none; }
+.dc-nfc-label { font-size: 15px; font-weight: 800; color: #fff; letter-spacing: .01em; }
+.dc-nfc-sub { font-size: 11.5px; font-weight: 600; color: var(--good, #34d399); }
+@keyframes nfc-pulse { 0%,100% { transform: scale(1); opacity: .9; } 50% { transform: scale(1.18); opacity: 1; } }
+/* "Pay in person" trigger row (under Pay-to) — design-system tokens only, matches the wallet's list rows. */
+.tap-inline { display: flex; align-items: center; gap: 12px; width: 100%; margin: 10px 0 4px; padding: 12px 14px;
+  background: rgba(255,255,255,.02); border: 1px solid var(--stroke); border-radius: var(--radius-s);
+  color: var(--text-1, #eaeaf0); cursor: pointer; text-align: left; transition: border-color .15s, background .15s, transform .08s; }
+.tap-inline:hover { border-color: var(--orange); background: rgba(255,106,0,.06); }
+.tap-inline:active { transform: scale(.99); }
+.tap-inline-ic { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; flex: 0 0 36px;
+  border-radius: 10px; background: rgba(255,106,0,.10); color: var(--orange); }
+.tap-inline-ic svg { width: 20px; height: 20px; }
+.tap-inline-tx { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+.tap-inline-tx b { font-size: 13.5px; font-weight: 700; color: var(--text-1, #eaeaf0); }
+.tap-inline-tx small { font-size: 11.5px; font-weight: 500; color: var(--text-3); }
+.tap-inline-go { color: var(--text-3); font-size: 20px; font-weight: 400; line-height: 1; }
+/* Merchant product catalog (POS) — add items + prices, tap to build a sale. */
+.pos-cat-head { display: flex; align-items: center; justify-content: space-between; margin: 2px 0 10px; }
+.pos-cat-head .ac-title { font-size: 13px; font-weight: 700; }
+.pos-cat-toggle, .pos-cart-clear { background: none; border: none; color: var(--orange-2, #ff8a3d); font-size: 12.5px; font-weight: 600; cursor: pointer; padding: 2px 4px; }
+.pos-cat-toggle:hover, .pos-cart-clear:hover { color: var(--orange); }
+.pos-add-row { display: grid; grid-template-columns: 1fr 96px auto; gap: 8px; align-items: center; margin-bottom: 12px; }
+.pos-add-row .pos-add-name, .pos-add-row .pos-add-price { margin: 0; padding: 10px 12px; }
+.pos-add-btn { padding: 10px 18px; }
+.pos-products { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.pos-products:empty { display: none; }
+.pos-product { display: flex; flex-direction: column; gap: 3px; padding: 12px 10px; border: 1px solid var(--stroke); border-radius: var(--radius-s);
+  background: rgba(255,255,255,.02); cursor: pointer; transition: border-color .15s, background .15s; position: relative; }
+.pos-product:hover { border-color: var(--orange); background: rgba(255,106,0,.06); }
+.pos-product .pp-name { font-size: 12.5px; font-weight: 700; color: var(--text-1, #eaeaf0); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pos-product .pp-price { font-size: 12px; font-weight: 700; color: var(--orange-2, #ff8a3d); font-variant-numeric: tabular-nums; }
+.pos-product .pp-del { position: absolute; top: 3px; right: 5px; color: var(--text-3); font-size: 13px; opacity: 0; transition: opacity .15s; cursor: pointer; }
+.pos-product:hover .pp-del { opacity: .7; }
+.pos-product .pp-del:hover { color: var(--bad, #f87171); opacity: 1; }
+.pos-cart { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid rgba(255,106,0,.3);
+  border-radius: var(--radius-s); background: rgba(255,106,0,.05); }
+.pos-cart-label { color: var(--text-2); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.pos-cart-total { color: var(--orange); font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; margin-left: auto; }
+.pay-msg { min-height: 18px; font-size: 13px; margin: 2px 0; text-align: center; color: var(--text-2); }
+.pay-msg.ok { color: var(--good); }
+.pay-msg.err { color: var(--bad, #ff6b6b); }
+
+/* ── Apple-Pay present overlay — the #debitCard FLIP-moves here (center screen) over a wallet-dimmed backdrop ── */
+/* ⛔ NO backdrop-filter ON THIS FULL-SCREEN FIXED OVERLAY.
+   Measured on the real desktop app: pressing "Pay in person" rendered the ENTIRE tap screen as a solid
+   MAGENTA panel — WKWebView fails to composite a blur over a full-viewport fixed layer and paints the
+   uninitialised surface instead. The user gets a blank screen where the tap UI should be, with no error.
+   A near-opaque background gives the same visual separation with nothing to fail. */
+.pay-overlay { position: fixed; inset: 0; z-index: 200; align-items: center; justify-content: center;
+  padding: 24px; background: rgba(8,9,12,.94);
+  opacity: 0; transition: opacity .32s var(--ease); }
+/* Only lay out (and only capture clicks) when actually shown — a hidden overlay must be display:none, never a
+   transparent full-screen click-eater (author display:flex would otherwise beat the UA [hidden]{display:none}). */
+.pay-overlay:not([hidden]) { display: flex; }
+.pay-overlay:not(.show) { pointer-events: none; }
+.pay-overlay.show { opacity: 1; pointer-events: auto; }
+.pay-overlay-inner { display: flex; flex-direction: column; align-items: center; gap: 18px; width: min(360px, 86vw); }
+.pay-overlay-slot { width: 100%; }
+/* The presented card fills the slot at a comfortable hero width (FLIP scales it up from its inline size). */
+.pay-overlay-slot .debit-card { width: 100%; margin: 0; }
+.pay-cancel { background: rgba(255,255,255,.08); color: var(--text-1, #eaeaf0); border: 1px solid var(--stroke);
+  border-radius: 999px; padding: 12px 36px; font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: background .15s, border-color .15s; }
+.pay-cancel:hover { background: rgba(255,255,255,.14); border-color: var(--stroke-2, #3a3b45); }
+
+/* ── Merchant product catalog — its own section below the charge, with photo thumbnails + its own scroll ── */
+.pos-catalog { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--stroke); }
+.pos-add-fields { display: grid; grid-template-columns: 1fr 116px auto; gap: 8px; align-items: center; flex: 1 1 auto; min-width: 0; }
+.pos-add-fields .pos-add-name, .pos-add-fields .pos-add-price { margin: 0; padding: 10px 12px; }
+.pos-add-row { display: flex; align-items: stretch; gap: 10px; }
+/* Photo picker tile — click to choose an image; shows the chosen thumbnail. Design-token styled. */
+.pos-add-photo { flex: 0 0 60px; width: 60px; height: 60px; padding: 0; border: 1px dashed var(--stroke); border-radius: var(--radius-s);
+  background: rgba(255,255,255,.02); color: var(--text-3); cursor: pointer; overflow: hidden; position: relative;
+  display: flex; align-items: center; justify-content: center; transition: border-color .15s, background .15s; }
+.pos-add-photo:hover { border-color: var(--orange); color: var(--orange); }
+.pos-add-photo-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pos-add-photo-img[hidden] { display: none; }   /* the [hidden] attribute must win — no empty/broken preview img before a photo is chosen */
+.pos-add-photo-plus { display: flex; flex-direction: column; align-items: center; gap: 1px; font-size: 20px; font-weight: 500; line-height: 1; }
+.pos-add-photo-plus small { font-size: 9.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+/* The scroll region — merchants can add as many products as they like; the list scrolls, the page doesn't grow. */
+.pos-products-scroll { max-height: 288px; overflow-y: auto; margin-bottom: 12px; }
+.pos-products-scroll::-webkit-scrollbar { width: 8px; }
+.pos-products-scroll::-webkit-scrollbar-thumb { background: var(--stroke); border-radius: 8px; }
+.pos-products { margin-bottom: 0; }
+.pos-cat-empty { color: var(--text-3); font-size: 12px; text-align: center; padding: 14px 8px; }
+.pos-products:not(:empty) + .pos-cat-empty { display: none; }
+/* Product photo thumbnail inside a tile. */
+.pos-product .pp-img { width: 100%; height: 64px; object-fit: cover; border-radius: 8px; margin-bottom: 4px; display: block; background: rgba(255,255,255,.03); }
+.pos-product .pp-img.pp-img-ph { display: flex; align-items: center; justify-content: center; }
+.pos-product .pp-img.pp-img-ph::after { content: "🛍"; font-size: 20px; opacity: .5; }
+
+
+/* ============================================================================
+   MOBILE-RESPONSIVE LAYER (added 2026-07-13). The base layout is a DESKTOP
+   two-column grid (.app = 232px sidebar + 1fr content). With no @media rules
+   that whole desktop shape was crammed into a phone viewport, so the fixed
+   232px sidebar ate half the width and the content column was clipped — the
+   "squished" look. Below 720px we switch to a native mobile shape: ONE
+   full-width content column, and the sidebar becomes a fixed BOTTOM TAB BAR
+   (icon over micro-label, horizontally scrollable, iOS safe-area aware).
+   Desktop (>720px) is completely untouched.
+   ============================================================================ */
+@media (max-width: 720px) {
+  /* Shell -> single full-width column (the nav is re-homed to the bottom). */
+  .app { grid-template-columns: 1fr; min-height: 100dvh; }
+  .content {
+    height: auto;
+    min-height: 100dvh;
+    padding: 16px 16px calc(88px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Sidebar -> fixed bottom tab bar. */
+  .sidebar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+    height: auto; width: 100%;
+    flex-direction: row; align-items: stretch; gap: 0;
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom, 0px));
+    background: var(--bg-1);
+    border-right: none; border-top: 1px solid var(--stroke);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.42);
+    overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .sidebar::-webkit-scrollbar { display: none; }
+  .sidebar .brand-mini { display: none; }           /* app title not needed on the tab bar */
+
+  .nav {
+    flex-direction: row; margin-top: 0; gap: 2px; width: auto; flex: 0 0 auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .nav-item {
+    flex: 0 0 auto; min-width: 60px;
+    flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+    padding: 7px 4px; border: none; border-radius: 12px;
+    font-size: 10px; line-height: 1.1; text-align: center; white-space: nowrap;
+  }
+  .nav-item.active { background: transparent; color: var(--orange); border-color: transparent; }
+  .nav-item.active .nav-ic { color: var(--orange); }
+  .nav-ic { width: auto; font-size: 20px; }
+
+  /* Logout stays reachable: compact trailing item in the same (swipeable) bar. */
+  .sidebar-foot { margin: 0; padding: 0; flex: 0 0 auto; flex-direction: row; align-items: stretch; }
+  .sidebar-foot > * { display: flex; align-items: center; justify-content: center; }
+  .sidebar-foot .btn, .sidebar-foot button {
+    min-width: 58px; flex-direction: column; gap: 3px; padding: 7px 6px;
+    font-size: 10px; line-height: 1.1; white-space: nowrap;
+  }
+
+  /* Content: full-width cards on phone (they center via their own max-width on desktop). */
+  .view { max-width: none; width: 100%; }
+
+  /* Quick-action rows (Send / Receive / Buy / Sell / Refill …) wrap instead of clipping at the edge. */
+  .balance-actions { flex-wrap: wrap; }
+  .balance-actions > * { flex: 0 1 auto; }
+  /* Any horizontal button/chip strip stays swipeable rather than overflowing the viewport. */
+  .chips, .tab-row, .seg, .actions-row { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Header sizing so titles don't dominate the small screen. */
+  .content h1 { font-size: 26px; }
+
+  /* ── Mobile PERF (FAST pillar) ──────────────────────────────────────────────────────────────────────
+     `backdrop-filter: blur()` is brutally expensive in iOS WKWebView: a large blurred card composited over
+     the animated welcome canvas forces a full-screen recomposite EVERY frame → the "laggy/unusable" jank.
+     The fills already sit at ~0.75 opacity, so on phones we drop the blur and nudge the solid a little more
+     opaque — identical legibility, smooth scrolling. Desktop keeps the real frosted glass (untouched). */
+  .sheet { -webkit-backdrop-filter: none; backdrop-filter: none; background: rgba(13, 13, 18, 0.94); }
+  .dc-nfc { -webkit-backdrop-filter: none; backdrop-filter: none; background: rgba(10, 10, 14, 0.9); }
+  .pay-overlay { -webkit-backdrop-filter: none; backdrop-filter: none; background: rgba(8, 9, 12, 0.9); }
+}
+
+/* Desktop keeps the sidebar; the mobile top bar + drawer are hidden entirely. */
+.mobile-topbar, .mobile-drawer { display: none; }
+
+/* ── MetaMask-style mobile nav (≤720px) ────────────────────────────────────────────────────────────────────────
+   The bottom bar becomes THREE slots — Wallet ⟵ · a big raised orange Buy/Sell in the CENTER · ⟶ Browser — and
+   every other section (Pay, Receive, Activity, Earn, Governance, Settings, Logout) lives in a top hamburger drawer. */
+@media (max-width: 720px) {
+  .mobile-topbar {
+    display: flex; align-items: center; gap: 12px;
+    position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+    padding: calc(8px + env(safe-area-inset-top, 0px)) 14px 8px;
+    background: var(--bg-1); border-bottom: 1px solid var(--stroke);
+  }
+  .mobile-hamburger {
+    display: inline-flex; flex-direction: column; justify-content: center; gap: 4px;
+    width: 40px; height: 34px; padding: 0 8px; border: none; background: transparent; cursor: pointer;
+  }
+  .mobile-hamburger span { display: block; height: 2px; border-radius: 2px; background: var(--text-1); }
+  .mobile-topbar-brand { display: flex; align-items: center; gap: 8px; font-weight: 800; color: var(--text-0); }
+  .mobile-topbar-brand .m-mini { width: 26px; height: 26px; display: inline-flex; }
+  .mobile-topbar-brand .m-mini svg { width: 100%; height: 100%; }
+
+  /* Live status on the right: a network selector + the live block height (mirrors the node's /get_info). */
+  .mobile-topbar-status { margin-left: auto; display: flex; align-items: center; gap: 8px; position: relative; }
+  .mtb-net {
+    display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+    padding: 5px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; color: var(--text-1);
+    background: var(--bg-2); border: 1px solid var(--stroke);
+  }
+  .mtb-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 6px var(--good); }
+  .mtb-caret { font-size: 9px; color: var(--text-3); }
+  .mtb-block { font-size: 11px; font-weight: 600; color: var(--good); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mtb-net-menu {
+    position: absolute; top: calc(100% + 8px); right: 0; z-index: 130; min-width: 150px;
+    background: var(--bg-1); border: 1px solid var(--stroke); border-radius: 12px; padding: 6px;
+    box-shadow: 0 14px 34px rgba(0,0,0,0.5); display: flex; flex-direction: column; gap: 2px;
+  }
+  .mtb-net-menu[hidden] { display: none; }
+  .mtb-net-menu button {
+    display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px;
+    border: none; border-radius: 8px; background: transparent; color: var(--text-1);
+    font: inherit; font-size: 14px; font-weight: 600; text-align: left; cursor: pointer;
+  }
+  .mtb-net-menu button:hover { background: var(--bg-2); }
+  .mtb-net-menu button:disabled { opacity: 0.4; cursor: not-allowed; background: transparent; }
+  .mtb-net-menu button.active { color: var(--orange); }
+  .mtb-net-menu button.active .mtb-dot { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
+  /* Only on the very narrowest phones does the "MoneroUSD" wordmark yield so the status never crowds. */
+  @media (max-width: 348px) { .mobile-topbar-brand .mtb-name { display: none; } }
+
+  /* Content clears the fixed top bar. */
+  .content { padding-top: calc(66px + env(safe-area-inset-top, 0px)); }
+
+  /* Bottom bar → FIVE slots: Wallet · Pay · [Buy/Sell] · Receive · Browser. Everything else lives in the drawer. */
+  .sidebar { overflow: visible; justify-content: center; padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
+  .sidebar-foot { display: none; }
+  #nav { width: 100%; flex: 1 1 auto; justify-content: space-between; align-items: flex-end; gap: 2px; overflow: visible; padding: 0 4px; }
+  #nav .nav-item { display: none; }
+  #nav .nav-item[data-view="wallet"],
+  #nav .nav-item[data-view="send"],
+  #nav .nav-item[data-view="receive"],
+  #nav .nav-item[data-view="browser"] { display: inline-flex; flex: 1 1 0; min-width: 0; padding-bottom: 2px; }
+  #nav .nav-item[data-view="wallet"]  { order: 1; }
+  #nav .nav-item[data-view="send"]    { order: 2; }
+  #nav .nav-item[data-view="buy"]     { order: 3; }   /* center */
+  #nav .nav-item[data-view="receive"] { order: 4; }
+  #nav .nav-item[data-view="browser"] { order: 5; }
+
+  /* Center Buy/Sell — a premium raised coin. The nav-item itself stays a normal-flow column (same height as its
+     siblings) so its LABEL bottom-aligns with Wallet/Pay/Receive/Browser; the coin is a ::before that floats UP
+     out of the bar, and the label is a ::after that sits in the normal label row. */
+  #nav .nav-item[data-view="buy"] {
+    display: inline-flex; flex-direction: column; align-items: center; justify-content: flex-end;
+    order: 3; flex: 1 1 0; min-width: 0; position: relative; overflow: visible;
+    background: none; border: none; box-shadow: none; padding: 0 0 2px; gap: 4px;
+  }
+  #nav .nav-item[data-view="buy"]::before {
+    content: ""; display: block; width: 56px; height: 56px; border-radius: 50%; margin-top: -30px;
+    background:
+      center/24px 24px no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 19V5'/%3E%3Cpath d='M4.5 8.5 8 5l3.5 3.5'/%3E%3Cpath d='M16 5v14'/%3E%3Cpath d='M12.5 15.5 16 19l3.5-3.5'/%3E%3C/svg%3E"),
+      radial-gradient(120% 100% at 50% 22%, rgba(255,214,170,0.85) 0%, rgba(255,168,92,0.25) 34%, transparent 62%),
+      linear-gradient(158deg, var(--orange-2, #ff8a3d) 4%, var(--orange) 48%, var(--orange-deep, #c24a00) 100%);
+    border: 1px solid rgba(255,255,255,0.30);
+    box-shadow:
+      0 0 0 5px var(--bg-1),
+      0 12px 26px -6px var(--orange-glow, rgba(255,106,0,0.55)),
+      0 4px 10px rgba(0,0,0,0.35),
+      inset 0 2px 3px rgba(255,255,255,0.55),
+      inset 0 -4px 8px rgba(120,40,0,0.42);
+  }
+  #nav .nav-item[data-view="buy"] .nav-ic,
+  #nav .nav-item[data-view="buy"] .nav-lbl { display: none; }
+  #nav .nav-item[data-view="buy"]::after {
+    content: "Buy / Sell"; font-size: 10px; font-weight: 700; letter-spacing: .01em; color: var(--orange);
+    line-height: 1.1; white-space: nowrap;
+  }
+  #nav .nav-item[data-view="buy"]:active::before { transform: translateY(1px); }
+
+  /* Slide-in drawer over a dimmed backdrop. */
+  .mobile-drawer { display: block; position: fixed; inset: 0; z-index: 120; background: rgba(0,0,0,0.55); }
+  .mobile-drawer[hidden] { display: none; }
+  .mobile-drawer-panel {
+    position: absolute; top: 0; left: 0; bottom: 0; width: min(80vw, 300px);
+    background: var(--bg-1); border-right: 1px solid var(--stroke);
+    padding: calc(20px + env(safe-area-inset-top, 0px)) 12px 20px;
+    display: flex; flex-direction: column; gap: 4px; overflow-y: auto;
+    animation: drawerIn .18s var(--ease);
+  }
+  @keyframes drawerIn { from { transform: translateX(-100%); opacity: .4; } to { transform: translateX(0); opacity: 1; } }
+  .mobile-drawer-item {
+    display: flex; align-items: center; gap: 13px; padding: 13px 14px; width: 100%;
+    border: none; border-radius: 10px; background: transparent; color: var(--text-1);
+    font: inherit; font-size: 15px; font-weight: 600; text-align: left; cursor: pointer;
+  }
+  .mobile-drawer-item:hover { background: var(--bg-2); }
+  .mobile-drawer-item.active { background: var(--bg-2); color: var(--orange); }
+  .mobile-drawer-item.active .nav-ic { color: var(--orange); }
+  .mobile-drawer-item .nav-ic { width: 22px; text-align: center; font-size: 18px; color: var(--text-3); }
+}
+
+/* Very narrow phones: give tab labels a touch more room. */
+@media (max-width: 380px) {
+  .nav-item, .sidebar-foot .btn, .sidebar-foot button { min-width: 52px; font-size: 9px; }
+  .content { padding-left: 12px; padding-right: 12px; }
+}
+
+/* ── BROWSER / LAUNCHPAD — imported from the old pre-greenfield wallet (build-1261/renderer, user-authorized
+   2026-07-18). Same chrome + launchpad hero + verified-dApp card grid; the `webview` was adapted to an `iframe`
+   for Tauri, and the viewport gets a concrete height in the V2 content layout. ─────────────────────────────── */
+/* ── REAL BROWSER TAB — full-bleed, edge-to-edge, like Chrome/Safari (no boxed card, no 720px cap) ──────────────
+   The Browser view fills the ENTIRE content area: a persistent toolbar BAND on top, then the site stage below it.
+   The embedded webview is positioned over the stage (#browserViewport) — strictly BELOW the toolbar — so the
+   toolbar is ALWAYS visible and controllable, never painted over by the native webview layer. */
+.content.content--browser { padding: 0; overflow: hidden; }
+.view[data-view="browser"] { max-width: none; }
+.content--browser .view[data-view="browser"].active {
+  display: flex; flex-direction: column; height: 100%; width: 100%; max-width: none; animation: none;
+}
+.browser-card {
+  display: flex; flex-direction: column; flex: 1; min-height: 0; width: 100%;
+  padding: 0; gap: 0; border: none; border-radius: 0;
+  background: var(--bg-0);
+}
+/* Persistent control band — back / fwd / reload / home / sovereign / address / Go always reachable. */
+.browser-bar {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 9px clamp(12px, 1.6vw, 18px);
+  background: var(--bg-1); border-bottom: 1px solid var(--stroke);
+}
+.browser-btn-home {
+  width: auto !important; padding: 0 10px !important; gap: 6px;
+  background: rgba(255,102,0,0.10) !important; border-color: rgba(255,102,0,0.35) !important; color: #FF6600 !important;
+}
+.browser-btn-home:hover { background: rgba(255,102,0,0.18) !important; }
+.browser-btn-sov-home {
+  width: auto !important; padding: 0 10px !important; gap: 6px;
+  background: rgba(123,63,242,0.10) !important; border-color: rgba(123,63,242,0.35) !important; color: #a78bfa !important;
+}
+.browser-btn-sov-home:hover { background: rgba(123,63,242,0.20) !important; }
+.browser-btn-home-label { font-size: 12px; font-weight: 600; line-height: 1; }
+@media (max-width: 640px) { .browser-btn-home-label { display: none; } }
+.browser-btn {
+  width: 28px; height: 28px; line-height: 1; font-size: 13px;
+  background: rgba(255,255,255,.04); color: var(--text-0, #e8e8e8);
+  border: 1px solid rgba(255,255,255,.08); border-radius: 5px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0;
+}
+.browser-btn:hover { background: rgba(255,255,255,.08); }
+.browser-btn:active { transform: translateY(1px); }
+.browser-url {
+  flex: 1; min-width: 0; height: 28px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; padding: 0 10px;
+  background: var(--bg-1); color: var(--text-1); border: 1px solid var(--stroke); border-radius: var(--radius-s);
+}
+.browser-url:focus { outline: none; border-color: var(--orange); }
+.browser-badge {
+  padding: 3px 8px; border-radius: 10px; background: rgba(63, 191, 95, .15); color: #3fbf5f;
+  border: 1px solid rgba(63, 191, 95, .35); font-size: 11px; font-weight: 600; letter-spacing: .02em;
+  user-select: none; flex-shrink: 0;
+}
+.browser-status-dot { width: 7px; height: 7px; border-radius: 50%; background: #888; display: inline-block; flex-shrink: 0; }
+/* The site stage — fills ALL remaining height below the toolbar band. The launchpad grid / sovereign page / dApp
+   iframe occupies exactly this rect, so a loaded site fills the whole browser area (strictly below the toolbar). */
+.browser-viewport { position: relative; flex: 1; min-height: 0; width: 100%; overflow: hidden; background: var(--bg-0); }
+/* The launchpad dApp renders in a real inline iframe that fills the stage — a DOM element in the layout, NOT a
+   floating native webview: it can never paint over the toolbar, and display:none / about:blank fully clears it. */
+.dapp-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--bg-0); }
+
+/* --- Launchpad (default dApp browser home) --- */
+.dapp-launchpad {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0; overflow: auto; padding: 36px 32px 48px;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255,102,0,0.08), transparent 50%),
+    radial-gradient(circle at 80% 100%, rgba(255,102,0,0.05), transparent 50%),
+    #0a0a0a;
+}
+.launchpad-hero { max-width: 920px; margin: 0 auto 28px; }
+.launchpad-hero-left { display: flex; flex-direction: column; gap: 14px; }
+.launchpad-brand { display: flex; align-items: center; gap: 14px; }
+.launchpad-brand img { border-radius: 10px; }
+.launchpad-title { font-size: 26px; font-weight: 700; margin: 0; letter-spacing: -0.01em; color: #fff; }
+.launchpad-sub { font-size: 13px; color: #8a8a8a; margin-top: 2px; }
+.launchpad-copy { font-size: 14px; color: #b5b5b5; margin: 0; max-width: 640px; line-height: 1.5; }
+.launchpad-grid { max-width: 920px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 16px; }
+.launchpad-card {
+  all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px; padding: 18px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+  border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; cursor: pointer;
+  transition: transform .12s ease, border-color .12s ease, background .12s ease;
+}
+.launchpad-card:hover {
+  transform: translateY(-2px); border-color: rgba(255,102,0,0.5);
+  background: linear-gradient(180deg, rgba(255,102,0,0.06), rgba(255,102,0,0.02));
+}
+.launchpad-card:focus-visible { outline: 2px solid #FF6600; outline-offset: 2px; }
+.launchpad-card-head { display: flex; align-items: center; gap: 12px; }
+.launchpad-card-logo { width: 40px; height: 40px; border-radius: 8px; background: #1a1a1a; object-fit: contain; padding: 3px; }
+.launchpad-card-logo-fb {
+  width: 40px; height: 40px; border-radius: 8px; background: #FF6600; color: #fff;
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 18px;
+}
+.launchpad-card-title { font-size: 15px; font-weight: 600; color: #fff; display: flex; align-items: center; gap: 6px; }
+.launchpad-verified {
+  color: #46d888; font-size: 12px; display: inline-block; width: 16px; height: 16px;
+  background: rgba(70,216,136,0.14); border-radius: 50%; text-align: center; line-height: 16px;
+}
+.launchpad-card-blurb { font-size: 12.5px; color: #9a9a9a; line-height: 1.45; min-height: 34px; }
+.launchpad-card-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.launchpad-tag {
+  font-size: 10.5px; letter-spacing: 0.03em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px;
+  background: rgba(255,255,255,0.05); color: #b5b5b5;
+}
+.launchpad-card-cta { font-size: 12.5px; color: #FF6600; font-weight: 600; margin-top: auto; }
+.launchpad-footer { max-width: 920px; margin: 28px auto 0; font-size: 12px; color: #6a6a6a; text-align: center; }
+/* Websites linked to this wallet through the connect door (Browser, under the launchpad) */
+.launchpad-web3 { max-width: 920px; margin: 22px auto 0; padding: 16px 18px; border: 1px solid #23232b; border-radius: 14px; background: var(--bg-2, #15151a); }
+.web3-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; font-size: 14px; }
+.web3-note { font-size: 12px; color: #8a8a94; }
+.web3-site { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid #1f1f26; font-size: 13px; }
+.web3-site b { word-break: break-all; }
+.web3-site .web3-note { flex: 1 1 auto; }
+.web3-dot { width: 8px; height: 8px; border-radius: 50%; background: #2ecc71; flex: 0 0 auto; }
+.web3-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 6px; }
+.btn.btn-sm { padding: 7px 12px; font-size: 12.5px; min-height: 0; }
+html.m-phone .launchpad-web3 { display: none; } /* a phone's browser hands a site to this wallet's own browser instead */
+.launchpad-card--sovereign {
+  background: linear-gradient(180deg, rgba(123,63,242,0.10), rgba(91,33,182,0.04));
+  border: 1px solid rgba(167,139,250,0.32);
+}
+.launchpad-card--sovereign:hover { border-color: rgba(167,139,250,0.55); box-shadow: 0 8px 26px rgba(123,63,242,0.22); }
+.launchpad-card--sovereign .launchpad-card-cta { color: #a78bfa; }
+.launchpad-card--native .launchpad-card-cta { color: #a78bfa; }
+.launchpad-sov-pill {
+  display: inline-block; font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px; margin-left: 6px; font-weight: 700;
+  background: rgba(123,63,242,0.16); color: #a78bfa; border: 1px solid rgba(167,139,250,0.4);
+}
+
+/* Native launchpad app pages — real wallet pages in the wallet's OWN document (no iframe/overlay). Built from
+   the wallet design system so each app looks native to the wallet. */
+.native-app { max-width: 660px; margin: 0 auto; padding: 20px; height: 100%; overflow-y: auto; color: var(--text-1); }
+.native-app-head { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.native-app-head img { border-radius: var(--radius-s); }
+.native-app-head h2 { margin: 0; font-size: 20px; color: var(--text-0); font-weight: 700; }
+.native-app-head .chip { margin-left: auto; }
+.native-app-title { font-weight: 700; margin-bottom: 4px; color: var(--text-0); }
+.native-app-sub { font-size: 12px; color: var(--text-2); margin-bottom: 12px; }
+.native-app .field-label { display: block; font-size: 12px; color: var(--text-2); margin: 8px 0 3px; }
+.native-app .field {
+  width: 100%; box-sizing: border-box; padding: 11px 12px; margin-bottom: 4px;
+  background: var(--bg-0); border: 1px solid var(--stroke); border-radius: var(--radius-s);
+  color: var(--text-0); font: inherit;
+}
+.native-app .field:focus { outline: none; border-color: var(--orange); }
+.native-quote { margin: 10px 0 14px; color: var(--good); min-height: 18px; font-weight: 600; }
+.native-actions { display: flex; gap: 10px; }
+.native-actions .btn { flex: 1; }
+.native-list { font-size: 13px; }
+.native-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--stroke-soft); }
+.native-row:last-child { border-bottom: 0; }
+.native-muted { color: var(--text-2); }
+
+/* ⭐ PAY PAGE FITS THE PHONE (user 2026-08-14: "the full payment page doesnt fit comfortably into ios
+   mobile view"). The Pay view stacks a debit card, a POS charge card, a product catalog and a full-bleed
+   tap overlay that were all sized for the 1100px desktop window; on a 390pt iPhone they overflow
+   horizontally and the overlay's inner box runs off-screen. Constrain to the viewport and let long
+   values wrap instead of pushing the layout wider — nothing is hidden or removed, only reflowed.
+   cons: none — a media query below 480px; the desktop layout is untouched by construction. */
+@media (max-width: 480px) {
+  #screen-pay, .pos-card, .pay-overlay-inner { max-width: 100%; box-sizing: border-box; }
+  #screen-pay .card, .pos-card { padding: 12px; margin-left: 0; margin-right: 0; }
+  /* Long PQ addresses / charge blobs must WRAP, never widen the page. */
+  #screen-pay .mono, #screen-pay code, #screen-pay .addr, .pay-overlay-inner .mono {
+    word-break: break-word; overflow-wrap: anywhere; font-size: 12px; line-height: 1.35;
+  }
+  /* The tap overlay is the one full-bleed element — keep it inside the safe area on a notched phone. */
+  .pay-overlay { padding: env(safe-area-inset-top) 10px env(safe-area-inset-bottom) 10px; }
+  .pay-overlay-inner { width: 100%; max-height: 88vh; overflow-y: auto; }
+  .pay-overlay-slot { max-width: 100%; }
+  /* Amount keypad + action rows: one column instead of a desktop-width grid. */
+  #screen-pay .grid, #screen-pay .row { grid-template-columns: 1fr; display: block; }
+  #screen-pay .btn, #screen-pay .field, #screen-pay input { width: 100%; box-sizing: border-box; }
+  /* The debit card art scales rather than fixing a desktop width. */
+  #debitCard { width: 100%; max-width: 340px; margin: 0 auto; }
+}
+
+/* ── confirmCost: the ONE dollar confirmation every value-moving call awaits (ADOPTABLE A2 + A3) ── */
+.confirm-backdrop { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(0, 0, 0, 0.62); }
+.confirm-dialog { width: 100%; max-width: 420px; background: var(--bg-2); color: var(--text-1); border: 1px solid var(--stroke);
+  border-radius: 16px; padding: 20px; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5); }
+.confirm-dialog h3 { margin: 0 0 14px; color: var(--text-0); font-size: 18px; }
+.confirm-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--stroke-soft); }
+.confirm-row b { color: var(--text-0); white-space: nowrap; }
+.confirm-detail { margin: -4px 0 6px; font-size: 12px; opacity: 0.75; overflow-wrap: anywhere; }
+.confirm-warning { margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; background: rgba(255, 106, 0, 0.1);
+  color: var(--orange-2); font-size: 13px; line-height: 1.4; }
+.confirm-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+
+/* Cash out (§BR-1/5/6): the plan's pieces, their batches, what stays USDm. */
+.buy-toggle { display:flex; align-items:center; gap:8px; margin:10px 0 0; font-size:13px; flex-wrap:wrap; }
+.buy-toggle-hint { flex-basis:100%; font-size:12px; opacity:.7; }
+.cashout-plans { margin-top:12px; }
+.cashout-plan { border:1px solid var(--line,#2a2a2a); border-radius:10px; padding:10px 12px; margin:8px 0; font-size:13px; }
+.cashout-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.cashout-piece { display:flex; justify-content:space-between; gap:8px; padding:4px 0; border-top:1px dashed var(--line,#2a2a2a); flex-wrap:wrap; }
+.cashout-piece-st { opacity:.8; }
+.cashout-rem { margin-top:6px; opacity:.75; font-size:12px; }
+
+/* Auto-OPSEC (user 2026-10-28): on by default; off reads as a warning everywhere it shows */
+/* The network notice: one slim line at the top of the page, in the page's own flow, never over the content. */
+.network-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 0 0 12px; padding: 4px 4px 4px 10px; border-radius: 10px; border: 1px solid var(--stroke); background: var(--bg-1); color: var(--text-1); font-size: 12.5px; line-height: 1.35; }
+.network-notice[hidden] { display: none; }
+.network-notice .nn-main { flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 4px 0; background: none; border: 0; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.network-notice .nn-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.network-notice .nn-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+.network-notice .nn-close { flex: 0 0 auto; width: 28px; height: 28px; border: 0; border-radius: 8px; background: none; color: var(--text-2); font-size: 13px; cursor: pointer; }
+.network-notice .nn-close:hover { background: var(--bg-2, rgba(127,127,127,.12)); color: var(--text-0); }
+.network-notice .nn-detail { flex: 1 1 100%; padding: 2px 6px 6px 15px; color: var(--text-2); }
+.network-notice .nn-detail[hidden] { display: none; }
+.content.content--browser .network-notice { margin: 0; border-radius: 0; border-width: 0 0 1px; }
+#settingsNetworkRow { flex-wrap: wrap; }
+#settingsNetworkSeg { flex: 1 1 100%; margin: 8px 0 0; }
+#settingsNetworkSeg .seg-btn { font-size: 12.5px; padding: 9px 6px; white-space: nowrap; }
+.auto-opsec-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.auto-opsec-row .auto-opsec-state { font-weight: 600; }
+.auto-opsec-row.opsec-off .auto-opsec-state, #settingsOpsecState { color: var(--text-1); }
+.auto-opsec-row.opsec-off .auto-opsec-state { color: var(--warn); }
+
+/* ⭐ §18.15 the SAT chart: one line, thin marks, recessive axes; the chain publishes one price per batch and nothing else */
+.sat-chart { margin: 14px 0; padding: 14px; border: 1px solid var(--stroke); border-radius: var(--radius); background: var(--bg-1); }
+.sat-chart-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.sat-chart-price { font-size: 26px; font-weight: 700; color: var(--text-0); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sat-chart-sub { margin-top: 2px; font-size: 12.5px; color: var(--text-2); }
+.sat-chart-unit { width: auto; flex: 0 0 auto; }
+.sat-chart-unit .seg-btn { padding: 5px 10px; font-size: 12px; }
+.sat-chart-plot { position: relative; margin-top: 10px; min-height: 180px; touch-action: none; outline: none; }
+.sat-chart-plot:focus-visible { box-shadow: 0 0 0 2px var(--orange-glow); border-radius: var(--radius-s); }
+.sat-chart-plot svg { display: block; overflow: visible; }
+.sat-line { fill: none; stroke: var(--orange); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.sat-area { fill: var(--orange); opacity: .1; stroke: none; }
+.sat-grid { stroke: var(--stroke-soft); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.sat-axis { fill: var(--text-3); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.sat-cross { stroke: var(--text-3); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.sat-cross.hidden { display: none; }
+.sat-dot { fill: var(--orange); stroke: var(--bg-1); stroke-width: 2; }
+.sat-tip { position: absolute; top: -2px; padding: 3px 8px; border-radius: var(--radius-s); background: var(--bg-3); color: var(--text-0); font-size: 11.5px; white-space: nowrap; pointer-events: none; }
+.sat-chart-ranges { display: flex; gap: 4px; margin-top: 8px; }
+.sat-range { flex: 1; padding: 5px 0; border: none; border-radius: var(--radius-s); background: transparent; color: var(--text-2); font-size: 12px; font-weight: 700; cursor: pointer; }
+.sat-range.active { background: var(--bg-3); color: var(--text-0); }
+.sat-chart-table { margin-top: 8px; font-size: 12px; color: var(--text-2); }
+.sat-chart-table table { width: 100%; margin-top: 6px; border-collapse: collapse; }
+.sat-chart-table th, .sat-chart-table td { padding: 3px 0; text-align: left; font-variant-numeric: tabular-nums; }
+.sat-chart-table td:last-child, .sat-chart-table th:last-child { text-align: right; }
+
+/* =========================================================================================
+   Goods and services: the Orders and Merchant pages (goods.js).
+   One column on a phone, a hero and a two-column workspace on a wide desktop window.
+   ========================================================================================= */
+[data-view="orders"] .card, [data-view="merchant"] .card { display: flex; flex-direction: column; gap: 12px; }
+[data-view="orders"] .card-note.err, [data-view="merchant"] .card-note.err { color: var(--bad); }
+.goods-sentence { color: var(--text-0); font-size: 15px; line-height: 1.5; padding: 14px 16px; background: var(--bg-3); border: 1px solid var(--stroke); border-radius: var(--radius); margin: 10px 0; }
+.goods-switch { display: flex; align-items: center; gap: 10px; color: var(--text-0); font-size: 14px; font-weight: 600; cursor: pointer; }
+.goods-switch input { width: 18px; height: 18px; accent-color: var(--orange); }
+
+/* ---- a purchase or a sale, as one row ---- */
+.goods-list { display: flex; flex-direction: column; gap: 12px; color: var(--text-2); font-size: 13px; }
+.goods-empty { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 22px 12px; text-align: center; color: var(--text-3); font-size: 13px; line-height: 1.5; border: 1px dashed var(--stroke); border-radius: var(--radius); }
+.goods-empty b { color: var(--text-1); font-size: 14px; font-weight: 650; }
+.goods-row { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; background: linear-gradient(180deg, var(--bg-2), var(--bg-1)); border: 1px solid var(--stroke); border-radius: var(--radius); overflow: hidden; }
+.goods-row::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--text-3); }
+.goods-row.held::before { background: var(--good); }
+.goods-row.late::before { background: var(--warn); }
+.goods-row-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--text-0); }
+.goods-row-head b { font-size: 15px; font-weight: 650; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.goods-row-amt { font-size: 18px; font-weight: 750; letter-spacing: -.2px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.goods-row-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--text-3); font-size: 12.5px; }
+.goods-row-code { display: flex; gap: 8px; }
+.goods-row-code input { flex: 1; min-width: 0; padding: 11px 12px; border-radius: var(--radius-s); background: var(--bg-0); border: 1px solid var(--stroke); color: var(--text-0); font-family: var(--mono); font-size: 12.5px; outline: none; }
+.goods-row-code input:focus { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(255,106,0,.14); }
+.goods-row-acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.goods-row-acts .btn-primary { flex: 1 1 auto; }
+.goods-row-acts .btn, .goods-row-code .btn { padding: 10px 14px; font-size: 13px; border-radius: var(--radius-s); white-space: nowrap; }
+.goods-row-say { color: var(--text-1); font-size: 12.5px; line-height: 1.5; word-break: break-word; }
+.goods-row-say:empty { display: none; }
+
+.mx-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 650; letter-spacing: .2px; color: var(--text-1); background: var(--bg-3); border: 1px solid var(--stroke); }
+.mx-pill.good { color: var(--good); background: rgba(52,211,153,.10); border-color: rgba(52,211,153,.28); }
+.mx-pill.warn { color: var(--warn); background: rgba(251,191,36,.10); border-color: rgba(251,191,36,.28); }
+.mx-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 0 rgba(52,211,153,.5); animation: mxPulse 2.4s var(--ease) infinite; }
+@keyframes mxPulse { 0% { box-shadow: 0 0 0 0 rgba(52,211,153,.45); } 70% { box-shadow: 0 0 0 8px rgba(52,211,153,0); } 100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); } }
+
+/* ---- Merchant and Orders: the pages ---- */
+.view[data-view="merchant"], .view[data-view="orders"] { max-width: 1120px; }
+.view[data-view="merchant"] .view-head, .view[data-view="orders"] .view-head { margin-bottom: 16px; }
+.mx-ways.mx-ways-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* Pay: a payment link in the "Pay to" box carries its own price, so the amount and the plain Send step aside and
+   the link's one sentence is shown with its own Pay button. */
+#payPanel.paying-link > #sendAmount, #payPanel.paying-link > #sendAsset, #payPanel.paying-link > .field-label:nth-of-type(2),
+#payPanel.paying-link > #btnSend, #payPanel.paying-link > .tap-inline { display: none; }
+
+/* Wallet: money set aside for a purchase */
+#heldCard[hidden] { display: none; }
+#heldCard { margin: 14px 0; border-color: rgba(52,211,153,.28); }
+.goods-row-more summary { cursor: pointer; color: var(--text-3); font-size: 12.5px; padding: 2px 0; list-style: none; }
+.goods-row-more summary::-webkit-details-marker { display: none; }
+.goods-row-more summary::before { content: "+ "; }
+.goods-row-more[open] summary::before { content: "\2212  "; }
+.goods-row-more .goods-row-code { margin-top: 8px; }
+
+/* Merchant: a new sale is two boxes and one choice */
+.mx-choice { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.mx-opt { display: flex; flex-direction: column; gap: 4px; padding: 14px; text-align: left; border-radius: var(--radius); cursor: pointer; font: inherit; color: var(--text-1); background: var(--bg-2); border: 1px solid var(--stroke); transition: border-color .2s var(--ease), background .2s var(--ease); }
+.mx-opt b { color: var(--text-0); font-size: 14px; font-weight: 700; line-height: 1.3; }
+.mx-opt span { color: var(--text-3); font-size: 12.5px; line-height: 1.45; }
+.mx-opt.active { border-color: var(--orange); background: linear-gradient(180deg, rgba(255,106,0,.10), var(--bg-2)); box-shadow: 0 0 0 1px var(--orange) inset; }
+.mx-opt.active b::before { content: "\2713\00a0"; color: var(--orange-2); }
+#mxDaysRow[hidden], #mxEveryRow[hidden] { display: none; }
+.mx-choice:has(> :nth-child(3)) { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 900px) { .mx-choice:has(> :nth-child(3)) { grid-template-columns: 1fr; } }
+.mx-newsale.created > .mx-fields, .mx-newsale.created > .mx-choice, .mx-newsale.created > #mxDaysRow, .mx-newsale.created > #mxEveryRow, .mx-newsale.created > #btnMxCreate { display: none; }
+.mx-linkbox { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: var(--radius); background: linear-gradient(180deg, rgba(52,211,153,.07), var(--bg-2)); border: 1px solid rgba(52,211,153,.28); }
+.mx-linkbox b { color: var(--text-0); font-size: 15px; }
+.mx-linkbox span { color: var(--text-2); font-size: 13px; line-height: 1.5; }
+.mx-more { border: 1px solid var(--line, rgba(255,255,255,.08)); border-radius: var(--radius); padding: 10px 12px; }
+.mx-more[hidden] { display: none; }
+.mx-more > summary { cursor: pointer; color: var(--text-2); font-size: 13px; font-weight: 600; list-style: none; }
+.mx-more > summary::-webkit-details-marker { display: none; }
+.mx-more > summary::after { content: '+'; float: right; color: var(--text-3); }
+.mx-more[open] > summary::after { content: '−'; }
+.mx-more[open] > summary { margin-bottom: 10px; }
+.mx-tools { display: flex; flex-direction: column; gap: 10px; }
+.mx-tools .settings-row { margin: 0; }
+#goodsRelay { margin: 8px 0; }
+#goodsRelay[hidden] { display: none; }
+.mx-linkrow { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.mx-linkrow .btn { padding: 12px; justify-content: center; }
+.mx-linkbox textarea { font-size: 11.5px; color: var(--text-3); }
+@media (max-width: 720px) { .mx-choice { grid-template-columns: 1fr; } }
+/* four ways to sell: two by two. A phone shows the names only, and the chosen one's sentence on one line under them. */
+.mx-choice:has(> :nth-child(4)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mx-how-note { display: none; }
+#mxFileRow[hidden] { display: none; }
+.mx-file { padding: 10px 12px; font-size: 13px; }
+.mx-newsale.created > #mxFileRow, .mx-newsale.created > #mxMore, .mx-newsale.created > .mx-how-note { display: none; }
+.goods-row-meta span { overflow-wrap: anywhere; }
+.goods-row-code input[type="file"] { font-size: 12.5px; color: var(--text-2); min-width: 0; }
+@media (max-width: 720px) {
+  .mx-choice:has(> :nth-child(4)) { gap: 8px; }
+  .mx-choice:has(> :nth-child(4)) .mx-opt { padding: 11px 12px; }
+  .mx-choice:has(> :nth-child(4)) .mx-opt span { display: none; }
+  .mx-how-note { display: block; color: var(--text-3); font-size: 12.5px; line-height: 1.45; margin: -2px 2px 0; }
+}
+
+/* Settings: what is on LOOKS on. Each on/off setting is a switch; the chosen network is a filled, ticked segment. */
+.settings-row[data-on] { align-items: center; }
+.settings-row[data-on] .settings-k { color: var(--text-0); font-size: 14px; font-weight: 600; }
+.settings-row[data-on] .settings-v { margin-left: auto; font-family: var(--font); font-size: 12px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--text-3); word-break: normal; }
+.settings-row[data-on="1"] { border-color: rgba(52,211,153,.35); background: linear-gradient(180deg, rgba(52,211,153,.07), var(--bg-0)); }
+.settings-row[data-on="1"] .settings-v { color: var(--good); }
+.chip.switch { position: relative; flex: 0 0 auto; width: 52px; height: 30px; padding: 0; border-radius: 999px; font-size: 0; color: transparent; background: var(--bg-3); border: 1px solid #3a3a45; transition: background .2s var(--ease), border-color .2s var(--ease); }
+.chip.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--text-2); box-shadow: 0 2px 6px rgba(0,0,0,.5); transition: transform .2s var(--ease), background .2s var(--ease); }
+.chip.switch:hover { background: var(--bg-3); }
+.chip.switch[aria-checked="true"] { background: var(--good); border-color: transparent; box-shadow: 0 0 14px rgba(52,211,153,.35); }
+.chip.switch[aria-checked="true"]::after { transform: translateX(22px); background: #fff; }
+.chip.switch:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+#settingsNetworkRow { flex-wrap: wrap; align-items: center; }
+#settingsNetworkRow .settings-k { color: var(--text-0); font-size: 14px; font-weight: 600; }
+#settingsNetworkSeg { flex: 1 0 100%; margin: 8px 0 0; background: var(--bg-2); }
+#settingsNetworkSeg .seg-btn { color: var(--text-2); border: 1px solid transparent; }
+#settingsNetworkSeg .seg-btn.active { color: #fff; }
+#settingsNetworkSeg .seg-btn.active::before { content: "\2713\00a0"; }
+#settingsNetworkSeg .seg-btn:not(.active) { background: transparent; box-shadow: none; }
+
+/* Settings: proof of income, shown only while its switch is on */
+.income-box { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: var(--radius); background: linear-gradient(180deg, rgba(52,211,153,.06), var(--bg-2)); border: 1px solid rgba(52,211,153,.22); }
+.income-box[hidden] { display: none; }
+.income-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.income-sum { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.income-sum b { color: var(--text-0); font-size: 26px; font-weight: 800; letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
+.income-sum span { color: var(--text-2); font-size: 12.5px; }
+.income-top .btn { padding: 11px 16px; font-size: 14px; white-space: nowrap; }
+.income-latest { display: flex; flex-wrap: wrap; gap: 6px; }
+.income-latest:empty { display: none; }
+.income-latest span { padding: 4px 10px; border-radius: 999px; background: var(--bg-3); border: 1px solid var(--stroke); color: var(--text-1); font-size: 12px; font-variant-numeric: tabular-nums; }
+.income-form, .income-check { display: flex; flex-direction: column; gap: 8px; }
+.income-form[hidden] { display: none; }
+.income-check summary { cursor: pointer; color: var(--text-2); font-size: 12.5px; padding: 4px 0; }
+.income-check[open] summary { margin-bottom: 8px; }
+.income-box .card-note:empty { display: none; }
+.income-box .card-note.err { color: var(--bad); }
+.mx-fields.mx-fields-even { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mx-ends { display: flex; flex-direction: column; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.mx-ends li { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: var(--radius); background: var(--bg-2); border: 1px solid var(--stroke); }
+.mx-ends b { color: var(--text-0); font-size: 14px; font-weight: 700; }
+.mx-ends span { color: var(--text-2); font-size: 12.5px; line-height: 1.5; }
+
+.mx-hero {
+  position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: center; gap: 24px;
+  padding: clamp(22px, 3.2vw, 38px); border-radius: var(--radius-l); border: 1px solid #2a2118;
+  background:
+    radial-gradient(120% 140% at 100% 0%, rgba(255,106,0,.22), transparent 55%),
+    radial-gradient(90% 120% at 0% 100%, rgba(255,138,51,.10), transparent 60%),
+    linear-gradient(180deg, #15130f, var(--bg-1));
+  box-shadow: var(--shadow-1);
+}
+.mx-eyebrow { display: inline-flex; align-items: center; gap: 8px; padding: 5px 11px; border-radius: 999px; font-size: 12px; font-weight: 650; letter-spacing: .3px; color: var(--text-1); background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); }
+.mx-hero h2 { margin: 14px 0 10px; font-size: clamp(30px, 4.4vw, 46px); line-height: 1.04; font-weight: 800; letter-spacing: -1px; color: var(--text-0); }
+.mx-hero h2 span { background: linear-gradient(90deg, var(--orange-2), var(--orange)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.mx-hero p { max-width: 46ch; color: var(--text-1); font-size: 15px; line-height: 1.6; }
+.mx-cta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.mx-cta .btn { padding: 14px 20px; }
+.mx-cta .btn-ghost { justify-content: center; background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.12); color: var(--text-0); }
+.mx-cta .btn-ghost:hover { background: rgba(255,255,255,.08); }
+
+.mx-hero-art { position: relative; display: flex; justify-content: center; min-height: 250px; }
+.mx-receipt {
+  position: relative; z-index: 1; width: min(100%, 270px); padding: 18px 18px 16px; border-radius: 18px;
+  background: linear-gradient(180deg, rgba(30,30,36,.96), rgba(18,18,22,.96)); border: 1px solid rgba(255,255,255,.09);
+  box-shadow: 0 30px 60px -20px rgba(0,0,0,.8), 0 0 0 1px rgba(255,106,0,.06), 0 18px 50px -24px var(--orange-glow);
+  transform: rotate(-2.5deg); animation: mxFloat 7s ease-in-out infinite;
+}
+.mx-receipt-back { position: absolute; z-index: 0; top: 18px; height: 205px; transform: rotate(5deg) translateX(22px); opacity: .5; animation: none; background: linear-gradient(180deg, #23232a, #17171b); box-shadow: none; }
+@keyframes mxFloat { 0%, 100% { transform: rotate(-2.5deg) translateY(0); } 50% { transform: rotate(-1.5deg) translateY(-7px); } }
+.mx-receipt-top { display: flex; align-items: center; justify-content: space-between; color: var(--text-2); font-size: 12.5px; font-weight: 600; }
+.mx-receipt-amt { margin: 12px 0 14px; font-size: 38px; font-weight: 800; letter-spacing: -1px; color: var(--text-0); font-variant-numeric: tabular-nums; }
+.mx-receipt-line { display: flex; justify-content: space-between; padding: 8px 0; border-top: 1px solid rgba(255,255,255,.06); color: var(--text-2); font-size: 12.5px; }
+.mx-receipt-line b { color: var(--text-0); font-weight: 650; }
+.mx-receipt-foot { display: flex; align-items: center; gap: 8px; margin-top: 10px; padding-top: 12px; border-top: 1px dashed rgba(255,255,255,.12); color: var(--good); font-size: 12.5px; font-weight: 650; }
+
+.mx-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
+.mx-stat { display: flex; flex-direction: column; gap: 4px; padding: 16px 18px; border-radius: var(--radius); background: var(--bg-1); border: 1px solid #22222a; }
+.mx-stat b { font-size: clamp(20px, 2.4vw, 26px); font-weight: 800; letter-spacing: -.5px; color: var(--text-0); font-variant-numeric: tabular-nums; }
+.mx-stat span { color: var(--text-3); font-size: 12px; line-height: 1.35; }
+
+.mx-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+.mx-main, .mx-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+@media (min-width: 1280px) {
+  .mx-grid { grid-template-columns: minmax(0, 1.5fr) minmax(300px, 1fr); }
+  .mx-side { position: sticky; top: 0; }
+}
+
+.mx-ways { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.mx-way {
+  display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 12px; row-gap: 2px; align-items: center; text-align: left;
+  padding: 16px; border-radius: var(--radius); cursor: pointer; font: inherit; color: var(--text-1);
+  background: var(--bg-1); border: 1px solid #22222a;
+  transition: border-color .2s var(--ease), background .2s var(--ease), transform .12s var(--ease), box-shadow .2s var(--ease);
+}
+.mx-way:hover { border-color: #3a3a45; transform: translateY(-1px); }
+.mx-way.active { border-color: rgba(255,106,0,.55); background: linear-gradient(180deg, rgba(255,106,0,.10), var(--bg-1)); box-shadow: 0 12px 30px -18px var(--orange-glow); }
+.mx-way-ic { grid-row: 1 / span 2; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; font-size: 18px; color: var(--text-1); background: var(--bg-3); border: 1px solid var(--stroke); }
+.mx-way.active .mx-way-ic { color: #fff; background: linear-gradient(180deg, var(--orange-2), var(--orange)); border-color: transparent; }
+.mx-way b { color: var(--text-0); font-size: 14.5px; font-weight: 700; }
+.mx-way-sub { color: var(--text-3); font-size: 12px; line-height: 1.35; }
+
+.mx-panel { animation: viewIn .2s var(--ease); }
+.mx-panel[hidden] { display: none !important; }
+.mx-panel-head h3 { color: var(--text-0); font-size: 18px; font-weight: 750; letter-spacing: -.2px; }
+.mx-panel-head p { margin-top: 6px; color: var(--text-2); font-size: 13.5px; line-height: 1.6; }
+.mx-fields { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 12px; }
+.mx-field { display: flex; flex-direction: column; gap: 6px; }
+.mx-field .amt-input, .mx-field .addr-input { transition: border-color .2s var(--ease), box-shadow .2s var(--ease); }
+.mx-field .amt-input:focus, .mx-field .addr-input:focus { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(255,106,0,.14); }
+.mx-step-two { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; border-top: 1px solid var(--stroke); }
+.mx-say:empty { display: none; }
+.mx-say { padding: 10px 12px; border-radius: var(--radius-s); background: var(--bg-3); color: var(--text-1) !important; }
+.mx-say.err { color: var(--bad) !important; background: rgba(248,113,113,.08); }
+
+.mx-steps { display: grid; grid-template-columns: repeat(4, 1fr); list-style: none; margin: 4px 0 2px; padding: 0; counter-reset: none; }
+.mx-steps li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; color: var(--text-3); font-size: 12px; font-weight: 600; text-align: center; }
+.mx-steps li::before { content: ""; position: absolute; top: 14px; left: -50%; width: 100%; height: 2px; background: var(--stroke); }
+.mx-steps li:first-child::before { display: none; }
+.mx-steps li i { position: relative; z-index: 1; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; font-style: normal; font-size: 13px; font-weight: 750; color: var(--text-2); background: var(--bg-3); border: 2px solid var(--stroke); transition: all .25s var(--ease); }
+.mx-steps li.active { color: var(--text-0); }
+.mx-steps li.active i { color: #fff; background: var(--orange); border-color: var(--orange); box-shadow: 0 0 0 5px rgba(255,106,0,.16); }
+.mx-steps li.done { color: var(--text-1); }
+.mx-steps li.done i { color: #06281c; background: var(--good); border-color: var(--good); }
+.mx-steps li.done::before, .mx-steps li.active::before { background: linear-gradient(90deg, var(--good), var(--orange)); }
+.mx-steps li.done + li.done::before { background: var(--good); }
+
+.mx-points { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; list-style: none; margin: 0; padding: 0; }
+.mx-points li { display: flex; flex-direction: column; gap: 4px; padding: 14px; border-radius: var(--radius); background: var(--bg-2); border: 1px solid var(--stroke); }
+.mx-points b { color: var(--text-0); font-size: 18px; font-weight: 800; letter-spacing: -.3px; }
+.mx-points span { color: var(--text-3); font-size: 12px; line-height: 1.4; }
+
+.mx-platforms { display: flex; flex-direction: column; gap: 10px; }
+.mx-platform { border-radius: var(--radius); background: var(--bg-2); border: 1px solid var(--stroke); overflow: hidden; transition: border-color .2s var(--ease); }
+.mx-platform[open] { border-color: #3a3a45; }
+.mx-platform summary { display: flex; align-items: center; gap: 12px; padding: 14px 16px; cursor: pointer; list-style: none; color: var(--text-0); font-size: 14.5px; }
+.mx-platform summary::-webkit-details-marker { display: none; }
+.mx-platform summary b { flex: 1; font-weight: 700; }
+.mx-platform summary i { font-style: normal; color: var(--text-3); font-size: 12px; }
+.mx-platform summary::after { content: "›"; color: var(--text-3); font-size: 18px; transition: transform .2s var(--ease); }
+.mx-platform[open] summary::after { transform: rotate(90deg); }
+.mx-platform-ic { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; font-weight: 800; font-size: 14px; color: var(--orange-2); background: rgba(255,106,0,.10); border: 1px solid rgba(255,106,0,.22); }
+.mx-platform ol { margin: 0; padding: 0 18px 16px 44px; color: var(--text-1); font-size: 13.5px; line-height: 1.6; }
+.mx-platform ol li + li { margin-top: 6px; }
+.mx-platform code { padding: 1px 6px; border-radius: 6px; background: var(--bg-0); color: var(--text-0); font-family: var(--mono); font-size: 12px; }
+
+.mx-side-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.mx-live { display: inline-flex; align-items: center; gap: 6px; color: var(--good); font-size: 11.5px; font-weight: 650; letter-spacing: .3px; text-transform: uppercase; }
+.mx-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--good); animation: mxPulse 2.4s var(--ease) infinite; }
+
+.mx-bar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name sum" "bar bar"; gap: 6px 10px; align-items: baseline; }
+.mx-bar-row span { grid-area: name; color: var(--text-1); font-size: 13px; }
+.mx-bar-row b { grid-area: sum; color: var(--text-0); font-size: 14px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.mx-bar { grid-area: bar; height: 8px; border-radius: 999px; background: var(--bg-3); overflow: hidden; }
+.mx-bar i { display: block; height: 100%; min-width: 4px; border-radius: 999px; background: linear-gradient(90deg, #f87171, #fb923c); transform-origin: left; animation: mxGrow .9s var(--ease) both; }
+.mx-bar i.mid { background: linear-gradient(90deg, var(--orange-2), var(--orange)); }
+.mx-bar i.good { background: var(--good); }
+@keyframes mxGrow { from { transform: scaleX(0); } to { transform: none; } }
+
+/* ---- phone ---- */
+@media (max-width: 720px) {
+  .mx-hero { grid-template-columns: 1fr; gap: 6px; padding: 22px 18px 0; }
+  .mx-hero h2 { letter-spacing: -.6px; }
+  .mx-cta .btn { flex: 1 1 100%; }
+  .mx-hero-art { min-height: 0; height: 150px; margin-top: 18px; align-items: flex-start; overflow: hidden; -webkit-mask-image: linear-gradient(180deg, #000 55%, transparent); mask-image: linear-gradient(180deg, #000 55%, transparent); }
+  .mx-receipt-back { display: none; }
+  .mx-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .mx-stat { padding: 14px; }
+  .mx-ways { gap: 8px; }
+  .mx-way { grid-template-columns: 1fr; justify-items: center; text-align: center; row-gap: 8px; padding: 14px 6px; }
+  .mx-way-ic { grid-row: auto; }
+  .mx-way b { font-size: 12.5px; }
+  .mx-way-sub { display: none; }
+  .mx-fields { grid-template-columns: 1fr; }
+  .mx-points { grid-template-columns: 1fr; }
+  .mx-points li { flex-direction: row; align-items: baseline; gap: 10px; }
+  .mx-steps li span { font-size: 11px; }
+  .goods-row-code { flex-direction: column; }
+}
+/* One column: a sale that is waiting for its code comes first, where the merchant's thumb is. */
+@media (max-width: 1279px) {
+  .mx-grid.has-sales { display: flex; flex-direction: column; align-items: stretch; }
+  .mx-grid.has-sales .mx-main, .mx-grid.has-sales .mx-side { display: contents; }
+  .mx-grid.has-sales .mx-sales { order: -1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mx-receipt, .mx-dot, .mx-live i, .mx-bar i, .mx-panel { animation: none; }
+}
+
+/* =========================================================================================
+   THE PHONE LAYOUT (mobile.js): every page is one fixed screen. Title and help, the page's
+   sections as tabs, the section cut into parts when it cannot fit, and nothing scrolls.
+   A desktop window never sees any of this.
+   ========================================================================================= */
+.m-tabs, .m-pager, .m-info, .m-sheet, .m-bar { display: none; }
+@media (max-width: 720px) {
+  /* THE PAGE (user 2026-11-10): it fits the phone edge to edge, never moves sideways, and scrolls DOWN with the
+     finger. The window itself never scrolls: the page does, between the top bar and the bottom bar, so both stay put
+     and the scroll is the browser's own (momentum on the compositor, nothing of ours runs while it moves). */
+  html.m-phone, html.m-phone body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  html.m-phone .content:not(.content--browser) {
+    height: 100dvh; min-height: 0; overflow: hidden;
+    padding: calc(60px + env(safe-area-inset-top, 0px)) 0 calc(74px + env(safe-area-inset-bottom, 0px));
+  }
+  html.m-phone .view.active:not([data-view="browser"]) {
+    display: flex; flex-direction: column; gap: 10px; height: 100%; min-height: 0; max-width: none;
+    padding: 0 14px 16px; overflow-x: hidden; overflow-y: auto;
+    -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; scrollbar-width: none; touch-action: pan-y;
+  }
+  html.m-phone .view.active:not([data-view="browser"])::-webkit-scrollbar { display: none; }
+  html.m-phone .view.active:not([data-view="browser"]) > * { flex: 0 0 auto; min-width: 0; }
+  html.m-phone [data-m-off], html.m-phone [data-m-never], html.m-phone #posFeeNote { display: none !important; }
+  /* the narrowest phones: the Add product button takes its own line instead of pushing the row past the screen */
+  @media (max-width: 350px) {
+    html.m-phone .pos-add-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    html.m-phone .pos-add-fields .pos-add-btn { grid-column: 1 / -1; }
+  }
+
+  /* title row */
+  html.m-phone .view-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; }
+  html.m-phone .view-head h1 { font-size: 22px; letter-spacing: -.3px; }
+  html.m-phone .view-sub { display: none; }
+  html.m-phone .m-info {
+    display: grid; place-items: center; width: 26px; height: 26px; flex: 0 0 auto; border-radius: 50%;
+    font: italic 700 13px/1 Georgia, serif; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--stroke); cursor: pointer;
+  }
+
+  /* the page's sections: they stay at the top while the page scrolls under them, and ONE marker slides to the
+     section in view (mobile.js writes where it is; it moves by transform alone) */
+  html.m-phone .m-tabs {
+    position: sticky; top: 0; z-index: 6; isolation: isolate;
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px; padding: 3px; border-radius: 13px;
+    background: rgba(16,16,19,.9); border: 1px solid var(--stroke);
+    -webkit-backdrop-filter: blur(14px) saturate(1.3); backdrop-filter: blur(14px) saturate(1.3);
+    transition: box-shadow .25s var(--ease);
+  }
+  html.m-phone .m-tabs[hidden] { display: none; }
+  html.m-phone .view[data-m-scrolled] > .m-tabs { box-shadow: 0 14px 26px -16px rgba(0,0,0,.95); }
+  html.m-phone .m-tabs::before {
+    content: ""; position: absolute; z-index: -1; top: 3px; bottom: 3px; left: 0; width: var(--m-mark-w, 0px); border-radius: 10px;
+    transform: translateX(var(--m-mark-x, 0px)); background: var(--bg-3);
+    box-shadow: 0 1px 0 rgba(255,255,255,.06) inset, 0 4px 12px -6px rgba(0,0,0,.6), 0 0 0 1px rgba(255,106,0,.18);
+    transition: transform .34s cubic-bezier(.2,.9,.25,1), width .34s cubic-bezier(.2,.9,.25,1);
+  }
+  html.m-phone .m-tab {
+    padding: 9px 2px; border: 0; border-radius: 10px; background: transparent; cursor: pointer;
+    font: inherit; font-size: 12.5px; font-weight: 650; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: color .2s var(--ease);
+  }
+  html.m-phone .m-tab.active { color: var(--text-0); }
+
+  /* help text is one tap away, not on the screen */
+  html.m-phone .view[data-m-roomy="0"] .card-note:not([id]), html.m-phone .view[data-m-roomy="0"] .card-note.m-help:not(.err) { display: none; }
+  html.m-phone .panel-head { display: none; }
+  html.m-phone .view[data-view="wallet"] .panel-head { display: flex; }
+  html.m-phone .m-sheet { display: flex; position: fixed; inset: 0; z-index: 200; align-items: flex-end; background: rgba(0,0,0,.6); animation: mSheetIn .18s var(--ease); }
+  html.m-phone .m-sheet-card { width: 100%; max-height: 78dvh; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 20px 18px calc(20px + env(safe-area-inset-bottom, 0px)); border-radius: 22px 22px 0 0; background: var(--bg-1); border-top: 1px solid var(--stroke); }
+  html.m-phone .m-sheet-card h3 { color: var(--text-0); font-size: 18px; font-weight: 750; }
+  html.m-phone .m-sheet-card p { color: var(--text-1); font-size: 14px; line-height: 1.55; }
+  @keyframes mSheetIn { from { opacity: 0; } to { opacity: 1; } }
+
+  /* THE BAR (MetaMask / Phantom shape): the wallet's five main places, flat and labelled, the trade button marked in
+     the middle. Every page is in the menu at the top left, as it is in the desktop's side list. */
+  html.m-phone .sidebar { display: none !important; }
+  html.m-phone .m-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 70; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: end;
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px)); background: rgba(16,16,19,.97); border-top: 1px solid var(--stroke);
+  }
+  html.m-phone .m-bar[hidden] { display: none; }
+  html.m-phone .m-bar-item {
+    display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0; padding: 7px 2px 5px; border: 0; border-radius: 12px;
+    background: transparent; color: var(--text-2); font: inherit; font-size: 10.5px; font-weight: 650; letter-spacing: .1px; cursor: pointer;
+    transition: color .18s var(--ease);
+  }
+  html.m-phone .m-bar-item svg { width: 24px; height: 24px; }
+  html.m-phone .m-bar-item span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  html.m-phone .m-bar-item.active { color: var(--orange); }
+  html.m-phone .m-bar-main svg { width: 40px; height: 40px; padding: 9px; margin-top: -4px; border-radius: 50%; color: #fff; background: linear-gradient(180deg, var(--orange-2), var(--orange)); box-shadow: 0 6px 16px -6px var(--orange-glow); }
+  html.m-phone .m-bar-main { padding-top: 2px; color: var(--text-1); }
+  html.m-phone .content:not(.content--browser) { padding-bottom: calc(78px + env(safe-area-inset-bottom, 0px)); }
+
+  /* WALLET: the balance, then the four things done with money as round buttons, as MetaMask and Phantom lay them out */
+  html.m-phone .view[data-view="wallet"] .balance-card { text-align: center; align-items: stretch; }
+  html.m-phone .view[data-view="wallet"] .balance-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 8px; margin-top: 6px; }
+  html.m-phone .view[data-view="wallet"] .balance-actions > [data-goto] {
+    order: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; padding: 0; border: 0; background: transparent; box-shadow: none;
+    color: var(--text-1); font-size: 12px; font-weight: 650;
+  }
+  html.m-phone .view[data-view="wallet"] .balance-actions > [data-goto]::before {
+    content: ""; display: block; width: 50px; height: 50px; border-radius: 50%; background-color: var(--bg-3); border: 1px solid var(--stroke);
+    background-repeat: no-repeat; background-position: center; background-size: 22px 22px;
+  }
+  html.m-phone .view[data-view="wallet"] .balance-actions > [data-goto="send"]::before { background-color: var(--orange); border-color: transparent; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 19V5'/%3E%3Cpath d='m6 11 6-6 6 6'/%3E%3C/svg%3E"); }
+  html.m-phone .view[data-view="wallet"] .balance-actions > [data-goto="receive"]::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f5f5f7' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 5v14'/%3E%3Cpath d='m6 13 6 6 6-6'/%3E%3C/svg%3E"); }
+  html.m-phone .view[data-view="wallet"] .balance-actions > [data-buymode="buy"]::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f5f5f7' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M12 6v12M6 12h12'/%3E%3C/svg%3E"); }
+  html.m-phone .view[data-view="wallet"] .balance-actions > [data-buymode="sell"]::before { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f5f5f7' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='M6 12h12'/%3E%3C/svg%3E"); }
+  html.m-phone .view[data-view="wallet"] #btnAddMoney { order: 2; grid-column: 1 / span 3; justify-content: center; text-align: center; padding: 13px; }
+  html.m-phone .view[data-view="wallet"] #btnRefresh { order: 3; grid-column: 4; padding: 13px 4px; text-align: center; justify-content: center; }
+
+  /* NO DEAD SPACE: on a page shorter than the screen the last block runs to the bottom bar, its main button at its
+     foot (mobile.js marks them; a page longer than the screen simply scrolls) */
+  html.m-phone .view.active > [data-m-grow] { flex: 1 0 auto; }
+  html.m-phone .view.active > .card[data-m-grow], html.m-phone .view.active > section[data-m-grow] { display: flex; flex-direction: column; }
+  html.m-phone [data-m-anchor] { margin-top: auto; }
+  /* Wallet home: recent activity is a panel of its own that fills the rest of the screen */
+  html.m-phone .view[data-view="wallet"] .activity-list {
+    padding: 8px; border-radius: 16px; background: var(--bg-1); border: 1px solid var(--stroke);
+  }
+  html.m-phone .view[data-view="wallet"] .activity-list .activity-empty {
+    flex: 1 1 auto; display: grid; place-items: center; min-height: 96px; text-align: center; padding: 18px 12px;
+  }
+  /* Pay: the card, paying in person, the @name, then the form (user 2026-11-10) */
+  html.m-phone .view[data-view="send"] .debit-card { max-width: none; margin: 2px 0 0; padding: 18px 20px; }
+  html.m-phone .view[data-view="send"] .tap-top { margin: 0; }
+  html.m-phone .view[data-view="send"] .uname { margin: 0; }
+
+  /* Wallet home: the balance, then four actions a thumb can reach */
+
+  /* nothing on a phone scrolls sideways: a row of choices shares the width it has */
+  html.m-phone .seg, html.m-phone .chips, html.m-phone .tab-row, html.m-phone .actions-row { overflow-x: hidden; }
+  html.m-phone .seg { margin: 0; }
+  html.m-phone .seg-btn { min-width: 0; padding: 9px 2px; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  html.m-phone #settingsNetworkSeg { margin-top: 8px; }
+  html.m-phone #settingsNetworkSeg .seg-btn { font-size: 11.5px; letter-spacing: -.1px; white-space: normal; line-height: 1.2; padding: 7px 4px; }
+
+  /* tighter surfaces: a phone screen is the card */
+  html.m-phone .card { padding: 14px; gap: 10px; border-radius: 16px; }
+  html.m-phone .btn-primary { padding: 13px 16px; }
+  html.m-phone .btn-ghost { padding: 12px 14px; }
+
+  /* Orders and Merchant: the tabs replace the tiles, and the two columns are one list of blocks */
+  html.m-phone .mx-grid, html.m-phone .mx-main, html.m-phone .mx-side { display: contents; }
+  html.m-phone .mx-hero { padding: 20px 18px; gap: 0; }
+  html.m-phone .mx-hero-art { display: none; }
+  html.m-phone .mx-hero p { display: block; }
+  html.m-phone .mx-stats { margin: 0; }
+  html.m-phone .mx-stat { padding: 12px 14px; }
+  html.m-phone .view[data-m-roomy="0"] .mx-panel-head p { display: none; }
+  html.m-phone .mx-grid.has-sales .mx-sales { order: 0; }
+  html.m-phone .mx-panel-head h3 { font-size: 16px; }
+  html.m-phone .mx-steps { margin: 0; }
+  html.m-phone .goods-empty { padding: 16px 12px; }
+}
+
+/* ── phone: the launchpad is a home screen of app tiles on one screen, and no row runs past the edge ───────── */
+@media (max-width: 720px) {
+  html.m-phone .dapp-launchpad { overflow: hidden; padding: 14px 14px 10px; }
+  html.m-phone .launchpad-hero { margin: 0 0 12px; }
+  html.m-phone .launchpad-title { font-size: 18px; }
+  html.m-phone .launchpad-copy, html.m-phone .launchpad-footer,
+  html.m-phone .launchpad-card-blurb, html.m-phone .launchpad-card-tags, html.m-phone .launchpad-card-cta { display: none; }
+  html.m-phone .launchpad-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  html.m-phone .launchpad-card { padding: 12px 6px; min-height: 0; align-items: center; text-align: center; }
+  html.m-phone .launchpad-card-head { flex-direction: column; gap: 8px; }
+  html.m-phone .launchpad-card-title { font-size: 12px; flex-direction: column; gap: 3px; line-height: 1.25; }
+  html.m-phone .launchpad-sov-pill { font-size: 9px; }
+  html.m-phone .settings-row { flex-wrap: wrap; row-gap: 6px; }
+  html.m-phone .settings-row .settings-k { flex: 1 1 55%; min-width: 0; }
+}
+
+/* ── phone: THE BROWSER'S OWN BAR IS REACHABLE, AND AN OPEN APP CAN ALWAYS BE LEFT (user 2026-11-10) ──────────────
+   The Browser page took none of the phone's paddings (it is the one full-bleed page), so its bar was drawn UNDER the
+   fixed top bar and the app ran under the bottom bar: once an app was open there was no Back, no Forward and no
+   Launchpad button a finger could reach. The page now sits between the two bars like every other page, and its
+   controls are finger-sized: Back (a page back inside the app, then the launchpad), Forward, Reload, Launchpad. */
+.browser-btn[disabled] { opacity: .35; cursor: default; pointer-events: none; }
+@media (max-width: 720px) {
+  html.m-phone .content.content--browser {
+    height: 100dvh; min-height: 0;
+    padding: calc(51px + env(safe-area-inset-top, 0px)) 0 calc(71px + env(safe-area-inset-bottom, 0px));
+  }
+  html.m-phone .browser-bar { gap: 6px; padding: 7px 10px; }
+  html.m-phone .browser-btn { width: 40px; height: 40px; font-size: 19px; border-radius: 12px; }
+  /* Launchpad and Sovereign are ordinary buttons of the bar on a phone: the same fill and edge as Back and Reload, the
+     icon alone carries the colour (user 2026-11-13: "the launchpad button looks bad") */
+  html.m-phone .browser-btn-home, html.m-phone .browser-btn-sov-home {
+    width: 40px !important; padding: 0 !important; background: var(--bg-2) !important; border-color: var(--stroke) !important;
+  }
+  /* the phone layout runs to 720 px, the label rule above stopped at 640: between them "Launchpad" was forced into a
+     40 px button and squeezed its house to nothing. On a phone the buttons are icons, and an icon never shrinks. */
+  html.m-phone .browser-btn-home-label { display: none; }
+  html.m-phone .browser-btn svg { flex-shrink: 0; }
+  html.m-phone .browser-btn-home { color: var(--orange-2) !important; }
+  html.m-phone .browser-btn-sov-home { color: #b39dfb !important; }
+  html.m-phone .browser-btn-home:active, html.m-phone .browser-btn-sov-home:active { background: var(--bg-3) !important; }
+  html.m-phone .browser-btn svg { width: 20px; height: 20px; }
+  html.m-phone .browser-url {
+    height: 40px; padding: 0 12px; border-radius: 12px; text-align: center; text-overflow: ellipsis;
+    font-family: inherit; font-size: 14px; font-weight: 650; color: var(--text-0);
+  }
+  html.m-phone .browser-url:focus { text-align: left; font-weight: 500; font-size: 13px; }
+  /* one row at 320 px: Go is the keyboard's own key, and the dot and badge are words the address field already says */
+  html.m-phone #browserGo, html.m-phone .browser-status-dot, html.m-phone #browserConnBadge { display: none !important; }
+  html.m-phone .dapp-launchpad { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+}
+
+/* Pay: paying in person sits first under the card, the card's own width (user 2026-11-10) */
+.tap-top { max-width: 400px; margin: 10px auto 8px; }
+
+/* ── MOTION (user 2026-11-10: "impressive moving features and eye catching design") ──────────────────────────────
+   Every rule here moves by transform and opacity alone, so it runs on the compositor and never costs a layout while a
+   page scrolls. All of it stands still for a person who asked their device for less motion. An entrance fills
+   BACKWARDS only: once it has played it claims nothing, so the wallet's own transforms (the card lifting to the
+   middle of the screen for a tap) are never overridden. */
+.debit-card {
+  --tilt-x: 0; --tilt-y: 0; --glow-x: 80%; --glow-y: 0%;
+  transform: perspective(900px) rotateX(calc(var(--tilt-y) * 1deg)) rotateY(calc(var(--tilt-x) * 1deg));
+  transition: transform .5s var(--ease), box-shadow .45s var(--ease);
+}
+.debit-card[data-tilting] { transition: transform .08s linear, box-shadow .45s var(--ease); box-shadow: 0 22px 48px -14px rgba(0,0,0,.6), 0 0 34px -10px var(--orange-glow), inset 0 1px 0 rgba(255,255,255,.07); }
+/* the light on the card: a soft glow where it is touched, and a sheen that crosses it now and then */
+.debit-card::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .3s var(--ease);
+  background: radial-gradient(42% 60% at var(--glow-x) var(--glow-y), rgba(255,170,90,.22), transparent 70%);
+}
+.debit-card[data-tilting]::before { opacity: 1; }
+.debit-card::after { inset: 0 auto 0 -60%; width: 60%; background: linear-gradient(100deg, transparent, rgba(255,255,255,.085) 45%, rgba(255,255,255,.02) 55%, transparent); transform: translateX(0) skewX(-14deg); }
+.balance-card { position: relative; overflow: hidden; isolation: isolate; }
+.balance-card::before {
+  content: ''; position: absolute; z-index: -1; width: 70%; aspect-ratio: 1; left: -18%; top: -55%; border-radius: 50%; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(255,106,0,.20), transparent 70%);
+}
+.btn, .chip, .tap-inline, .mx-opt, .m-bar-item, .seg-btn, .nav-item { -webkit-tap-highlight-color: transparent; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* a page arrives: its blocks rise into place one after another */
+  .view.active > * { animation: blockIn .46s var(--ease) backwards; }
+  .view.active > :nth-child(2) { animation-delay: 40ms; }
+  .view.active > :nth-child(3) { animation-delay: 80ms; }
+  .view.active > :nth-child(4) { animation-delay: 120ms; }
+  .view.active > :nth-child(5) { animation-delay: 160ms; }
+  .view.active > :nth-child(6) { animation-delay: 200ms; }
+  .view.active > :nth-child(n+7) { animation-delay: 240ms; }
+  .view.active { animation: none; }
+  @keyframes blockIn { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+
+  /* rows of a list follow each other in */
+  .activity-row, .goods-row { animation: rowIn .38s var(--ease) backwards; }
+  .activity-row:nth-child(2), .goods-row:nth-child(2) { animation-delay: 45ms; }
+  .activity-row:nth-child(3), .goods-row:nth-child(3) { animation-delay: 90ms; }
+  .activity-row:nth-child(4), .goods-row:nth-child(4) { animation-delay: 135ms; }
+  .activity-row:nth-child(n+5), .goods-row:nth-child(n+5) { animation-delay: 180ms; }
+  @keyframes rowIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+
+  /* what is pressed gives under the finger */
+  .btn, .chip, .tap-inline, .mx-opt, .seg-btn { transition-property: transform, background, border-color, box-shadow, color, opacity; transition-duration: .16s; transition-timing-function: var(--ease); }
+  .btn:active, .chip:active, .mx-opt:active, .seg-btn:active { transform: scale(.965); }
+  .tap-inline:active { transform: scale(.98); }
+
+  /* the card's sheen crosses it every few seconds; the balance card's glow drifts */
+  .debit-card::after { animation: cardSheen 6.5s cubic-bezier(.4,0,.2,1) infinite; }
+  @keyframes cardSheen { 0%, 58% { transform: translateX(0) skewX(-14deg); } 100% { transform: translateX(460%) skewX(-14deg); } }
+  .balance-card::before { animation: auroraDrift 16s ease-in-out infinite alternate; }
+  @keyframes auroraDrift { from { transform: translate(0, 0) scale(1); } to { transform: translate(38%, 22%) scale(1.25); } }
+
+  /* the paying-in-person mark breathes, so the eye finds it */
+  .tap-inline-ic svg { animation: tapWave 2.6s var(--ease) infinite; transform-origin: 20% 50%; }
+  @keyframes tapWave { 0%, 100% { transform: scale(1); opacity: .85; } 50% { transform: scale(1.14); opacity: 1; } }
+
+  /* the phone's bottom bar: the place you are lifts, and the trade button has a slow halo */
+  html.m-phone .m-bar-item svg { transition: transform .32s cubic-bezier(.3,1.5,.5,1); }
+  html.m-phone .m-bar-item.active:not(.m-bar-main) svg { transform: translateY(-2px) scale(1.12); }
+  html.m-phone .m-bar-item:active svg { transform: scale(.9); }
+  html.m-phone .m-bar-main { position: relative; }
+  html.m-phone .m-bar-main::before {
+    content: ''; position: absolute; left: 50%; top: -2px; width: 40px; height: 40px; margin-left: -20px; border-radius: 50%; pointer-events: none;
+    box-shadow: 0 0 0 2px rgba(255,106,0,.55); animation: barHalo 3.2s var(--ease) infinite;
+  }
+  @keyframes barHalo { 0% { transform: scale(1); opacity: .7; } 70%, 100% { transform: scale(1.55); opacity: 0; } }
+  /* the help sheet rises from the bottom edge */
+  html.m-phone .m-sheet-card { animation: sheetUp .32s var(--ease); }
+  @keyframes sheetUp { from { transform: translateY(40px); opacity: .4; } to { transform: none; opacity: 1; } }
+}
+/* the phone's bars are glass: the page shows faintly through as it scrolls under them */
+@media (max-width: 720px) {
+  html.m-phone .m-bar { background: rgba(14,14,17,.78); -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4); }
+}
+
+/* ── GOVERNANCE (user 2026-11-10): ONE validator section with the validator set drawn live, and proposals that show
+   how far each chamber is from the two thirds a change needs ─────────────────────────────────────────────────── */
+.vx { display: flex; flex-direction: column; gap: 12px; }
+.vx-chart { padding: 16px; border-radius: var(--radius); border: 1px solid var(--stroke);
+  background: radial-gradient(120% 140% at 100% -30%, rgba(255,106,0,.10), transparent 55%), var(--bg-1); }
+.vx-chart-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.vx-chart-big { font-size: 26px; font-weight: 800; letter-spacing: -.6px; color: var(--text-0); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.vx-chart-sub { margin-top: 3px; font-size: 12.5px; color: var(--text-2); line-height: 1.4; }
+.vx-plot {
+  position: relative; display: flex; align-items: flex-end; gap: 4px; height: 148px; margin-top: 14px; padding-top: 6px;
+  border-bottom: 1px solid var(--stroke);
+  background: linear-gradient(to top, transparent 0, transparent calc(25% - 1px), rgba(255,255,255,.045) 25%, transparent calc(25% + 0px)),
+              linear-gradient(to top, transparent 0, transparent calc(50% - 1px), rgba(255,255,255,.045) 50%, transparent calc(50% + 0px)),
+              linear-gradient(to top, transparent 0, transparent calc(75% - 1px), rgba(255,255,255,.045) 75%, transparent calc(75% + 0px));
+}
+.vx-plot[data-empty]::after { content: attr(data-empty); position: absolute; inset: 0; display: grid; place-items: center; padding: 0 18px; text-align: center; color: var(--text-3); font-size: 13px; line-height: 1.5; }
+.vx-bar {
+  flex: 1 1 0; min-width: 3px; max-width: 34px; height: 0; padding: 0; border: 0; cursor: pointer; border-radius: 6px 6px 1px 1px;
+  background: linear-gradient(180deg, #5b5b6c, #2d2d37); box-shadow: inset 0 1px 0 rgba(255,255,255,.14);
+  transition: height .7s var(--ease), filter .18s var(--ease), box-shadow .18s var(--ease);
+}
+.vx-bar:hover { filter: brightness(1.3); }
+.vx-bar.me { background: linear-gradient(180deg, var(--orange-2), var(--orange)); box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 0 22px -6px var(--orange-glow); }
+.vx-bar.sel { box-shadow: 0 0 0 2px var(--text-0), inset 0 1px 0 rgba(255,255,255,.3); filter: brightness(1.2); }
+.vx-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 10px; font-size: 11.5px; color: var(--text-3); }
+.vx-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.vx-key { width: 9px; height: 9px; border-radius: 3px; background: linear-gradient(180deg, #5b5b6c, #2d2d37); }
+.vx-key-me { background: linear-gradient(180deg, var(--orange-2), var(--orange)); }
+.vx-legend-r { margin-left: auto; color: var(--text-1); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.vx .ac-head { margin: 4px 0 0; }
+.vx-terms .settings-row { padding-top: 9px; padding-bottom: 9px; }
+.vx-status { padding-top: 4px; }
+.vx-more { border: 1px solid var(--stroke); border-radius: var(--radius); padding: 11px 14px; background: var(--bg-1); }
+.vx-more > summary { cursor: pointer; list-style: none; color: var(--text-1); font-size: 13.5px; font-weight: 650; display: flex; align-items: center; justify-content: space-between; }
+.vx-more > summary::-webkit-details-marker { display: none; }
+.vx-more > summary::after { content: '+'; color: var(--text-3); font-size: 18px; font-weight: 400; line-height: 1; transition: transform .25s var(--ease); }
+.vx-more[open] > summary::after { transform: rotate(45deg); }
+.vx-more[open] > summary { margin-bottom: 12px; }
+.vx-more > * + * { margin-top: 10px; }
+.vx-two { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 8px; }
+.vx-two .btn { justify-content: center; }
+
+.gv { display: flex; flex-direction: column; gap: 12px; }
+.gv-sub { margin-top: 4px; font-size: 12.5px; color: var(--text-3); line-height: 1.45; }
+.gv-list { display: flex; flex-direction: column; gap: 10px; }
+.gp { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: var(--radius); background: var(--bg-0); border: 1px solid #22222a; transition: border-color .2s var(--ease); }
+.gp:hover { border-color: #34343f; }
+.gp-me { background: linear-gradient(180deg, rgba(255,106,0,.07), var(--bg-0)); border-color: rgba(255,106,0,.22); gap: 6px; }
+.gp-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.gp-name { color: var(--text-0); font-size: 15px; font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
+.gp-to { color: var(--orange-2); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gp-top .gov-vote { margin-left: auto; padding: 8px 20px; border-radius: 10px; }
+.gp-chip { margin-left: auto; padding: 4px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 700; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--stroke); white-space: nowrap; }
+.gp-chip.on { color: var(--good, #34d399); border-color: rgba(52,211,153,.35); background: rgba(52,211,153,.08); }
+.gp-sub { color: var(--text-2); font-size: 12.5px; line-height: 1.45; }
+.gp-bar { display: grid; grid-template-columns: 76px minmax(0, 1fr) auto; align-items: center; gap: 10px; font-size: 12px; }
+.gp-k { color: var(--text-2); font-weight: 600; }
+.gp-v { color: var(--text-1); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gp-v-wide { grid-column: 2 / -1; }
+.gp-track { position: relative; height: 8px; border-radius: 999px; background: var(--bg-3); overflow: hidden; }
+.gp-fill { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #6a6a7c, #8d8da0); transform-origin: left; }
+.gp-fill.pass { background: linear-gradient(90deg, #22b07d, #34d399); }
+.gp-mark { position: absolute; top: -2px; bottom: -2px; left: 66.667%; width: 2px; background: var(--text-0); opacity: .75; }
+.gp-empty { display: flex; flex-direction: column; gap: 4px; align-items: center; text-align: center; padding: 22px 14px; border-radius: var(--radius); border: 1px dashed var(--stroke); color: var(--text-3); font-size: 13px; }
+.gp-empty b { color: var(--text-1); font-size: 14px; }
+.gv .gov-propose { margin: 0; }
+.m-none { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .gp-fill { animation: gpGrow .7s var(--ease) backwards; }
+  @keyframes gpGrow { from { transform: scaleX(0); } to { transform: none; } }
+  .gp { animation: rowIn .38s var(--ease) backwards; }
+}
+@media (max-width: 720px) {
+  .vx-plot { height: 124px; gap: 3px; }
+  .vx-chart { padding: 14px; }
+  .vx-chart-big { font-size: 23px; }
+  .gp-bar { grid-template-columns: 68px minmax(0, 1fr) auto; gap: 8px; }
+  .gov-propose { flex-direction: column; }
+  html.m-phone .m-none { display: grid; place-items: center; color: var(--text-3); font-size: 13.5px; border-radius: 16px; border: 1px dashed var(--stroke); min-height: 140px; }
+}
+/* the validator's terms read as sentences, not as hashes: the wallet's own font, whole words */
+.vx-terms .settings-row { align-items: baseline; }
+.vx-terms .settings-k { color: var(--text-0); font-weight: 650; font-size: 13px; }
+.vx-terms .settings-v, .vx-status .settings-v { font-family: var(--font, inherit); font-size: 13px; word-break: normal; overflow-wrap: anywhere; text-align: right; color: var(--text-1); }
+/* the card has no entrance of its own: it is moved in the page when it is presented for a tap and when it comes home,
+   and an entrance would play over that flight */
+@media (prefers-reduced-motion: no-preference) { .view.active > .debit-card { animation: none; } }
+/* a file picker in the wallet's own dress */
+.mx-file::file-selector-button, .goods-row-code input[type="file"]::file-selector-button {
+  margin-right: 12px; padding: 8px 14px; border-radius: 9px; border: 1px solid var(--stroke); cursor: pointer;
+  font: inherit; font-size: 12.5px; font-weight: 650; color: var(--text-0); background: var(--bg-3);
+  transition: border-color .16s var(--ease), background .16s var(--ease);
+}
+.mx-file::file-selector-button:hover, .goods-row-code input[type="file"]::file-selector-button:hover { border-color: var(--orange); }
+.mx-file { color: var(--text-2); cursor: pointer; }
+/* Borrow: the amount is typed; the standard sizes are one tap each */
+.bw-sizes { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 2px; }
+.bw-sizes:empty { display: none; }
+.bw-size { padding: 8px 14px; font-variant-numeric: tabular-nums; }
+.bw-size.active { color: #fff; border-color: transparent; background: linear-gradient(180deg, var(--orange-2), var(--orange)); box-shadow: 0 6px 16px -8px var(--orange-glow); }
+.bw-note:empty { display: none; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+/* an attested update, offered on the Wallet page */
+.update-banner { display: flex; align-items: center; gap: 10px; width: 100%; margin: 0 0 12px; padding: 12px 14px; cursor: pointer; text-align: left;
+  font: inherit; font-size: 13.5px; font-weight: 600; color: var(--text-0); border-radius: var(--radius);
+  background: linear-gradient(90deg, rgba(52,211,153,.10), rgba(52,211,153,.03)); border: 1px solid rgba(52,211,153,.32); }
+.update-banner[hidden] { display: none; }
+.update-banner:hover { border-color: rgba(52,211,153,.6); }
+.ub-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--good, #34d399); box-shadow: 0 0 0 0 rgba(52,211,153,.5); animation: mxPulse 2s infinite; }
+.ub-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.ub-go { color: var(--good, #34d399); font-weight: 700; white-space: nowrap; }
+html.m-phone .update-banner { margin: 0; }
+/* Receive: the @username first when there is one, then the address it stands for */
+.rc { display: flex; flex-direction: column; gap: 12px; }
+.rc-name { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: var(--radius); background: linear-gradient(180deg, rgba(255,106,0,.08), var(--bg-0)); border: 1px solid rgba(255,106,0,.24); }
+.rc-name[hidden], .rc-claim[hidden] { display: none; }
+.rc-name-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.rc-at { font-size: 24px; font-weight: 800; letter-spacing: -.4px; color: var(--text-0); overflow-wrap: anywhere; }
+.rc-claim { align-self: flex-start; text-align: left; }
+
+/* "Your assets" on the wallet home: every held token, NFT and coin as one row (2026-11-10) */
+.held-assets-list { display: grid; gap: 8px; }
+.held-asset { display: grid; grid-template-columns: 36px 1fr auto; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border, rgba(255,255,255,.08)); background: rgba(255,255,255,.02); animation: heldIn .35s cubic-bezier(.2,.8,.2,1) both; }
+.held-asset .asset-logo { width: 36px; height: 36px; display: block; border-radius: 50%; overflow: hidden; }
+.held-asset .asset-logo svg { width: 100%; height: 100%; display: block; }
+.held-asset-name { display: grid; min-width: 0; }
+.held-asset-name b { font-size: 14.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.held-asset-name span { font-size: 12px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.held-asset-kind { font-size: 10px; font-weight: 800; letter-spacing: .6px; padding: 2px 6px; border-radius: 999px; background: rgba(139,123,255,.18); color: #c7bcff; vertical-align: 1px; }
+.held-asset-amt { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@keyframes heldIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .held-asset { animation: none; } }
+
+/* the Browser's page-load bar: shown from the moment a page is asked for until it has loaded (dist/app.js loadDapp) */
+.browser-viewport.loading::before { content: ""; position: absolute; z-index: 4; top: 0; left: 0; height: 2px; width: 100%; pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--orange-2), var(--orange), transparent); background-size: 50% 100%; background-repeat: no-repeat;
+  animation: browserLoad 0.9s var(--ease) infinite; }
+@keyframes browserLoad { from { background-position: -50% 0; } to { background-position: 150% 0; } }
+@media (prefers-reduced-motion: reduce) { .browser-viewport.loading::before { animation: none; background: var(--orange); opacity: .6; } }

@@ -1,0 +1,23 @@
+
+bool reserve_yield_verify(const std::vector<uint8_t> &proof,
+                          const std::vector<uint8_t> &publics,
+                          uint32_t k, uint64_t modulus) {
+#if defined(MONEROUSD_HAVE_PQPOOL_FFI)
+  if (proof.empty() || publics.size() != 128) return false;
+  return ::pqpool_reserve_yield_verify(proof.data(), proof.size(),
+                                       publics.data(), publics.size(),
+                                       k, modulus) == 1;
+#else
+  (void)proof; (void)publics; (void)k; (void)modulus;
+  return false;
+#endif
+}
+
+bool reserve_yield_selftest(uint32_t k, uint64_t modulus, uint64_t b, uint64_t x) {
+#if defined(MONEROUSD_HAVE_PQPOOL_FFI)
+  return ::pqpool_reserve_yield_selftest(k, modulus, b, x) == 1;
+#else
+  (void)k; (void)modulus; (void)b; (void)x;
+  return false;
+#endif
+}

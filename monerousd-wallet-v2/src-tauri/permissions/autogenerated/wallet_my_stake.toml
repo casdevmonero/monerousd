@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-my-stake"
+description = "Enables the wallet_my_stake command without any pre-configured scope."
+commands.allow = ["wallet_my_stake"]
+
+[[permission]]
+identifier = "deny-wallet-my-stake"
+description = "Denies the wallet_my_stake command without any pre-configured scope."
+commands.deny = ["wallet_my_stake"]

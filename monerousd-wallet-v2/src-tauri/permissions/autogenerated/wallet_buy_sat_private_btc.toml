@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-buy-sat-private-btc"
+description = "Enables the wallet_buy_sat_private_btc command without any pre-configured scope."
+commands.allow = ["wallet_buy_sat_private_btc"]
+
+[[permission]]
+identifier = "deny-wallet-buy-sat-private-btc"
+description = "Denies the wallet_buy_sat_private_btc command without any pre-configured scope."
+commands.deny = ["wallet_buy_sat_private_btc"]

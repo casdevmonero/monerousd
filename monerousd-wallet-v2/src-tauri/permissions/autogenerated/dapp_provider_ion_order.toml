@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-provider-ion-order"
+description = "Enables the dapp_provider_ion_order command without any pre-configured scope."
+commands.allow = ["dapp_provider_ion_order"]
+
+[[permission]]
+identifier = "deny-dapp-provider-ion-order"
+description = "Denies the dapp_provider_ion_order command without any pre-configured scope."
+commands.deny = ["dapp_provider_ion_order"]

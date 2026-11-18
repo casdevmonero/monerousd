@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-dapp-navigate"
+description = "Enables the dapp_navigate command without any pre-configured scope."
+commands.allow = ["dapp_navigate"]
+
+[[permission]]
+identifier = "deny-dapp-navigate"
+description = "Denies the dapp_navigate command without any pre-configured scope."
+commands.deny = ["dapp_navigate"]
