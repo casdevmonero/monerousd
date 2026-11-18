@@ -4942,7 +4942,7 @@ impl Node {
                     // producer carries it because it is UNFOLDED there, so it is unfolded here too —
                     // without this it sat present, row-less and unbuffered, and the fold waited on it
                     // as "unknown" forever (pin: the re-anchored jumper).
-                    self.remember_unfolded_block(b);
+                    self.remember_carried_unfolded_block(b);
                     continue;
                 }
                 let notes = b.output_notes.clone();
@@ -4983,7 +4983,7 @@ impl Node {
                                 let _ = self.file_tags_at_fixed_slots(rid, carried);
                             }
                         }
-                        self.remember_unfolded_block(b);
+                        self.remember_carried_unfolded_block(b);
                         grafted += 1;
                         continue;
                     }
@@ -5060,7 +5060,7 @@ impl Node {
                             self.payload_gap.len()
                         );
                     }
-                    self.remember_unfolded_block(b);
+                    self.remember_carried_unfolded_block(b);
                     grafted += 1;
                 } else {
                     next.push((b, bw, bs));
@@ -17716,6 +17716,25 @@ impl Node {
     /// This node's OWN block (produced or grafted from its own miner): its body is kept whole at any reach, because a body
     /// this node made may exist nowhere else yet.
     pub(crate) fn remember_own_unfolded_block(&mut self, block: Block) {
+        self.remember_unfolded_block_inner(block, true);
+    }
+
+    /// ⛔⛔ A-F99 (lane speed5, 2026-11-18, docs/RESTART-FOLD-DEEP-AUDIT-20261118.md R1) — A CARRIED BODY KEEPS THE FORM IT CAME IN.
+    /// `place_unfolded_carry` re-enters the unfolded set from the node's own checkpoint (a restart) or a certified bundle (a join).
+    /// Each entry is whole or a shell by the carry's own rule (`carry_for`); the A-F63 reach must not decide it a second time,
+    /// because at placement the chain lengths it compares are not re-derived yet: a carried block whose selected parent is not
+    /// held enters at its BLUE SCORE (`Dag::add_carried_block`, `unwrap_or(blue_score)`) while the fold anchor stands at its
+    /// chain length. MEASURED (testnet gate, main ced549bd, restart FAIL): right after each node's resume
+    /// "[fold-reach] 1 body(ies) kept as header shells: this block stands 83 levels above the fold (reach 32)" for a block 16
+    /// levels up; both nodes then held it only as a shell, neither could serve it ("held without its proofs"), and the fold
+    /// waited on its body for 900 s at record 659 on both ("DB-274 P5 … held body false"). The passing run (64d6cb4f) logged
+    /// no such line.
+    /// AI RESISTANT: (b) code; nothing new is admitted — the carry's blocks passed the header door in `place_unfolded_carry`,
+    ///   and a bundle's bodies are bound by its certificate; this only stops a body this node already holds from being dropped.
+    /// SCALE: no new growth — the carry holds at most `LIVE_LANE_DEPTH` unfolded entries and only what was whole when it was
+    ///   cut (live arrivals beyond the reach were already shells then); constant in height and the bonded set.
+    /// cons: a peer's carried body beyond the reach stays whole in RAM until it folds (bounded by the carry, above).
+    fn remember_carried_unfolded_block(&mut self, block: Block) {
         self.remember_unfolded_block_inner(block, true);
     }
 

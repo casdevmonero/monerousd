@@ -87,7 +87,7 @@ jobs:
         shell: bash
         run: |
           B=monerousd-wallet-v2/src-tauri/target/release/bundle
-          ls -R "$B" | head -50
+          ls "$B"/*   # the bundle folders (an `ls -R | head` broke its pipe under bash -o pipefail and failed the job)
           case "${{ runner.os }}" in
             macOS)
               DMG=$(ls "$B"/dmg/*.dmg | head -1)

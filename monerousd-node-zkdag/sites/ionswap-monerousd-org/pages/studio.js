@@ -28,7 +28,7 @@ export default async function render(view /* , ctx */) {
     '<p class="lead">Drop a picture. The studio redraws it in different art styles, palettes, frames and effects, makes a few of them truly rare, and turns every piece into a real NFT. Your photo never leaves this device.</p></div>' +
     '<div class="two"><div class="card glow stack">' +
       '<div class="seg"><button type="button" data-mode="photo" class="on">From one photo</button><button type="button" data-mode="own">My own artwork</button></div>' +
-      '<label class="drop" id="stDrop"><input type="file" id="stFile" accept="image/png,image/jpeg,image/webp" hidden /><b id="stDropT">Choose a photo</b><span id="stDropS">or drop one here · PNG, JPEG or WebP</span></label>' +
+      '<label class="drop" id="stDrop"><input type="file" id="stFile" accept="image/*" hidden /><b id="stDropT">Choose a photo</b><span id="stDropS">or drop one here · PNG, JPEG or WebP</span></label>' +
       '<label class="lab">Collection name<input class="field" id="stName" maxlength="60" placeholder="Night Owls" autocomplete="off" /></label>' +
       '<label class="lab">Its handle in the marketplace<input class="field" id="stHandle" maxlength="32" placeholder="night-owls" autocapitalize="off" autocomplete="off" spellcheck="false" /></label>' +
       '<label class="lab">About it (optional)<textarea class="field" id="stText" maxlength="300" placeholder="A line or two people see on the collection\'s page"></textarea></label>' +
@@ -67,8 +67,8 @@ export default async function render(view /* , ctx */) {
   };
 
   async function take(files) {
-    const list = Array.from(files || []).filter((f) => /^image\/(png|jpeg|webp)$/.test(f.type));
-    if (!list.length) { say($('stMsg'), 'bad', 'Choose a PNG, JPEG or WebP picture.'); return; }
+    const list = Array.from(files || []).filter((f) => /^image\//.test(f.type) || /\.(heic|heif|png|jpe?g|webp|gif)$/i.test(f.name || ''));
+    if (!list.length) { say($('stMsg'), 'bad', 'Choose a picture (PNG, JPEG, WebP or a phone photo).'); return; }
     say($('stMsg'), '', '');
     try {
       if (st.mode === 'photo') st.photo = await gen.loadPhoto(list[0]); else st.files = list;

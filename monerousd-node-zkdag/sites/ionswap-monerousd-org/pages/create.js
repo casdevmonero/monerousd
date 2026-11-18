@@ -23,7 +23,7 @@ export default async function render(view /* , ctx */) {
   root.innerHTML = '<div><div class="eyebrow">Create</div><h1>Launch a <em>token</em></h1>' +
     '<p class="lead">One step. The whole supply arrives in your wallet, fixed for ever, and nobody watching the chain learns who made it.</p></div>' +
     '<div class="two"><div class="card glow stack">' +
-      '<label class="drop" id="crDrop"><input type="file" id="crLogo" accept="image/png,image/jpeg,image/webp" hidden /><b id="crDropT">Add its picture (optional)</b><span>kept on the chain with the token, so every wallet and the marketplace show its own picture</span></label>' +
+      '<label class="drop" id="crDrop"><input type="file" id="crLogo" accept="image/*" hidden /><b id="crDropT">Add its picture (optional)</b><span>kept on the chain with the token, so every wallet and the marketplace show its own picture</span></label>' +
       '<label class="lab">Symbol, letters and digits<input class="field" id="crSym" maxlength="32" placeholder="MOON" autocapitalize="characters" autocomplete="off" spellcheck="false" /></label>' +
       '<label class="lab">Name<input class="field" id="crName" maxlength="128" placeholder="Moon Coin" autocomplete="off" /></label>' +
       '<label class="lab" id="crSupplyLab">How many will ever exist<input class="field" id="crSupply" inputmode="numeric" placeholder="1000000" autocomplete="off" /></label>' +
@@ -70,8 +70,10 @@ export default async function render(view /* , ctx */) {
   let wait = 0;
   const later = () => { $('crMsg').innerHTML = ''; clearTimeout(wait); wait = setTimeout(paint, 300); };
   ['crSym', 'crName', 'crSupply'].forEach((id) => $(id).addEventListener('input', later));
+  gen.wireDrop($('crDrop'), $('crLogo')); // drag a picture onto the area, or click to choose one
   $('crLogo').addEventListener('change', async (ev) => {
-    const f = ev.target.files && ev.target.files[0];
+    const f = (ev.target.__dropped && ev.target.__dropped[0]) || (ev.target.files && ev.target.files[0]);
+    ev.target.__dropped = null;
     if (!f) return;
     try { st.art = await gen.bytesOf(await gen.ownArt(f), gen.TOKEN_ART_MOST); $('crDropT').textContent = 'Picture added (' + (st.art.length / 1024).toFixed(1) + ' KB). Choose another'; later(); /* the price includes the picture: read it again */ }
     catch (e) { st.art = null; $('crMsg').innerHTML = '<div class="note bad">' + esc(dex.errText(e)) + '</div>'; }

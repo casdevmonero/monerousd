@@ -126,18 +126,43 @@ export function steer(text) {
 
 // ── the photo ───────────────────────────────────────────────────────────────────────────────────────────────
 export async function loadPhoto(file) {
-  const url = URL.createObjectURL(file);
-  try {
+  // The picture is read as a data: URL, never a blob: one (lane speed5 2026-11-18): the app host serves every page with
+  // `img-src 'self' data:`, so inside the wallet a blob: picture was BLOCKED and every photo read as "not a picture this
+  // device can open" — the policy, never the photo. A data: URL is what that policy allows.
+  const url = await new Promise((ok, no) => {
+    const r = new FileReader();
+    r.onload = () => ok(String(r.result));
+    r.onerror = () => no(new Error('That file could not be read.'));
+    r.readAsDataURL(file);
+  });
+  {
     const img = new Image();
     img.decoding = 'async';
-    await new Promise((ok, no) => { img.onload = ok; img.onerror = () => no(new Error('That file is not a picture this device can open.')); img.src = url; });
+    await new Promise((ok, no) => { img.onload = ok; img.onerror = () => no(new Error('That file is not a picture this device can open (' + (file.type || 'unknown type') + ').')); img.src = url; });
     const c = document.createElement('canvas');
     c.width = c.height = SIZE;
     const g = c.getContext('2d', { willReadFrequently: true });
     const s = Math.min(img.naturalWidth, img.naturalHeight); // centre square
     g.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, SIZE, SIZE);
     return g.getImageData(0, 0, SIZE, SIZE);
-  } finally { URL.revokeObjectURL(url); }
+  }
+}
+// Drag and drop onto a picture area (user 2026-11-18: "The photos for tokens and nfts should allow drag and drop"): a file
+// dropped on `drop` is handed to its `<input type=file>` exactly as if it had been chosen, so one code path reads it.
+export function wireDrop(drop, input) {
+  if (!drop || !input) return;
+  const on = (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.add('over'); };
+  const off = (e) => { e.preventDefault(); e.stopPropagation(); drop.classList.remove('over'); };
+  ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, on));
+  ['dragleave', 'dragend'].forEach((t) => drop.addEventListener(t, off));
+  drop.addEventListener('drop', (e) => {
+    off(e);
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if (!files || !files.length) return;
+    try { input.files = files; } catch (_) { /* older engines: the change handler reads the dropped list below */ }
+    input.__dropped = files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
 }
 
 // ── styles: the photo redrawn ───────────────────────────────────────────────────────────────────────────────
