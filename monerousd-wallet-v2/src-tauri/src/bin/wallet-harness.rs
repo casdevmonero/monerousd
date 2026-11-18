@@ -45,8 +45,10 @@ fn emit(ok: bool, op: &str, payload: Result<serde_json::Value, String>) {
 
 /// The tap in progress in THIS process — a device holds its own side of one tap in memory between its steps
 /// (`tapcharge-*` below; the protocol steps are `moneropay_ble::tap_*`).
+#[cfg(any(target_os = "macos", target_os = "ios"))] // the Bluetooth tap exists only where moneropay_ble does
 static TAP_MERCHANT: std::sync::Mutex<Option<monerousd_wallet_v2_lib::moneropay_ble::TapMerchant>> =
     std::sync::Mutex::new(None);
+#[cfg(any(target_os = "macos", target_os = "ios"))] // the Bluetooth tap exists only where moneropay_ble does
 static TAP_PAYER: std::sync::Mutex<Option<monerousd_wallet_v2_lib::moneropay_ble::TapPayer>> =
     std::sync::Mutex::new(None);
 
@@ -423,6 +425,7 @@ fn serve(line: &str, out: &mut dyn FnMut(bool, &str, Result<serde_json::Value, S
         // processes — the identical code path two physical devices run, with nothing shared in memory.
         //   device 1:  blemerchant <secs>
         //   device 2:  blepay <secs>
+        #[cfg(any(target_os = "macos", target_os = "ios"))] // the Bluetooth tap exists only where moneropay_ble does
         ["blemerchant", secs] | ["blemerchant", secs, _] => {
             let hold: u64 = secs.parse().unwrap_or(30);
             let amount_usdm: f64 = parts.get(2).and_then(|a| a.parse().ok()).unwrap_or(0.5);
@@ -449,6 +452,7 @@ fn serve(line: &str, out: &mut dyn FnMut(bool, &str, Result<serde_json::Value, S
                 });
             out(r.is_ok(), "blemerchant", r)
         }
+        #[cfg(any(target_os = "macos", target_os = "ios"))] // the Bluetooth tap exists only where moneropay_ble does
         ["blepay", secs] => {
             let wait: u64 = secs.parse().unwrap_or(30);
             let r = monerousd_wallet_v2_lib::moneropay_ble::pay_nearby(
@@ -483,6 +487,7 @@ fn serve(line: &str, out: &mut dyn FnMut(bool, &str, Result<serde_json::Value, S
             });
             out(r.is_ok(), "blepay", r)
         }
+        #[cfg(any(target_os = "macos", target_os = "ios"))] // the Bluetooth tap exists only where moneropay_ble does
         ["bletap"] => {
             // ⛔ THE RADIO MUST FAIL LOUD — MEASURED 2026-08-13: both BLE verbs died with NO output at
             // all (no emit line, no panic), so "radio denied" (macOS Bluetooth TCC for a terminal
@@ -947,6 +952,7 @@ fn serve(line: &str, out: &mut dyn FnMut(bool, &str, Result<serde_json::Value, S
         // nothing else. The payment itself is then an ordinary `send` of the opened charge in this session.
         // DB-319: the merchant presents the ONE signed charge (`wallet_pos_charge`'s builder) — never a second,
         // unsigned shape; the payer opens it to the VERIFIED view and pays through the ONE pay path (`tappay`).
+        #[cfg(any(target_os = "macos", target_os = "ios"))] // the Bluetooth tap exists only where moneropay_ble does
         ["tapcharge-begin", atomic] => {
             let res = atomic.parse::<u64>().map_err(|e| format!("bad atomic amount: {e}")).and_then(|a| {
                 let charge = serde_json::to_vec(&harness::pos_charge_atomic(a)?)
@@ -957,6 +963,7 @@ fn serve(line: &str, out: &mut dyn FnMut(bool, &str, Result<serde_json::Value, S
             });
             out(res.is_ok(), "tapcharge-begin", res);
         }
+        #[cfg(any(target_os = "macos", target_os = "ios"))] // the Bluetooth tap exists only where moneropay_ble does
         ["tapcharge-encaps", frames] => {
             let res = frames_arg(frames).and_then(|f| {
                 let (p, out) = monerousd_wallet_v2_lib::moneropay_ble::tap_payer_encaps(&f)?;
@@ -965,6 +972,7 @@ fn serve(line: &str, out: &mut dyn FnMut(bool, &str, Result<serde_json::Value, S
             });
             out(res.is_ok(), "tapcharge-encaps", res);
         }
+        #[cfg(any(target_os = "macos", target_os = "ios"))] // the Bluetooth tap exists only where moneropay_ble does
         ["tapcharge-seal", frames] => {
             let res = frames_arg(frames).and_then(|f| {
                 let m = TAP_MERCHANT
@@ -976,6 +984,7 @@ fn serve(line: &str, out: &mut dyn FnMut(bool, &str, Result<serde_json::Value, S
             });
             out(res.is_ok(), "tapcharge-seal", res);
         }
+        #[cfg(any(target_os = "macos", target_os = "ios"))] // the Bluetooth tap exists only where moneropay_ble does
         ["tapcharge-open", frames] => {
             let res = frames_arg(frames).and_then(|f| {
                 let p = TAP_PAYER

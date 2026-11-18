@@ -307,5 +307,11 @@ pqcrypto-internals = { path = "vendor/pqcrypto-internals" }
 tor-netdir = { path = "vendor/tor-netdir" }
 
 # lane speed5 2026-11-18: `nix` is Unix-only (it compiles empty on Windows); `oscall` gates its calls on cfg(unix).
+# Windows has no system SQLite: the Tor client's directory cache (tor-dirmgr, through rusqlite) failed to link there
+# ("LNK1181: cannot open input file 'sqlite3.lib'", wallet-builds run 44264681549). `bundled` compiles SQLite in; the
+# locked libsqlite3-sys version is unchanged, macOS and Linux keep their system library.
+[target.'cfg(windows)'.dependencies]
+libsqlite3-sys = { version = "0.37", features = ["bundled"] }
+
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["fs", "process", "signal", "syslog", "time", "user"] }
