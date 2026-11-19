@@ -41,6 +41,10 @@ path = "src/bin/tx_flood.rs"
 name = "net_signer"
 path = "src/bin/net_signer.rs"
 
+[[bin]]
+name = "wallet_release"
+path = "src/bin/wallet_release.rs"
+
 # The Ethereum vault adapter against a real Ethereum virtual machine: the check scratchpad/net/eth_vault.py raises a local
 # chain (Foundry's anvil) and this deploys the vault, deposits, pays, attacks and hands over through the node's own code.
 [[bin]]

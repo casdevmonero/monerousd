@@ -386,6 +386,14 @@ impl CellTransport for ArtiOnionTransport {
     }
     /// ⭐ DB-448 — aimed at the known host whose link id is `link` (`link_id_of`); a link outside the address book (an
     /// unknown hello claim) takes today's pick, so a forged claim can never make this node dial an arbitrary onion.
+    /// N8: the onion behind `link` is on another network — it leaves every ask pick for this process (see the trait method).
+    fn exclude_link(&self, link: u64) {
+        let mut f = foreign_links();
+        if f.len() < FOREIGN_LINKS_MAX && f.insert(link) {
+            // DIGITAL-CASH-PRIVACY-REVIEWED: a count; no onion, link id or peer.
+            ilog(&format!("[peer] a peer's beacon names another network: it leaves this node's ask rotation ({} such peer(s))", f.len()));
+        }
+    }
     fn bulk_raw_request_to(&self, req: &[u8], link: u64) -> bool {
         if is_tx_push_ask(req) {
             return false;
@@ -592,6 +600,14 @@ impl ArtiOnionTransport {
             }
             // ⭐ DB-448: an aimed ask goes to the known host its link names (the peer that announced the item); every
             // other ask, and an aimed one whose link is not in the address book, takes the hashed pick.
+            // ⛔ N8: a host whose beacon named another network is never picked (`exclude_link`); with none left, no ask.
+            let foreign = foreign_links();
+            let hosts: Vec<String> = hosts.iter().filter(|h| !foreign.contains(&link_id_of(h))).cloned().collect();
+            drop(foreign);
+            if hosts.is_empty() {
+                LAST_BULK_VERDICT.with(|v| v.set(Some(Err(BulkRefusal::NoPeerHosts))));
+                return false;
+            }
             match aimed.and_then(|l| hosts.iter().find(|h| link_id_of(h) == l)) {
                 Some(h) => h.clone(),
                 None => self.pick_hashed_host(req, &hosts),
@@ -3340,6 +3356,14 @@ pub(crate) fn bulk_rotation_key(req: &[u8]) -> [u8; 32] {
 /// 0 (which means "not named"). The runtime only hands it back (`bulk_raw_request_to`), and the transport resolves it into
 /// `known_hosts`. DIGITAL-CASH-PRIVACY-REVIEWED: an id of a peer's public onion, already in this node's signed address
 /// book; it never leaves the process.
+/// N8 — the link ids of peers whose beacons named another network, for this process (one process runs one network).
+/// O1-FOOTPRINT-REVIEWED: at most FOREIGN_LINKS_MAX ids (8 B each), never per message.
+const FOREIGN_LINKS_MAX: usize = 4096;
+fn foreign_links() -> std::sync::MutexGuard<'static, std::collections::BTreeSet<u64>> {
+    static F: std::sync::OnceLock<std::sync::Mutex<std::collections::BTreeSet<u64>>> = std::sync::OnceLock::new();
+    F.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 pub(crate) fn link_id_of(onion: &str) -> u64 {
     let h = blake3::hash(onion.trim().as_bytes());
     let b = h.as_bytes();

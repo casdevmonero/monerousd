@@ -5108,6 +5108,11 @@ impl<T: CellTransport> NodeRuntime<T> {
             Self::note_block_batch_exit(7);
             return true;
         }
+        // ⛔ A-F93b's ROUND PROBE IS REMOVED (lane speed5, 2026-11-18): it took this pull's one ask (outstanding, early return) whenever
+        // the inventory named nothing and no round was measured — exactly a joiner's state — so the locator follow below never ran
+        // and the joiner never learned the blocks it lacked. MEASURED: join (netsim replica census) PASS at e74e699a, FAIL from
+        // 9999797d, the probe's commit and the only node change between them ("the joiner reaches one chain and a current view"
+        // red, 600 s simulated); the probe's own rig run measured no rate gain (19.2 a minute against 20.4).
         // `[18][n][n ids][max]` — the locator form (the kind-13 layout under the DB-275 inventory marker): the peer
         // lists the ids above the first id it holds, minus the HAVE and PARKED tails (DB-60, DB-180). The bodies follow
         // by GETDATA. DB-326: built by the ONE locator builder the follow uses too.
@@ -7810,7 +7815,22 @@ impl<T: CellTransport> NodeRuntime<T> {
             self.band_fetch_ms_ring.pop_front();
         }
         self.band_fetch_ms_ring.push_back(now.saturating_sub(at));
-        match self.node.band_offer(t, true) {
+        // SPEED (lane speed5, 2026-11-18): when a peer's band step lands against this node's own lease clock, so a step proven by
+        // both nodes (35 % on a two-node rig, 16:2x) can be read as the owner's proof arriving after the taker's lease ran out.
+        // DIGITAL-CASH-PRIVACY-REVIEWED: durations on this node's clock and a receipt kind; no id, tag, root, amount or owner.
+        let (stuck_in, lease_in) = (now.saturating_sub(self.band_seen_ms), self.band_lease_ms());
+        let receipt = self.node.band_offer(t, true);
+        crate::arti_transport::ilog(&format!(
+            "[band-in] a peer's step: {}, the band stuck here {stuck_in} ms against a lease of {lease_in} ms, own prove in flight {}",
+            match &receipt {
+                crate::nf_sparse::BandReceipt::Verified => "verified",
+                crate::nf_sparse::BandReceipt::Held => "held",
+                crate::nf_sparse::BandReceipt::Refused(_) => "refused (already held or applied)",
+                crate::nf_sparse::BandReceipt::Invalid(_) => "invalid",
+            },
+            self.band_prove_job.is_some()
+        ));
+        match receipt {
             crate::nf_sparse::BandReceipt::Verified => {
                 self.band_stats[4] += 1;
                 self.band_offers.retain(|o| o.id != id);
@@ -11999,6 +12019,12 @@ impl<T: CellTransport> NodeRuntime<T> {
                         // `note_peer_beacon_claim`).
                         self.note_peer_beacon_claim(&b, now_ms);
                         let announcer = self.channel.last_message_link(); // DB-448: the announcer's link (B13)
+                        // ⛔ N8: a peer of ANOTHER network leaves every ask rotation (`CellTransport::exclude_link`)
+                        if b.genesis_commit != self.node.params().genesis_parity_commit {
+                            if let Some(l) = announcer {
+                                self.channel.exclude_link(l);
+                            }
+                        }
                         self.note_block_announcer(b.tip, announcer);
                         // ⭐ SPEED R7: a peer of THIS network whose announced tip this node already holds has nothing this
                         // node lacks — the catch-up lanes' progress clock restarts here (`caught_up_or_fed_ms`).
@@ -15797,11 +15823,12 @@ impl<T: CellTransport> NodeRuntime<T> {
             // production while the band lags, so this is the chain's rate limit there. DIGITAL-CASH-PRIVACY-REVIEWED: a fold
             // ordinal and a duration; no tag, root, amount or owner.
             crate::arti_transport::ilog(&format!(
-                "[band-time] fold step {ordinal}: proved in {} ms ({}), band lag {}, service median {} ms",
+                "[band-time] fold step {ordinal}: proved in {} ms ({}), band lag {}, service median {} ms, first owner {}",
                 self.band_prove_ms_last,
                 if proved.is_some() { "proven" } else { "lost" },
                 self.node.band_lag(),
-                self.band_service_ms()
+                self.band_service_ms(),
+                match self.node.band_step_first_owner_is_me(ordinal) { Some(true) => "this node", Some(false) => "another prover", None => "unknown" }
             ));
             match proved {
                 Some(t) => {

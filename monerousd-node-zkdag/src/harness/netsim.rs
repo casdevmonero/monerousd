@@ -229,6 +229,9 @@ struct Wire {
     /// A cell, ask, follow or oracle page on a blocked link is DROPPED, never delivered and never an error: an eclipse
     /// is silence, not a refusal. O1-FOOTPRINT-REVIEWED: n² booleans of a test scaffold.
     blocked: Mutex<Vec<bool>>,
+    /// N8: `foreign[a * n + b]` — node a learned node b is on another network (its beacon named another genesis), so a's asks
+    /// never pick b again (`SimEndpoint::exclude_link`, arti's foreign-link set).
+    foreign: Mutex<Vec<bool>>,
     /// A node whose process is DOWN (between its shutdown save and its boot): every link to and from it drops traffic.
     /// O1-FOOTPRINT-REVIEWED: one flag per simulated node.
     down: Vec<std::sync::atomic::AtomicBool>,
@@ -462,6 +465,9 @@ impl Wire {
         self.clock(i) + step_charge_us() / 1_000
     }
     /// Whether `from → to` is severed.
+    fn is_foreign(&self, from: usize, to: usize) -> bool {
+        self.foreign.lock().unwrap()[from * self.n + to]
+    }
     fn is_blocked(&self, from: usize, to: usize) -> bool {
         self.down[from].load(Ordering::Relaxed) || self.down[to].load(Ordering::Relaxed) || self.blocked.lock().unwrap()[from * self.n + to]
     }
@@ -487,8 +493,9 @@ impl Wire {
     /// the runtime sees it as a zero-length page. Modeling that too hit a DA-sampling ask storm (branch
     /// wip/chain-20261021-0130-sim-arti-routing), whose cause is open.
     fn host_for(&self, me: usize, req: &[u8]) -> Option<usize> {
-        // only peers this node can still reach: a severed link is not a host (DB-380)
-        let reachable: Vec<usize> = (0..self.n).filter(|&i| i != me && !self.is_blocked(me, i)).collect();
+        // only peers this node can still reach: a severed link is not a host (DB-380), nor a peer of another network (N8)
+        let reachable: Vec<usize> =
+            (0..self.n).filter(|&i| i != me && !self.is_blocked(me, i) && !self.is_foreign(me, i)).collect();
         if reachable.is_empty() {
             return None;
         }
@@ -724,8 +731,18 @@ impl CellTransport for SimEndpoint {
             _ => false,
         }
     }
+    /// N8: node `link` is on another network — it leaves this node's host pick, as arti drops its onion from the pool.
+    fn exclude_link(&self, link: u64) {
+        if let Ok(to) = usize::try_from(link) {
+            if to < self.wire.n && to != self.me {
+                self.wire.foreign.lock().unwrap()[self.me * self.wire.n + to] = true;
+            }
+        }
+    }
     fn bulk_raw_request_to(&self, req: &[u8], link: u64) -> bool {
-        let aimed = usize::try_from(link).ok().filter(|&to| to < self.wire.n && to != self.me && !self.wire.is_blocked(self.me, to));
+        let aimed = usize::try_from(link)
+            .ok()
+            .filter(|&to| to < self.wire.n && to != self.me && !self.wire.is_blocked(self.me, to) && !self.wire.is_foreign(self.me, to));
         match aimed {
             Some(to) => self.ask_to(to, req),
             None => self.bulk_raw_request(req),
@@ -1065,7 +1082,8 @@ struct NodeStepCtx {
     /// ([`NetSim::with_template_double`]: [`TEMPLATE_PROVE_MS_REF`]); 0 = unarmed, the prove charged its own measured time.
     template_double_ms: u64,
     /// The simulated processes' network (empty = the default net), set on each node thread as the step thread sets it.
-    network: Vec<u8>,
+    /// Each node's network prefix (the simulation's, or an old run's: `NetSim::make_foreign`).
+    networks: Vec<Vec<u8>>,
     /// The test's coverage recording, which a node thread's surfaces are noted into.
     coverage: Option<crate::harness::sim_coverage::Handle>,
     /// Each node's per-node file root (DB-406), set on its step thread as its own process would have it.
@@ -1074,9 +1092,9 @@ struct NodeStepCtx {
 
 impl NodeStepCtx {
     /// Make this thread one of the simulation's processes: its network, its coverage recording.
-    fn enter_thread(&self) {
-        if !self.network.is_empty() {
-            crate::params::set_thread_network_for_test(&self.network);
+    fn enter_thread(&self, i: usize) {
+        if let Some(net) = self.networks.get(i).filter(|n| !n.is_empty()) {
+            crate::params::set_thread_network_for_test(net);
         }
         if let Some(h) = &self.coverage {
             crate::harness::sim_coverage::adopt(h.clone());
@@ -1473,6 +1491,10 @@ pub struct NetSim {
     dirs: Vec<Option<std::path::PathBuf>>,
     genesis: crate::block::Block,
     params: crate::params::ChainParams,
+    /// ⭐ THE RESET TEST'S OLD-RUN NODE (lane speed5, 2026-11-18): per node, the params and genesis of ANOTHER network (a testnet
+    /// run before a reset) that node boots on instead of the simulation's, so a node that never updated runs beside the new
+    /// run on the same wire. `None` = the simulation's own network. Set by [`NetSim::make_foreign`] before `boot_from_disk`.
+    foreign: Vec<Option<(crate::params::ChainParams, crate::block::Block)>>,
     /// A node is down until this simulated instant (0 = up).
     down_until: Vec<u64>,
     /// ⭐ CHARGE NODE CPU (PERF TIER step 1, 2026-10-08). A produced block finishes only after its grind AND its measured
@@ -1699,7 +1721,8 @@ impl NetSim {
             crate::rpc_http::letter_new_process_for_test(); // a new process: its own empty Letter ring
             crate::validator::load_or_create_node_vote_key()
         });
-        let mut node = Node::with_params(self.genesis.clone(), self.params.clone()).map_err(|e| format!("genesis: {e:?}"))?;
+        let (gen_i, params_i) = self.network_of(i);
+        let mut node = Node::with_params(gen_i, params_i).map_err(|e| format!("genesis: {e:?}"))?;
         node.set_miner_seed_for_test(sim_miner_seed(self.seed, i, self.incarnations[i]));
         let id = crate::pqauth::pubkey_id(&key.0);
         let report = node.boot(&crate::persist::BootFiles::in_dir(dir, port), id)?;
@@ -1754,6 +1777,44 @@ impl NetSim {
         // this thread IS the simulated processes' step loop: it runs on their network (RPC threads set it per connection)
         crate::params::set_thread_network_for_test(&p.genesis_parity_commit);
         Self::with_params(n, phys, seed, p)
+    }
+
+    /// ⭐ `n` nodes on testnet RUN `run` (`params::testnet_genesis_prefix_for_run`; `params::TESTNET_RUN` is this release's).
+    pub fn testnet_run(n: usize, phys: Physics, seed: u64, run: u32) -> NetSim {
+        let mut p = crate::params::ChainParams::default();
+        p.genesis_parity_commit = crate::params::testnet_genesis_prefix_for_run(run);
+        p.net_prefix_len = p.genesis_parity_commit.len();
+        crate::params::set_thread_network_for_test(&p.genesis_parity_commit);
+        Self::with_params(n, phys, seed, p)
+    }
+
+    /// ⭐ THE RESET TEST: node `i` boots on testnet run `run` instead of the simulation's network — the node of an old run that
+    /// stays online after a reset. Call before [`NetSim::boot_from_disk`]; every later boot of `i` stays on that run.
+    pub fn make_foreign(mut self, i: usize, run: u32) -> NetSim {
+        let mut p = self.params.clone();
+        p.genesis_parity_commit = crate::params::testnet_genesis_prefix_for_run(run);
+        p.net_prefix_len = p.genesis_parity_commit.len();
+        let g = crate::block::genesis_block_for_network(&p.genesis_parity_commit);
+        self.foreign[i] = Some((p, g));
+        self
+    }
+
+    /// The genesis and params node `i` runs on.
+    fn network_of(&self, i: usize) -> (crate::block::Block, crate::params::ChainParams) {
+        match self.foreign.get(i).and_then(Option::as_ref) {
+            Some((p, g)) => (g.clone(), p.clone()),
+            None => (self.genesis.clone(), self.params.clone()),
+        }
+    }
+
+    /// N8: whether node `a` has dropped node `b` from its ask rotation (its beacon named another network).
+    pub fn has_excluded(&self, a: usize, b: usize) -> bool {
+        self.wire.is_foreign(a, b)
+    }
+
+    /// The genesis id node `i` holds now.
+    pub fn genesis_of(&self, i: usize) -> Option<crate::block::BlockId> {
+        self.rt(i).node().dag().genesis()
     }
 
     /// THE FAST LANE (see `band_double`): call before [`NetSim::boot_from_disk`].
@@ -1929,7 +1990,8 @@ impl NetSim {
         self.lock_free_at[i] = 0; // the next process's lock is free
         self.drop_traffic_of(i);
         let placeholder = {
-            let node = Node::with_params(self.genesis.clone(), self.params.clone()).map_err(|e| format!("genesis: {e:?}"))?;
+            let (gen_i, params_i) = self.network_of(i);
+            let node = Node::with_params(gen_i, params_i).map_err(|e| format!("genesis: {e:?}"))?;
             Arc::new(Mutex::new(NodeRuntime::new(node, SimEndpoint { wire: self.wire.clone(), me: i })))
         };
         drop(std::mem::replace(&mut self.rts[i], placeholder));
@@ -2077,7 +2139,7 @@ impl NetSim {
         };
         let _ = l.set_nonblocking(true);
         let rt = self.rts[i].clone();
-        let network = self.params.genesis_parity_commit.clone();
+        let network = self.network_of(i).1.genesis_parity_commit;
         let files = self.node_files(i);
         // the test's coverage recording: every route a wallet calls over this listener is noted into it
         let coverage = crate::harness::sim_coverage::handle();
@@ -2217,6 +2279,7 @@ impl NetSim {
             sent_real: (0..n).map(|_| AtomicU64::new(0)).collect(),
             follow_land: Mutex::new(Vec::new()),
             blocked: Mutex::new(vec![false; n * n]),
+            foreign: Mutex::new(vec![false; n * n]),
             down: (0..n).map(|_| std::sync::atomic::AtomicBool::new(false)).collect(),
             rx_on: std::sync::atomic::AtomicBool::new(false),
             rx: (0..n).map(|_| Mutex::new(RxCensus::default())).collect(),
@@ -2254,6 +2317,7 @@ impl NetSim {
             dirs: vec![None; n],
             genesis: g,
             params,
+            foreign: vec![None; n],
             down_until: vec![0; n],
             charge_cpu: false,
             replayable: false,
@@ -2558,8 +2622,8 @@ impl NetSim {
             for &i in &up {
                 let k = key(self, i);
                 eprintln!(
-                    "[replica-census-unquiet] {lane} n{i}: tips {} nf_fold_seq {} served_seq {} band lag {} unfolded {} finalized {}",
-                    k.0.len(), k.1, k.2, k.3, k.4, k.5
+                    "[replica-census-unquiet] {lane} n{i}: tips {} nf_fold_seq {} (nf_blocks {}) served_seq {} band lag {} unfolded {} finalized {}",
+                    k.0.len(), k.1, self.rt(i).node().nf_blocks_folded(), k.2, k.3, k.4, k.5
                 );
             }
         }
@@ -2904,7 +2968,7 @@ impl NetSim {
             band_double: self.band_double,
             band_double_charge_ms: self.band_double_charge_ms,
             template_double_ms: if self.template_double { TEMPLATE_PROVE_MS_REF } else { 0 },
-            network: self.params.genesis_parity_commit.clone(),
+            networks: (0..n).map(|i| self.network_of(i).1.genesis_parity_commit).collect(),
             coverage: crate::harness::sim_coverage::handle(),
             files: (0..n).map(|i| self.node_files(i)).collect(),
         };
@@ -2941,7 +3005,7 @@ impl NetSim {
                     }
                     let (ctx, produced0) = (&ctx, produced0[i]);
                     let h = sc.spawn(move || {
-                        ctx.enter_thread();
+                        ctx.enter_thread(i);
                         crate::persist::set_thread_node_files_for_test(ctx.files[i].clone());
                         crate::arti_transport::set_log_node(Some(i)); // this thread runs node i's steps: its lines say so
                         // PERF TIER step 1: this node's work budgets read its own CPU while the simulation charges it
@@ -4678,6 +4742,49 @@ mod journey_tests {
     use super::*;
 
     /// Run until `pred` holds or `max_ms` of simulated time passes; the simulated ms it took.
+    /// ⭐ INCREMENTAL (user 2026-11-18: "the test shouldnt be long, all of our test should be incremental so we dont have to do long
+    /// runs"): `run_until`, ending at the FIRST CERTAIN FAILURE — node `watch`'s progress key unchanged for `stall_ms` simulated
+    /// while the predicate is false is a stall, returned as `Err` with the stage's wall time, never waited out to `max_ms`. The
+    /// budget and the predicate are unchanged; only a run that cannot pass stops early. Every stage prints its wall time.
+    fn run_stage(
+        sim: &mut NetSim,
+        stage: &str,
+        max_ms: u64,
+        stall_ms: u64,
+        watch: usize,
+        mut pred: impl FnMut(&NetSim) -> bool,
+    ) -> Result<u64, String> {
+        let (t0, w0) = (sim.now, std::time::Instant::now());
+        let key = |s: &NetSim| {
+            let rt = s.rt(watch);
+            let n = rt.node();
+            (n.tip_height(), n.served_seq(), n.band_next_ordinal())
+        };
+        let (mut last, mut since) = (key(sim), sim.now);
+        while sim.now < t0 + max_ms {
+            sim.run(1_000, 10_000);
+            if pred(sim) {
+                eprintln!("[stage] {stage}: PASS after {} ms simulated, {} ms wall", sim.now - t0, w0.elapsed().as_millis());
+                return Ok(sim.now - t0);
+            }
+            let k = key(sim);
+            if k != last {
+                (last, since) = (k, sim.now);
+            } else if sim.now - since >= stall_ms {
+                let why = format!(
+                    "{stage}: STALLED — node {watch} made no progress for {stall_ms} ms simulated (tip {}, served_seq {}, band next {}), \
+                     {} ms simulated / {} ms wall into the stage",
+                    k.0, k.1, k.2, sim.now - t0, w0.elapsed().as_millis()
+                );
+                eprintln!("[stage] {why}");
+                return Err(why);
+            }
+        }
+        let why = format!("{stage}: not reached in {max_ms} ms simulated ({} ms wall)", w0.elapsed().as_millis());
+        eprintln!("[stage] {why}");
+        Err(why)
+    }
+
     fn run_until(sim: &mut NetSim, max_ms: u64, mut pred: impl FnMut(&NetSim) -> bool) -> Option<u64> {
         let t0 = sim.now;
         while sim.now < t0 + max_ms {
@@ -7584,19 +7691,26 @@ mod journey_tests {
         // boot while the n0/n1 pair's band passes the reach (920c6dd grew past LIVE_CATCH_UP_DEPTH instead: 2697 s wall).
         sim.hold_down(2);
         let reach = sim.rt(0).node().band_journal_reach() as u64;
-        let grown = run_until(&mut sim, 3_600_000, |s| (0..2).all(|i| s.rt(i).node().band_next_ordinal() > reach + 32));
-        assert!(grown.is_some(), "CALIBRATION: the pair's band passes the journal reach ({reach}) while n2 is gone");
+        if let Err(why) = run_stage(&mut sim, "the pair's band passes the journal reach", 3_600_000, 120_000, 0, |s| {
+            (0..2).all(|i| s.rt(i).node().band_next_ordinal() > reach + 32)
+        }) {
+            panic!("CALIBRATION: {why}");
+        }
         sim.join_fresh(2).expect("the reinstall boots from an empty datadir");
         // MEASURED join3-20261026-0750.log: one_chain_between + view_current read true seconds after the empty boot (n2 at
         // tip 0), so the premise is read only once the joiner's tip is within a page of its peer's.
-        let joined = run_until(&mut sim, 600_000, |s| {
+        if let Err(why) = run_stage(&mut sim, "the joiner reaches one chain and a current view", 600_000, 120_000, 2, |s| {
             s.one_chain_between(0, 2) && view_current(s, 2) && s.rt(2).node().tip_height() + 4 >= s.rt(0).node().tip_height()
-        });
-        assert!(joined.is_some(), "CALIBRATION: the joiner reaches one chain and a current view");
+        }) {
+            panic!("CALIBRATION: {why}");
+        }
         assert!(sim.rt(2).node().spine_state().0, "CALIBRATION: the joiner adopted a certified bundle (the arm's premise)");
         let served = sim.rt(0).node().served_seq();
-        let moved = run_until(&mut sim, 600_000, |s| (0..3).all(|i| s.rt(i).node().served_seq() >= served + 8));
-        assert!(moved.is_some(), "CALIBRATION: the fold moves 8 ordinals past the join on all three nodes");
+        if let Err(why) = run_stage(&mut sim, "the fold moves 8 ordinals on all three", 600_000, 120_000, 2, |s| {
+            (0..3).all(|i| s.rt(i).node().served_seq() >= served + 8)
+        }) {
+            panic!("CALIBRATION: {why}");
+        }
         for i in 0..3 {
             eprintln!("[join3-retention] n{i}: {}", sim.rt(i).node().retention_shape_for_test());
         }
@@ -7609,6 +7723,136 @@ mod journey_tests {
         assert!(
             bad.is_empty(),
             "⛔ a DSYNC joiner and the nodes that replayed hold different state: {} field(s) are not one function of the chain:\n{}",
+            bad.len(),
+            bad.join("\n")
+        );
+    }
+
+    /// ⭐⭐ THE TESTNET RESET, REHEARSED (lane speed5, 2026-11-18; user: "we should add a regenesis/testnet reset to the netsim so we
+    /// can rule out testnet resets before acually doing it"). The live run launched 2026-11-18 stopped for good at band step 5,428
+    /// (finding A-F101), and a reset is a NEW network: `params::TESTNET_RUN` commits the run number and the launch files into the
+    /// genesis prefix. This boots three nodes on this release's run and ONE node left on the run before it — a node that never
+    /// updated stays online after a reset, on the same wire — then asserts, in order:
+    /// 1. the old-run node keeps its own genesis, and no block of its chain ever enters a new-run node's DAG;
+    /// 2. a fresh node joins the NEW run by bundle (n2 down from boot, then reinstalled empty, the census test's arm) and reaches
+    ///    one chain and a current view on the new genesis;
+    /// 3. the fold moves 8 ordinals past the join on all three new-run nodes;
+    /// 4. the replica census over the three new-run nodes: the joiner holds the same state as the nodes that replayed.
+    /// `RESET_SEED` (hex) sweeps other chains from one build. TWO-PARTY-REVIEWED: four independent `Node`s, each booted from
+    /// its own datadir; every assertion is cross-node.
+    /// ⭐ THE RESET'S ISOLATION, FAST (lane speed5, 2026-11-18; user: "all of our test should be incremental"): two nodes on this
+    /// release's run and one on the run before it, one wire, 90 s simulated, no band growth needed. Asserts the N8 rule on real
+    /// node code: each new-run node drops the old-run node from its ask rotation once it hears its beacon, and no block of the old
+    /// run enters a new-run DAG. RED on the code before N8 (00722750): a foreign beacon was only counted, nothing was excluded.
+    /// TWO-PARTY-REVIEWED: three independent `Node`s; every assertion is cross-node.
+    #[test]
+    fn testnet_reset_new_run_nodes_drop_an_old_run_peer_from_every_ask() {
+        let run = crate::params::TESTNET_RUN;
+        let sim = NetSim::testnet_run(3, Physics::from_env(), 0x7131_0626_2026_1118, run).make_foreign(2, run - 1);
+        let mut sim = sim.with_band_double().with_template_double();
+        sim.make_replayable();
+        let mut sim = sim.boot_from_disk();
+        sim.step_census = false;
+        assert_ne!(sim.genesis_of(0), sim.genesis_of(2), "CALIBRATION: two networks");
+        if let Err(why) = run_stage(&mut sim, "both new-run nodes drop the old-run peer", 90_000, 90_000, 0, |s| {
+            s.has_excluded(0, 2) && s.has_excluded(1, 2)
+        }) {
+            panic!("N8: {why}");
+        }
+        assert!(!sim.has_excluded(0, 1) && !sim.has_excluded(1, 0), "a peer of the SAME network was excluded");
+        let _ = run_until(&mut sim, 30_000, |_| false);
+        // the genesis is read FIRST: `rt(i)` holds node i's lock, and `genesis_of(i)` takes it again (a self-deadlock, measured
+        // 2026-11-18: the test hung here, `sample` showed the thread parked in `NetSim::rt` under `genesis_of`)
+        let g2 = sim.genesis_of(2);
+        let old_tip = sim.rt(2).node().dag().selected_tip();
+        if let Some(t) = old_tip.filter(|t| Some(*t) != g2) {
+            for i in 0..2 {
+                assert!(sim.rt(i).node().dag().get(&t).is_none(), "node {i} took a block of the OLD run");
+            }
+        }
+        assert!(sim.rt(0).node().tip_height() > 0, "CALIBRATION: the new run produced beside the old-run node");
+    }
+
+    #[test]
+    fn testnet_reset_a_new_run_isolates_the_old_run_and_a_fresh_joiner_follows() {
+        // RESET_RUN picks the new run (default this release's); RESET_FOREIGN=0 leaves the old-run node out (node 3 then joins
+        // the new run like the others), so one build separates "the new network" from "an old-run node on the wire".
+        let run: u32 = std::env::var("RESET_RUN").ok().and_then(|v| v.parse().ok()).unwrap_or(crate::params::TESTNET_RUN);
+        let old_run: u32 = if run <= 1 { 3 } else { run - 1 };
+        let foreign = std::env::var("RESET_FOREIGN").map_or(true, |v| v != "0");
+        let seed = std::env::var("RESET_SEED")
+            .ok()
+            .and_then(|v| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+            .unwrap_or(0x7131_0626_2026_1026);
+        let sim = NetSim::testnet_run(4, Physics::from_env(), seed, run);
+        let mut sim = if foreign { sim.make_foreign(3, old_run) } else { sim }.with_band_double().with_template_double();
+        sim.make_replayable();
+        let mut sim = sim.boot_from_disk();
+        sim.step_census = false;
+        let new_genesis = sim.genesis_of(0).expect("the new run's genesis");
+        let old_genesis = sim.genesis_of(3).expect("the old run's genesis");
+        assert!(!foreign || new_genesis != old_genesis, "CALIBRATION: the old run and the new run are two networks");
+        for i in 0..3 {
+            assert_eq!(sim.genesis_of(i), Some(new_genesis), "CALIBRATION: node {i} boots on the new run");
+        }
+        sim.hold_down(2);
+        let reach = sim.rt(0).node().band_journal_reach() as u64;
+        if let Err(why) = run_stage(&mut sim, "band grows past the journal reach", 3_600_000, 120_000, 0, |s| {
+            (0..2).all(|i| s.rt(i).node().band_next_ordinal() > reach + 32)
+        }) {
+            panic!("CALIBRATION: {why}");
+        }
+        sim.join_fresh(2).expect("the reinstall boots from an empty datadir");
+        let joined = run_stage(&mut sim, "the joiner reaches one chain and a current view", 600_000, 120_000, 2, |s| {
+            s.one_chain_between(0, 2) && view_current(s, 2) && s.rt(2).node().tip_height() + 4 >= s.rt(0).node().tip_height()
+        });
+        for i in 0..4 {
+            let rt = sim.rt(i);
+            let n = rt.node();
+            eprintln!(
+                "[reset-rehearsal] n{i}: genesis {} tip {} served_seq {} nf_fold_seq {} nf_blocks {} band next {}",
+                n.dag().genesis().map(|g| g.to_hex()[..8].to_string()).unwrap_or_default(),
+                n.tip_height(),
+                n.served_seq(),
+                n.nf_fold_seq(),
+                n.nf_blocks_folded(),
+                n.band_next_ordinal()
+            );
+        }
+        if let Err(why) = joined {
+            panic!("the joiner of the NEW run: {why}");
+        }
+        assert_eq!(sim.genesis_of(2), Some(new_genesis), "the joiner adopted the new run, never the old one");
+        let served = sim.rt(0).node().served_seq();
+        if let Err(why) = run_stage(&mut sim, "the fold moves 8 ordinals on all three", 600_000, 120_000, 2, |s| {
+            (0..3).all(|i| s.rt(i).node().served_seq() >= served + 8)
+        }) {
+            panic!("the new run's fold: {why}");
+        }
+        // 1. isolation, both ways: the old run kept its genesis, and no block of its chain is in a new-run DAG
+        if foreign {
+            assert_eq!(sim.genesis_of(3), Some(old_genesis), "the old-run node stays on its own network");
+            let g3 = sim.genesis_of(3); // read first: rt(3) and genesis_of(3) take the same lock
+            let tip3 = sim.rt(3).node().dag().selected_tip();
+            if let Some(old_tip) = tip3.filter(|t| Some(*t) != g3) {
+                for i in 0..3 {
+                    assert!(sim.rt(i).node().dag().get(&old_tip).is_none(), "node {i} took a block of the OLD run into the new run's DAG");
+                }
+            }
+        }
+        // 4. the census over the new run alone
+        sim.hold_down(3);
+        let w = std::time::Instant::now();
+        let rows = sim.replica_census("reset");
+        eprintln!("[stage] census: read in {} ms wall", w.elapsed().as_millis());
+        let bad: Vec<String> = rows
+            .iter()
+            .filter(|r| matches!(r.1, "DIFFERS" | "UNREAD" | "NOT-QUIET"))
+            .map(|r| format!("{} {} ({})", r.0, r.1, r.2))
+            .collect();
+        assert!(
+            bad.is_empty(),
+            "⛔ after a reset, a joiner of the new run and the nodes that replayed it hold different state: {} field(s):\n{}",
             bad.len(),
             bad.join("\n")
         );

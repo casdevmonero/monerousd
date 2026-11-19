@@ -211,7 +211,7 @@ mod canonical_id_tests {
             // header's `member_ring_commit` joined the preimage (was 121e2601…).
             // RE-PINNED 2026-11-10 with the node's genesis pin (lane goods): the source has derived 73bd8768… since the
             // header's state commits landed (2026-11-06); both literals were left behind and read RED on main.
-            Some("73bd8768f45bbc816ad869ad11c73591555f65796ad669af05fc18b40d5a8245"),
+            Some("f10d0361e0ca1972264cc40d602cb41104649b9c8ada7d964057512b9e0f7a13"),
             "wallet fork-detector and node genesis identity must agree by construction"
         );
     }

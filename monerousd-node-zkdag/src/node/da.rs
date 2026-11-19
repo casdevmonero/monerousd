@@ -1893,10 +1893,27 @@ impl Node {
     /// hash over public ids, cut to the byte budget by that same rank. The mesh is small enough that everyone holds everything until
     /// it passes the replication count. `MONEROUSD_NF_BUDGET_MB` is the device's choice; zero holds no leaves and still verifies all.
     /// ⛔ `EXP_NF_REPL` lowers the replication so two real nodes can hold disjoint shares; it exists only for that check.
+    ///
+    /// ⛔⛔ A-F101 (lane speed5, 2026-11-18, docs/LIVE-BAND-STALL-DEEP-AUDIT-20261118.md L9) — A NODE WITH NO BUDGET HOLDS EVERY SHARD.
+    /// MEASURED on the live testnet: the origin adopted a bundle while it counted more than `NF_SHARD_REPLICATION` provers, so it
+    /// fetched only its rendezvous share (97 of 256). The provers holding the other 159 left the network, nobody could serve them, and
+    /// the band, and with it the fold, stopped at step 5,428. That broke THE CASH LAYER ALWAYS WORKS (nothing waits on any one peer).
+    /// A lost shard cannot be rebuilt from the held blocks either: the fold's DB-367 leave-outs (770 tags in the 97 held shards) are
+    /// not recorded in them. So sharing out the set is now only a device's own choice (`MONEROUSD_NF_BUDGET_MB`, a phone);
+    /// every node without a budget holds the whole set, and every shard has as many live holders as there are such nodes.
+    /// SCALE: the full set costs 32 B a spent tag (the live origin: 1.39 M tags, ~44 MB), the same at any number of nodes; a
+    /// budgeted node's share stays the rendezvous cut below. This function does constant work (an early return).
+    /// AI RESISTANT: (b) — a holder only serves tags; every shard it gives is checked against the band entry every node agrees on
+    /// (`add_shard`). cons: a node with no budget keeps ~44 MB more than its share would (the live origin: 97 → 256 shards),
+    /// growing 32 B with each spend; a budget caps it.
     pub(crate) fn nf_wanted_shards(&self) -> Vec<u32> {
         let bits = usdm_decider::nf_sparse_air::NF_BAND_BITS;
         let all = 1u32 << bits;
-        let k = std::env::var("EXP_NF_REPL").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(Self::NF_SHARD_REPLICATION as usize);
+        let exp_repl = std::env::var("EXP_NF_REPL").ok().and_then(|v| v.parse::<usize>().ok());
+        if exp_repl.is_none() && Self::nf_budget_bytes().is_none() {
+            return (0..all).collect();
+        }
+        let k = exp_repl.unwrap_or(Self::NF_SHARD_REPLICATION as usize);
         let ids = self.band_provers();
         let me = self.public_id();
         let mut wanted: Vec<u32> = (0..all)

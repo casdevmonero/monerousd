@@ -2703,9 +2703,48 @@ async function doOpenRelease() {
 // The update is offered on the Wallet page too, where the owner looks first: the same on-chain attestation the Updates
 // card reads. A tap opens Settings at the Updates card and starts the download over Tor; nothing is installed by a tap
 // here (opening the installer is its own confirmed step).
+// ⭐ THE ONE-CLICK UPDATE (lane speed5, 2026-11-18; updater.rs): the signed release on GitHub, read over Tor. Shown first when it
+// offers a newer version; one tap asks once, then the wallet downloads it, refuses it unless the release key's signature, its
+// size and its hash all match, installs it and reopens. Nothing happens without that tap.
+async function refreshSignedUpdate(b) {
+  let u = null;
+  try { u = await walletCore('update_check'); } catch (_) { u = null; }
+  if (!(u && u.available)) return false;
+  b.hidden = false;
+  const mb = u.size ? ' · ' + Math.max(1, Math.round(u.size / 1048576)) + ' MB' : '';
+  document.getElementById('updateBannerText').textContent = 'Update available · v' + u.version + mb;
+  const go = b.querySelector('.ub-go'); if (go) go.textContent = 'Install ›';
+  if (!b._signedWired) {
+    b._signedWired = true;
+    b._wired = true; // this banner now installs the signed release; the attested-release card stays in Settings
+    b.addEventListener('click', async () => {
+      if (b._busy) return;
+      const ok = await confirmCost({
+        title: 'Install version ' + u.version + '?', confirmLabel: 'Install',
+        lines: [{ label: 'Cost', usd: 0, detail: 'free' }],
+        warning: (u.notes ? u.notes + ' ' : '') + 'The wallet downloads it over Tor, checks it is the signed MonerousD release, installs it and reopens. Your funds, seed and node stay as they are.',
+      });
+      if (!ok) return;
+      b._busy = true;
+      document.getElementById('updateBannerText').textContent = 'Downloading v' + u.version + ' over Tor…';
+      if (go) go.textContent = '';
+      try {
+        const r = await walletCore('update_install');
+        document.getElementById('updateBannerText').textContent = (r && r.message) || 'Installing…';
+      } catch (e) {
+        b._busy = false;
+        document.getElementById('updateBannerText').textContent = 'Update stopped: ' + (e && (e.message || e));
+        if (go) go.textContent = 'Retry ›';
+      }
+    });
+  }
+  return true;
+}
+
 async function refreshUpdateBanner() {
   const b = document.getElementById('updateBanner');
   if (!b) return;
+  if (b._busy || (await refreshSignedUpdate(b))) return;
   let r = null;
   try { r = await walletCore('wallet_update_status'); } catch (_) { r = null; }
   const on = !!(r && r.available);

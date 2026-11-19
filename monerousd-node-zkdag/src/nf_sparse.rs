@@ -1297,6 +1297,12 @@ impl BandDoor {
         self.ring.iter().copied()
     }
 
+    /// A-F101: every tag the journal's steps admitted, oldest step first (TAG-SPACE: the tags as values). A resume reads it to
+    /// carry a view cache written at an earlier step up to the band it restores against (`Node::restore_nf_view`).
+    pub fn journal_admitted(&self) -> impl Iterator<Item = &[u8; 32]> + '_ {
+        self.journal.iter().flat_map(|s| s.admitted.iter())
+    }
+
     /// The newest fold step this band has applied.
     #[must_use]
     pub fn newest_applied(&self) -> Option<u64> {
@@ -3392,12 +3398,14 @@ impl RefSparseNf {
     /// The tags this view holds in one shard, sorted, from `after` on, at most `max` of them: one page for a node fetching the shard.
     #[must_use]
     pub fn shard_tags_page(&self, shard: u32, after: Option<[u8; 32]>, max: usize) -> Vec<[u8; 32]> { // TAG-SPACE: public spent tags
+        // NF-SHARD AUDIT N7 (lane speed5, 2026-11-18): walk the ordered set from the cursor, never a copy of it. The old form
+        // (`leaves_sorted()` then filter) copied the WHOLE set for every page — ~44 MB on the live origin's 1.39 M tags, and
+        // a joiner taking every shard pulls ~1,360 pages. A shard's tags are spread over the order (the shard is a key hash),
+        // so a page reads ~max × 2^bits entries in order and allocates only the page. Same tags, same order as before.
+        use std::ops::Bound;
         let bits = usdm_decider::nf_sparse_air::NF_BAND_BITS;
-        self.leaves_sorted()
-            .into_iter()
-            .filter(|t| nf_shard(t, bits) == shard && after.is_none_or(|a| *t > a))
-            .take(max)
-            .collect()
+        let from = after.map_or(Bound::Unbounded, Bound::Excluded);
+        self.leaves.range((from, Bound::Unbounded)).filter(|t| nf_shard(t, bits) == shard).take(max).copied().collect()
     }
 
     /// The shards this view holds, or every shard for an unsharded view.

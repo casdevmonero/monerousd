@@ -19,6 +19,7 @@ pub mod note_store; // Oblivious cold-restore PERSISTENCE — encrypted, chain-s
 // detection primitive would be free to drift apart silently, which is exactly how a wallet stops seeing its money.
 pub use usdmd_node::omr;
 mod network_descriptor; // Canonical self-maintaining network descriptor — auto-join the ONE chain, no chain split
+mod updater; // ⭐ the one-click wallet update: a signed release found, verified and installed only when the person presses Install
 pub mod pq;
 pub mod letter; // Letter — self-custodial PQ-sealed authenticated private messaging (seal/open with seed-derived keys)
 pub mod pq_book;
@@ -153,6 +154,31 @@ macro_rules! off_ui_thread {
         }
     };
 }
+
+/// ⭐ THE ONE-CLICK UPDATE (updater.rs): `update_check` reads the signed release manifest over Tor and says whether a newer
+/// release exists; `update_install` downloads it, refuses it unless the release key's signature, its size and its blake3 all
+/// match, hands it to the system, and closes the wallet when the system replaces it. No approval prompt is asked for, by design:
+/// the only file that can be installed is the genuine signed release, so a page that presses Install gains nothing (updater.rs).
+fn update_check_body() -> Result<serde_json::Value, String> {
+    updater::check()
+}
+off_ui_thread!(update_check => update_check_body());
+/// The running app's handle, kept at setup so the update can close the wallet through Tauri's normal exit.
+static UPDATE_APP: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+fn update_install_body() -> Result<serde_json::Value, String> {
+    let r = updater::install()?;
+    if r.get("next").and_then(|v| v.as_str()) == Some("restart") {
+        // the wallet's normal exit, so the helper (or the installer) can replace it; the node service runs on its own
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            if let Some(app) = UPDATE_APP.get() {
+                app.exit(0);
+            }
+        });
+    }
+    Ok(r)
+}
+off_ui_thread!(update_install => update_install_body());
 
 /// ⛔⛔⛔ DB-373 — APPROVAL LIVES IN THE CORE, AT THE COMMAND. Every command that spends, locks or moves the user's
 /// funds, publishes under the user's identity or signs governance enters through [`off_ui_thread_approved!`] (or calls
@@ -28342,6 +28368,9 @@ off_ui_thread_approved!(wallet_set_remix => set_remix_b(on: bool) ; if on {
 macro_rules! wallet_invoke_handler {
     () => {
         tauri::generate_handler![
+            // the one-click wallet update (updater.rs)
+            update_check,
+            update_install,
             // goods spec: protected purchases (the vault handshake, the handover code, the refund, the deadline)
             vault_ops::purchase_request,
             vault_ops::purchase_accept,
@@ -28578,6 +28607,23 @@ macro_rules! wallet_invoke_handler {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ⭐ THE UPDATE, FROM THE COMMAND LINE (lane speed5, 2026-11-18): `--update-check` and `--update-install` run the SAME
+    // `updater::check` / `updater::install` the Install button calls (the install's restart helper included), print the answer
+    // as JSON and exit — before any window, node service or Tor forwarder starts. The proof drives the real update with them,
+    // and a person without a working window can update the same way.
+    if let Some(arg) = std::env::args().nth(1).filter(|a| a == "--update-check" || a == "--update-install") {
+        let r = if arg == "--update-check" { updater::check() } else { updater::install() };
+        match r {
+            Ok(v) => {
+                println!("{v}");
+                std::process::exit(0);
+            }
+            Err(e) => {
+                println!("{}", serde_json::json!({ "error": e }));
+                std::process::exit(1);
+            }
+        }
+    }
     // ON-DEVICE PANIC VISIBILITY (iOS discards a Rust panic's stderr): install a process-global panic hook FIRST,
     // before anything can panic, so EVERY panic on ANY thread — the in-process node/arti thread, a Tauri worker,
     // keygen, the note scanner — routes its payload + source location + thread name to the iOS system log (syslog
@@ -28626,6 +28672,8 @@ pub fn run() {
         // `ensure_node` is idempotent (the SPAWNING dedupe), so calling it here costs nothing on any path
         // that also calls it later.
         .setup(|_app| {
+            // the one-click update closes the wallet through this handle (its normal exit) once the system takes over
+            let _ = UPDATE_APP.set(_app.handle().clone());
             // Where this install's bundled resources really are (wallet audit W22): Contents/Resources on macOS,
             // <install dir> on Windows, /usr/lib/<app> for a .deb, inside the mount for an AppImage. Read once here,
             // before the node autostart below searches for the bundled node.

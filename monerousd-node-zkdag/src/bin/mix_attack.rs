@@ -43,6 +43,10 @@ async fn victim_record(s: &mut tokio::net::UnixStream, keys: &mut LinkKeys, vict
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    // N10: the attacker signs on the victim's network (MONEROUSD_NET, the daemon's own rule), so a record it forges is refused
+    // for what it forges, never for naming another network
+    let net = std::env::var("MONEROUSD_NET").unwrap_or_else(|_| "testnet".to_string());
+    usdmd_node::params::set_process_network_id(&usdmd_node::params::network_genesis_prefix(&net));
     let args: Vec<String> = std::env::args().collect();
     let (path, what) = (&args[1], args[2].as_str());
     let dir: PathBuf = std::env::temp_dir().join(format!("mix-attacker-{}", std::process::id()));
@@ -96,7 +100,7 @@ async fn main() {
             let epoch = epoch_now(now_ms());
             let (kem_pk, _) = packet::kem_keypair();
             let mut m = Vec::new();
-            m.extend_from_slice(b"monerousd mix v1 record");
+            m.extend_from_slice(&usdmd_node::pqauth::node_statement(b"monerousd mix v1 record")); // N10: the domain names the network
             m.extend_from_slice(&id.dsa_pk);
             m.extend_from_slice(&epoch.to_le_bytes());
             m.extend_from_slice(&kem_pk);

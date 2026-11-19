@@ -1351,7 +1351,7 @@ mod consensus_identity_is_the_live_chains_tests {
         // RE-PINNED 2026-11-10 (lane goods, attribution on the bus 13:09 by lane dcash): the source has derived 73bd8768…
         // since the header's state commits landed (0dcbbbcb, 2026-11-06) and the wallet's network descriptor was moved to
         // it then; this literal was left on 87feeb17… and the pin read RED on main. No consensus byte moved here.
-        let want = "73bd8768f45bbc816ad869ad11c73591555f65796ad669af05fc18b40d5a8245";
+        let want = "f10d0361e0ca1972264cc40d602cb41104649b9c8ada7d964057512b9e0f7a13";
         let prefix = crate::params::network_genesis_prefix("testnet");
         let got = super::genesis_header_for_network(&prefix).id();
         let got_hex: String = got.as_bytes().iter().map(|b| format!("{b:02x}")).collect();

@@ -21692,6 +21692,12 @@ impl Node {
     pub(crate) fn state_snapshot(&self) -> crate::sync::NullifierSnapshot {
         let vs = self.validators.export_state();
         let (band, band_next_ordinal, band_awaiting) = self.band_carriage();
+        // NF-SHARD AUDIT N3 (lane speed5, 2026-11-18): the count this snapshot certifies is `nf_blocks` (sparse folds), while the
+        // A_tip it rides with was advanced by `nf_fold_seq` (accepts). A joiner derives its own `nf_fold_seq` from the count, so
+        // a gap here is a gap the joiner keeps. DIGITAL-CASH-PRIVACY-REVIEWED: two public block counters; no tag, amount or owner.
+        if self.nf_blocks != self.nf_fold_seq {
+            eprintln!("[nf-audit] serving a state whose count names {} sparse-folded block(s) while A_tip counts {} accepted", self.nf_blocks, self.nf_fold_seq);
+        }
         crate::sync::NullifierSnapshot {
             membership_tip: self.membership_tip(),
             finality_validators: self.validators.finality_seats(),

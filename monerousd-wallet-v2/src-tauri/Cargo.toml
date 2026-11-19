@@ -3,7 +3,7 @@
 [package]
 name = "monerousd-wallet-v2"
 default-run = "monerousd-wallet-v2"
-version = "0.2.0"
+version = "0.3.0"
 license = "Apache-2.0"
 edition = "2021"
 description = "MoneroUSD Wallet V2 — the first post-quantum private stablecoin desktop wallet (clean-room, Tauri)."
@@ -92,6 +92,11 @@ liblzma-sys = { version = "0.4.7", features = ["static"] }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "net", "io-util", "macros", "sync"] }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 futures = "0.3.32"
+# ⭐ the one-click wallet update (updater.rs): HTTPS over a Tor exit to GitHub's release download (tor::https_get). The ring
+# provider rustls already uses here; Mozilla's root list for GitHub's certificate. Integrity is the ML-DSA-65 release signature.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+futures-rustls = { version = "0.26", default-features = false }
+webpki-roots = "0.26"
 
 # APPLE-PAY-STYLE BIOMETRIC AUTHORIZATION on the Send/Pay flow — LocalAuthentication (Touch ID / Face ID), on
 # BOTH macOS (desktop) AND iOS (mobile) so the mobile wallet is at 100% feature parity. After the amount is

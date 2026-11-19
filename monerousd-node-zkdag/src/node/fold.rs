@@ -2856,6 +2856,11 @@ impl Node {
         self.nf_fold_seq
     }
 
+    /// Blocks folded into the sparse spent set so far (`fold_block_nf_in_order`) — the count a served bundle certifies.
+    pub fn nf_blocks_folded(&self) -> u64 {
+        self.nf_blocks
+    }
+
 
     // ⛔ `nf_fold_base_accessor` DELETED 2026-08-15 — it read/wrote a PER-BLOCK store (`da_fold_mem`/`da_nf_mem`),
     // one entry per block FOREVER, in RAM. The spend gate has not needed it since
@@ -4022,6 +4027,15 @@ impl Node {
         }
         let idx = ((lapses - 1) % backups.len() as u64) as usize;
         backups.get(idx).is_some_and(|b| b.as_str() == me)
+    }
+
+    /// SPEED (lane speed5, 2026-11-18): is this node a fold step's first owner over the full prover set, ignoring any bench (the
+    /// unbiased split the `[band-time]` line is compared against)? `None` without a public id. Read-only; a log field only.
+    pub(crate) fn band_step_first_owner_is_me(&self, ordinal: u64) -> Option<bool> {
+        let provers = self.band_provers();
+        let m = crate::nf_sparse::band_owner_count(self.params().target_spacing_ms, provers.len().max(1));
+        let me = self.public_id()?;
+        Some(crate::nf_sparse::band_step_owner(ordinal, &provers, m).as_deref() == Some(me))
     }
 
     pub(crate) fn band_next_owned_step(&mut self, provers: &[String], pointer_lease_lapses: u64) -> Option<BandProveJob> {

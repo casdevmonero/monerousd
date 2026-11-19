@@ -191,6 +191,126 @@ pub fn onion_forward(onion: &str, remote_port: u16) -> Option<u16> {
     Some(port)
 }
 
+/// ⭐ THE ONE CLEARNET EGRESS: A WALLET RELEASE, OVER TOR (lane speed5, 2026-11-18; user: "lets build the one click ota update
+/// for the wallet now"). An HTTPS GET to one of `RELEASE_HOSTS` (GitHub's release download and the hosts it redirects to)
+/// through an arti EXIT circuit, never a direct connection: GitHub sees a Tor exit, never this device's address, and the
+/// request carries nothing about the user (a fixed User-Agent, no cookie). Every other egress of this module stays the
+/// onion-only forwarder above. Redirects are followed only between `RELEASE_HOSTS`, at most `MAX_REDIRECTS`.
+/// PQ: the TLS here is GitHub's classical crypto on its own data (the 2026-11-09 exception); a release is trusted only by
+/// its ML-DSA-65 signature and the blake3 of each file (`updater.rs`), never by TLS.
+/// Bounded: at most `max_bytes` of body, `timeout_s` in all. Blocking: call it off the UI thread.
+pub fn https_get(url: &str, max_bytes: usize, timeout_s: u64) -> Result<Vec<u8>, String> {
+    const RELEASE_HOSTS: [&str; 4] =
+        ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "codeload.github.com"];
+    const MAX_REDIRECTS: usize = 6;
+    let t = tor().ok_or("Tor could not start on this device")?;
+    let mut rx = t.client_rx.clone();
+    let mut url = url.to_string();
+    t.rt.block_on(async move {
+        let deadline = std::time::Duration::from_secs(timeout_s);
+        tokio::time::timeout(deadline, async move {
+            let client = loop {
+                if let Some(c) = rx.borrow().clone() {
+                    break c;
+                }
+                rx.changed().await.map_err(|_| "Tor stopped before it connected".to_string())?;
+            };
+            for _ in 0..=MAX_REDIRECTS {
+                let rest = url.strip_prefix("https://").ok_or("a release URL must be https")?;
+                let (host, path) = rest.split_once('/').map_or((rest, "/".to_string()), |(h, p)| (h, format!("/{p}")));
+                if !RELEASE_HOSTS.contains(&host) {
+                    return Err(format!("refused: {host} is not a release host"));
+                }
+                let stream = client.isolated_client().connect((host, 443)).await.map_err(|e| format!("Tor could not reach {host}: {e}"))?;
+                let mut roots = rustls::RootCertStore::empty();
+                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                let cfg = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::ring::default_provider()))
+                    .with_safe_default_protocol_versions()
+                    .map_err(|e| format!("TLS: {e}"))?
+                    .with_root_certificates(roots)
+                    .with_no_client_auth();
+                let name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|e| format!("TLS name: {e}"))?;
+                let mut tls = futures_rustls::TlsConnector::from(std::sync::Arc::new(cfg))
+                    .connect(name, stream)
+                    .await
+                    .map_err(|e| format!("TLS to {host}: {e}"))?;
+                use futures::io::{AsyncReadExt, AsyncWriteExt};
+                let req = format!(
+                    "GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: monerousd-wallet\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+                );
+                tls.write_all(req.as_bytes()).await.map_err(|e| format!("send: {e}"))?;
+                tls.flush().await.map_err(|e| format!("send: {e}"))?;
+                let mut raw = Vec::new();
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let n = match tls.read(&mut buf).await {
+                        Ok(n) => n,
+                        // a server that closes without TLS close_notify ends the body; what was read stands, and the
+                        // caller's size and hash check decide whether it is whole
+                        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => 0,
+                        Err(e) => return Err(format!("read: {e}")),
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    if raw.len() > max_bytes + 64 * 1024 {
+                        return Err(format!("refused: the answer is larger than {max_bytes} bytes"));
+                    }
+                }
+                let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or("a malformed HTTP answer")?;
+                let head = String::from_utf8_lossy(&raw[..split]).to_string();
+                let body = raw[split + 4..].to_vec();
+                let status: u16 = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).ok_or("no HTTP status")?;
+                let header = |k: &str| {
+                    head.lines().skip(1).find_map(|l| {
+                        let (a, b) = l.split_once(':')?;
+                        a.trim().eq_ignore_ascii_case(k).then(|| b.trim().to_string())
+                    })
+                };
+                if matches!(status, 301 | 302 | 303 | 307 | 308) {
+                    url = header("location").ok_or("a redirect with no Location")?;
+                    continue;
+                }
+                if status != 200 {
+                    return Err(format!("{host} answered HTTP {status}"));
+                }
+                let body = if header("transfer-encoding").is_some_and(|v| v.eq_ignore_ascii_case("chunked")) {
+                    dechunk(&body)?
+                } else {
+                    body
+                };
+                if body.len() > max_bytes {
+                    return Err(format!("refused: the answer is larger than {max_bytes} bytes"));
+                }
+                return Ok(body);
+            }
+            Err("too many redirects".to_string())
+        })
+        .await
+        .map_err(|_| format!("no answer within {timeout_s} s"))?
+    })
+}
+
+/// An HTTP/1.1 chunked body, decoded (sizes in hex, each chunk followed by CRLF, ended by a zero chunk).
+fn dechunk(mut b: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    loop {
+        let eol = b.windows(2).position(|w| w == b"\r\n").ok_or("a malformed chunk")?;
+        let size_text = String::from_utf8_lossy(&b[..eol]);
+        let size = usize::from_str_radix(size_text.split(';').next().unwrap_or("").trim(), 16).map_err(|_| "a malformed chunk size")?;
+        b = &b[eol + 2..];
+        if size == 0 {
+            return Ok(out);
+        }
+        if b.len() < size + 2 {
+            return Err("a truncated chunk".to_string());
+        }
+        out.extend_from_slice(&b[..size]);
+        b = &b[size + 2..];
+    }
+}
+
 #[cfg(test)]
 mod onion_name_tests {
     #[test]

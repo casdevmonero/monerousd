@@ -659,8 +659,44 @@ pub fn network_genesis_prefix(net: &str) -> Vec<u8> {
             v.extend_from_slice(&anchor.digest());
         }
     }
+    if magic == TESTNET_NETWORK_ID {
+        testnet_run_suffix(&mut v, TESTNET_RUN);
+    }
     v
 }
+
+/// The testnet prefix of run `run` ([`TESTNET_RUN`] is this release's): the netsim's reset test boots one node on the
+/// previous run beside the current one, the way a node that never updated stays online after a reset.
+#[must_use]
+pub fn testnet_genesis_prefix_for_run(run: u32) -> Vec<u8> {
+    let mut v = Vec::from(&b"MUSD-NETID-v1"[..]);
+    v.extend_from_slice(&TESTNET_NETWORK_ID.to_le_bytes());
+    testnet_run_suffix(&mut v, run);
+    v
+}
+
+fn testnet_run_suffix(v: &mut Vec<u8>, run: u32) {
+    // run 1 is the run launched 2026-11-18 with no run commitment: its prefix is the bare magic, so a node of that run
+    // is reproduced exactly
+    if run <= 1 {
+        return;
+    }
+    v.extend_from_slice(b"MUSD-TESTNET-RUN");
+    v.extend_from_slice(&run.to_le_bytes());
+    v.extend_from_slice(&launch_artifacts_digest(crate::sat_set_aside::CANONICAL, crate::defi_launch::CANONICAL));
+}
+
+/// ⭐ THE TESTNET RUN (lane speed5, 2026-11-18, finding A-F101) — the public testnet's genesis, and so its network id and every
+/// statement a node signs on it (`pqauth::node_statement`), commits to the run number and to the launch files this release
+/// carries, the shape the mainnet anchor already has. MEASURED why: the run launched 2026-11-18 stopped for good at band step
+/// 5,428 (docs/LIVE-BAND-STALL-DEEP-AUDIT-20261118.md); a reset on the same genesis would be undone by any node still on the
+/// old run (its heavier DAG roots at the same genesis block) and would make the founding seat's old votes a valid
+/// equivocation against its new ones. A new run is a different network by construction: old blocks do not connect to its
+/// genesis, and a vote signed on the old run is a false statement here. The founder's set-aside and the operator seats are
+/// the launch files, unchanged, so the founder's phrase and seats carry over. Raise this number for every testnet reset.
+/// AI RESISTANT: (a) — every node derives the id alone from these bytes. SCALE: 4 + 32 bytes in the genesis prefix, once.
+/// cons: every wallet and node of the old run must update to join (a new release), by design.
+pub const TESTNET_RUN: u32 = 2;
 
 impl ChainParams {
     /// Apply a governance-approved DAG-width retune (no chain restart). `ghostdag_k` tracks the

@@ -151,6 +151,15 @@ pub trait CellTransport {
     /// this transport can still reach it; otherwise the hashed host [`CellTransport::bulk_raw_request`] picks. Bitcoin
     /// Core's `TxRequestTracker` asks a peer that announced the item. Default: the plain ask (a transport that names no
     /// link has nothing to aim at).
+    /// ⭐⭐ NF-SHARD AUDIT N8 (lane speed5, 2026-11-18) — THE PEER BEHIND `link` IS ON ANOTHER NETWORK (its beacon named another
+    /// genesis): no ask of this node goes to it again in this process. BORROWED: Bitcoin drops a peer whose network magic
+    /// (`pchMessageStart`) differs before any other message. MEASURED (netsim reset rehearsal, 2026-11-18): with one node of
+    /// the old testnet run on the wire, a joiner of the new run sent its view-warm asks to it, every answer was UNPLACED, its
+    /// view never warmed and it never reached a current view (red at 4 of 4 runs; green at 4 of 4 without that node).
+    /// §9.6: moves no state and admits nothing; a forged foreign beacon can only make this node stop ASKING its sender, and
+    /// that sender can already refuse to answer. SCALE: one id per foreign peer met, bounded by the address book.
+    /// Default: nothing (a transport with one peer or none has no rotation to leave).
+    fn exclude_link(&self, _link: u64) {}
     fn bulk_raw_request_to(&self, req: &[u8], _link: u64) -> bool {
         self.bulk_raw_request(req)
     }
@@ -808,6 +817,24 @@ impl CellTransport for MultiTransport {
         }
         accepted
     }
+    /// ⛔ NF-SHARD AUDIT N9 (lane speed5, 2026-11-18): forwarded, never the trait default. The default turns an aimed ask into
+    /// the plain pick, so with the production wrapper (`serve.rs`: mix, arti, BLE) no DB-448 ask was ever aimed at the peer
+    /// that announced the item — the inert-wrapper class `bulk_serve_slot` records above. Each leg resolves `link` itself
+    /// (an arti link id names an onion in its address book) and falls back to its own pick; first leg to accept wins.
+    fn bulk_raw_request_to(&self, req: &[u8], link: u64) -> bool {
+        for (i, leg) in self.legs.iter().enumerate() {
+            if self.leg_on(i) && leg.bulk_raw_request_to(req, link) {
+                return true;
+            }
+        }
+        false
+    }
+    /// N8: every leg leaves the foreign peer out of its own rotation.
+    fn exclude_link(&self, link: u64) {
+        for leg in &self.legs {
+            leg.exclude_link(link);
+        }
+    }
     /// DB-308: every leg's lost block-page asks. Only a bulk leg ever moves its count; a wrapper that inherited the
     /// default 0 would hide every loss from the runtime (the inert-wrapper class `bulk_serve_slot` records).
     fn block_page_asks_lost(&self) -> u64 {
@@ -1074,6 +1101,10 @@ impl<T: CellTransport> CellChannel<T> {
     /// DB-448: the link the last polled message arrived on (see `last_link`).
     pub fn last_message_link(&self) -> Option<u64> {
         self.last_link
+    }
+    /// N8: the peer behind `link` is on another network (see the trait method).
+    pub fn exclude_link(&self, link: u64) {
+        self.transport.exclude_link(link);
     }
     /// DB-448: a bulk ask aimed at `link` (see the trait method).
     pub fn bulk_raw_request_to(&self, req: &[u8], link: u64) -> bool {

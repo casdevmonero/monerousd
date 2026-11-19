@@ -72,6 +72,8 @@
     "allow-moneropay-ble-start-merchant",
     "allow-moneropay-ble-stop-merchant",
     "allow-node-rpc",
+    "allow-update-check",
+    "allow-update-install",
     "allow-node-status",
     "allow-proof-tag-verifier-key",
     "allow-proof-tags-check",

@@ -1609,8 +1609,9 @@ impl Node {
                 // structure. This states whether genesis reached the ledger, which is the fact two silent
                 // failed attempts could not distinguish from "the call never ran".
                 eprintln!(
-                    "[da] genesis ledger record: id0={} rid={rid} had={had} now={}",
-                    g.as_bytes()[0],
+                    // the whole genesis id (public: it names the network), so an operator reads which run a node is on
+                    "[da] genesis ledger record: genesis={} rid={rid} had={had} now={}",
+                    g.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>(),
                     self.da_holds(rid)
                 );
                 // ⭐⭐⭐ STATE THE LEDGER POSITION AT BOOT — "was the gap already there at t=0?"
@@ -3277,6 +3278,31 @@ impl Node {
         if !self.band_door.is_stale() {
             let mut view = crate::nf_sparse::RefSparseNf::from_band(self.band_door.band());
             let bits = usdm_decider::nf_sparse_air::NF_BAND_BITS;
+            // ⛔⛔ A-F101 (lane speed5, 2026-11-18, docs/LIVE-BAND-STALL-DEEP-AUDIT-20261118.md L1) — THE CACHE IS CARRIED UP TO THE BAND
+            // BEFORE ITS SHARDS ARE CHECKED. The view advances step by step on its own, so the tags a checkpoint captured can stand
+            // a few band steps behind the door the same checkpoint restores; every shard spent into between the two then fails
+            // `add_shard`'s fold check and was dropped. A spent set only grows, so the tags the journal's steps admitted (all
+            // that lie between the cache and the door, within the journal's reach) are added first; each shard is still held only
+            // if it folds to its band entry, exactly as before. MEASURED (live testnet origin, 2026-11-18 16:55): "spent-set view
+            // cache: RESUMED at the band root: 97 shard(s) held from 525518 cached tag(s)" — the node came back partial, its band
+            // worker then sat "waiting on holders for the pointer step's copaths" (no peer holds a view), the band stopped at step
+            // 5,428, and the fold, the join bundle (5,436 against a tip of 8,866) and finality (5,445) all stopped behind it.
+            // AI RESISTANT: (a) — `add_shard` keeps a shard only if its tags fold to the band entry every node agrees on; a tag
+            //   added here that the chain did not spend makes its shard fail, never pass.
+            // SCALE: the journal's reach (lag_cap steps × 256 tags) added to a set, once per resume; nothing grows.
+            // cons: one pass over the journal's admitted tags (≤ ~16 k) per resume.
+            let mut tags = tags;
+            {
+                let mut have: std::collections::HashSet<[u8; 32]> = tags.iter().copied().collect();
+                let before = tags.len();
+                for t in self.band_door.journal_admitted() {
+                    if have.insert(*t) {
+                        tags.push(*t);
+                    }
+                }
+                // DIGITAL-CASH-PRIVACY-REVIEWED: counts only; no tag, root, amount or owner.
+                eprintln!("[persist] spent-set view cache: {} tag(s) cached, {} more carried from the band journal", before, tags.len() - before);
+            }
             let mut by_shard: std::collections::BTreeMap<u32, Vec<[u8; 32]>> = std::collections::BTreeMap::new();
             for t in &tags {
                 by_shard.entry(crate::nf_sparse::nf_shard(t, bits)).or_default().push(*t);
@@ -3284,6 +3310,10 @@ impl Node {
             for s in 0..1u32 << bits {
                 let _ = view.add_shard(s, by_shard.get(&s).map_or(&[], Vec::as_slice));
             }
+            // A-F101 L6–L10 (docs/LIVE-BAND-STALL-DEEP-AUDIT-20261118.md): rebuilding a shard the cache lacks from the held blocks was
+            // MEASURED to fold 0 of 256 band entries on the live origin's files — the fold's DB-367 leave-outs are not recorded in the
+            // blocks — so a missing shard is fetched from a holder (`nf_share_tick`), and every node without a budget holds every
+            // shard (`nf_wanted_shards`), so a holder exists while any such node runs.
             // The view stands on the band's root, so the accumulator follows the band, through the one function that moves it.
             self.view_follow_band_root();
             self.sparse_acc_stale = false;

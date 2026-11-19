@@ -183,9 +183,21 @@ pub enum RecordRefused {
 
 const DOMAIN: &[u8] = b"monerousd mix v1 record";
 
+/// ⛔ NF-SHARD AUDIT N10 (lane speed5, 2026-11-18) — A MIX RECORD NAMES ITS NETWORK: the signed bytes open with `DOMAIN ‖ network
+/// id` (`pqauth::node_statement`, the A-F47 shape every node statement has), and `parse` takes a record only under THIS network's.
+/// MEASURED why: a record named no network, so a node of the old testnet run (same software, same domain) passed
+/// `verify_record`, entered the mix view and could be picked as an ask host (`MixShared::ask` → `random_other`) — the netsim
+/// reset rehearsal measured exactly that class on the Tor lane (an old-run peer in the ask rotation: the joiner never warmed,
+/// 4 of 4 red). AI RESISTANT: (a) — a record of another network is a false statement here; the ML-DSA check over these bytes
+/// refuses it. SCALE: 32 bytes more per record (1,024 records at most: 32 KB). FORMAT: a mix record of an older build no longer
+/// parses (a re-genesis carries it).
+fn domain() -> Vec<u8> {
+    crate::pqauth::node_statement(DOMAIN)
+}
+
 fn signed_part(r: &Record) -> Vec<u8> {
     let mut m = Vec::with_capacity(4096);
-    m.extend_from_slice(DOMAIN);
+    m.extend_from_slice(&domain());
     m.extend_from_slice(&r.dsa_pk);
     m.extend_from_slice(&r.epoch.to_le_bytes());
     m.extend_from_slice(&r.kem_pk);
@@ -229,7 +241,8 @@ impl<'a> Cur<'a> {
 }
 
 fn parse(c: &mut Cur) -> Option<Record> {
-    if c.take(DOMAIN.len())? != DOMAIN {
+    let d = domain();
+    if c.take(d.len())? != d.as_slice() {
         return None;
     }
     let dsa_pk = c.take(DSA_PK)?.to_vec();
