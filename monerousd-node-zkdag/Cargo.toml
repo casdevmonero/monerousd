@@ -122,6 +122,8 @@ arti-onion = ["dep:arti-client", "dep:tor-hsservice", "dep:tor-cell", "dep:tor-p
 tikv-jemallocator = "0.6"
 
 [dependencies]
+# A-F113: OS randomness without a file descriptor (getentropy / getrandom(2)); already in the lockfile at 0.2.17
+getrandom = "0.2"
 # the ledger crate (node split stage B): its features follow this crate's, never its own defaults
 usdm-ledger = { path = "ledger", default-features = false }
 zeroize = { version = "1", features = ["derive"] }  # wipe secret key material (OMR clue secret)
@@ -212,8 +214,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"], option
 tor-cell = { version = "0.43.0", optional = true }
 tor-proto = { version = "0.43.0", optional = true }
 libc = "0.2"
-# A-F113: OS randomness without a file descriptor (getentropy / getrandom(2)); already in the lockfile at 0.2.17
-getrandom = "0.2"
 # lane d 2026-10-27: every OS call the node makes goes through `oscall` by a SAFE wrapper crate — no `unsafe` in the
 # shipping tree (the hole scanner's memory-unsafe class). nix: fd path / dup2 / umask / thread clock / syslog / kill;
 # signal-hook: the TERM flag (sigaction via signal-hook-registry, the registry tokio's own signal driver uses);
