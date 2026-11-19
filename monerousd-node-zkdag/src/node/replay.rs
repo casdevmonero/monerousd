@@ -132,6 +132,13 @@ impl Node {
         for ((o, a), addr) in steps.into_iter().zip(addrs) {
             self.da_store_membership_acc(o, a);
             self.da_leafstart_mem.entry(addr).or_insert(o.saturating_sub(1).saturating_mul(width));
+            // ⛔ A-F105 (lane speed5, 2026-11-19): the fold above just proved this row IS the chain's record at its ordinal
+            // (genesis → the certified base accumulator, short of a Poseidon2 collision), which is what `chain-bound` means on
+            // a replayer. MEASURED: without it the joiner held rows 57-78 `chain-bound false` where both replayers held them
+            // `true` (replica census on e53cce79, da_mem 2595255/2595255/2595284). cons: none — one bool per proven row.
+            if let Some(row) = self.da_mem.get_mut(&addr) {
+                row.2 = true;
+            }
         }
         self.da_macc_first = Some((1, Self::MEMBERSHIP_GENESIS_ACC));
         self.certified_prefix_len = 0;

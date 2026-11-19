@@ -13,6 +13,10 @@
 //! PoW-grind engine (fills nonce/pow_bind on the template, #73), and the ZK-proof
 //! consensus verify (the usdm-decider WHIR light decider) wire onto this same object in the following bricks.
 
+/// ⭐ KASPA'S SPENDABILITY (lane speed5, 2026-11-19): how many fold steps under the newest fold step a send's member leg anchors
+/// (`Node::final_fold_step`). 2 clears the measured re-order at the newest step (A-F36) at ~7 s on the live run-2 pace.
+pub(crate) const SPEND_ANCHOR_DEPTH: u64 = 2;
+
 use crate::fixed::FixedBytes;
 use crate::block::{Block, BlockId};
 use crate::dag::{Dag, DagError};
@@ -232,6 +236,11 @@ pub const FINALITY_POOLED_VOTES_MAX: usize = crate::validator::FINALITY_VOTE_RET
 /// G2b: the most `(height, voter)` rows the deferred-votes map keeps (the highest height is dropped past it) — the same
 /// retention bound; a node that defers more than a retention depth of votes is a node whose fold is not moving at all.
 pub const FINALITY_DEFERRED_VOTES_MAX: usize = crate::validator::FINALITY_VOTE_RETENTION as usize;
+/// ⛔ A-F107 (lane speed5, 2026-11-19): the most deferred votes ONE voter keeps (its highest heights). With one shared bound and
+/// the highest heights evicted first, one seated key could sign votes for invented blocks at heights under the tip, fill the
+/// map and evict every honest vote that arrived before its block (the common case, A-F82), starving finality. 64 is two
+/// fold windows of heights a vote can precede its block by; an honest voter votes one height at a time.
+pub const FINALITY_DEFERRED_PER_VOTER: usize = 64;
 
 /// The chunk indices one record's sample may name. `crate::da::sample_indices` returns at most
 /// `crate::da::DA_SAMPLES` DISTINCT values, and `begin_da_sample` refuses a plan longer than this.
@@ -7787,6 +7796,7 @@ impl Node {
     /// increment 2's `respend_reach`).
     pub(crate) const SPINE_RING_LEN: usize = crate::params::SPINE_RING_LEN;
 
+
     /// ⛔ §POLES spec 5 — what the count-trimmed rewind journals (`spine_recent_frontiers`, `respend_reach`,
     /// `objects_fold_journal`) keep PHYSICALLY: twice the rewind ring, so a node that retreated r ≤ `SPINE_RING_LEN` fold
     /// steps (a fold root that dropped below its fold tip) still holds every entry a never-folded peer at the same tip
@@ -7933,12 +7943,22 @@ impl Node {
         if !FINAL_STEP_MEASURED_FOR_TEST.with(std::cell::Cell::get) {
             return Some(newest);
         }
-        let by_depth = newest.checked_sub(Self::SPINE_RING_LEN as u64).filter(|s| *s > 0);
-        let by_votes = self
-            .user_final_block()
-            .and_then(|block| self.respend_reach.iter().find(|(_, id)| *id == block).map(|(o, _)| *o))
-            .or_else(|| self.user_final_height().checked_sub(1).filter(|s| *s > 0));
-        by_depth.max(by_votes).map(|s| s.min(newest))
+        // ⭐⭐ KASPA'S SPENDABILITY (lane speed5, 2026-11-19; user: "why cant we make our chain quick like kaspa by using their
+        // finality and spendability appraoch and remove relying on the votes?" · "settlement should work from our chain alone
+        // quickly not depend on finality votes"). A note is spendable once its block is FOLDED — accepted at the chain's own fold
+        // depth (RECORD_FOLD_DEPTH), Kaspa's "accepted by the selected chain" — and its spend anchors SPEND_ANCHOR_DEPTH steps
+        // under the newest fold step. No vote is read: finality is an overlay (shown, used by payouts), never a gate on a send.
+        // MEASURED why: the anchor waited SPINE_RING_LEN (64) steps or the vote-final step, whichever was higher — on the live
+        // run-2 chain (~3.3 s a block, finality ~50 blocks behind the tip) a received payment sat ~3.5 min before it could move.
+        // The 64 was the rewind ring's size, not a measured re-order depth; A-F36 measured a re-order at the NEWEST step under
+        // load, which SPEND_ANCHOR_DEPTH clears. A deeper re-order makes the anchored root vanish and the send is refused for
+        // that reason alone — no value moves, the note was never spent — and the wallet rebuilds the send against the new root
+        // (Kaspa re-validates a transaction after a reorg the same way). AI RESISTANT: (a) — every door still checks the leg
+        // against its own ring; this only chooses which root a wallet proves against. SCALE: a subtraction.
+        // cons: a send whose anchor is re-ordered (a re-order deeper than SPEND_ANCHOR_DEPTH) is rebuilt once — seconds — where
+        // before every send waited minutes.
+        let _ = Self::SPINE_RING_LEN;
+        newest.checked_sub(SPEND_ANCHOR_DEPTH).filter(|s| *s > 0).map(|s| s.min(newest))
     }
 
     /// ⭐⭐ A-F25 — THE FINAL ANCHOR this node's stream names: the newest ring entry at or under [`Self::final_fold_step`]
@@ -19197,9 +19217,7 @@ impl Node {
         for (k, cert) in still_awaiting {
             self.deferred_votes.entry(k).or_insert(cert);
         }
-        while self.deferred_votes.len() > FINALITY_DEFERRED_VOTES_MAX {
-            self.deferred_votes.pop_last();
-        }
+        self.bound_deferred_votes();
         // DIGITAL-CASH-PRIVACY-REVIEWED: a count of public validator votes and two heights; never a key or amount.
         eprintln!(
             "[finality-vote] G2b: {n} deferred vote(s) judged now that the fold cursor reached {} ({awaiting} still await their block)",
@@ -19218,7 +19236,34 @@ impl Node {
     pub(crate) fn defer_vote_awaiting_block(&mut self, cert: VoteCert) {
         let voter = pubkey_id(&cert.pubkey);
         self.deferred_votes.entry((cert.height, voter)).or_insert(cert);
-        while self.deferred_votes.len() > FINALITY_DEFERRED_VOTES_MAX {
+        self.bound_deferred_votes();
+    }
+
+    /// ⛔ A-F107 — THE DEFERRED-VOTE POOL HOLDS A FIXED SHARE PER VOTER. Each voter keeps at most [`FINALITY_DEFERRED_PER_VOTER`]
+    /// of its own deferred votes (its highest heights: a voter's newest votes are the ones finality can still use), and the
+    /// pool as a whole at most that share × the seats (never under [`FINALITY_DEFERRED_VOTES_MAX`]), so no key's votes for
+    /// blocks that never arrive can evict another voter's honest early vote. ROOT-LAYER: the one bound both insert sites call.
+    /// SCALE: f(seats) — one share per seated voter, the validator set's own shape; never f(height) or f(votes sent).
+    /// AI RESISTANT: (b) code — a key can fill only its own share; every vote in it passed the signature and weight checks.
+    /// cons: a voter more than 64 heights ahead of the blocks it votes for loses its oldest early votes (none honest is).
+    fn bound_deferred_votes(&mut self) {
+        let mut per: std::collections::HashMap<[u8; 32], usize> = std::collections::HashMap::new();
+        for (_, v) in self.deferred_votes.keys() {
+            *per.entry(*v).or_insert(0) += 1;
+        }
+        for (voter, n) in per.iter().filter(|(_, n)| **n > FINALITY_DEFERRED_PER_VOTER) {
+            let mut drop = n - FINALITY_DEFERRED_PER_VOTER;
+            let keys: Vec<(u64, [u8; 32])> = self.deferred_votes.keys().filter(|(_, v)| v == voter).copied().collect();
+            for k in keys {
+                if drop == 0 {
+                    break;
+                }
+                self.deferred_votes.remove(&k); // ascending: the voter's LOWEST heights leave first
+                drop -= 1;
+            }
+        }
+        let cap = FINALITY_DEFERRED_VOTES_MAX.max(FINALITY_DEFERRED_PER_VOTER.saturating_mul(self.validators.len()));
+        while self.deferred_votes.len() > cap {
             self.deferred_votes.pop_last();
         }
     }
@@ -20339,6 +20384,11 @@ impl Node {
     /// The carried votes this node holds but cannot judge yet (G2b: their height is above its fold cursor + D).
     pub fn deferred_votes_len(&self) -> usize {
         self.deferred_votes.len()
+    }
+
+    /// How many of the deferred votes one voter holds (A-F107's per-voter share, read by its netsim attack). A scalar.
+    pub fn deferred_votes_of(&self, voter: &[u8; 32]) -> usize {
+        self.deferred_votes.keys().filter(|(_, v)| v == voter).count()
     }
 
     pub fn finalized_block(&self) -> Option<BlockId> {

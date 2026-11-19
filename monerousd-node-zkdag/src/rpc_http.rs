@@ -4504,9 +4504,14 @@ transaction, so NOTHING was burned or seated. Retry.\"}"
             // `/get_validator_bond` (self-lookup by voter_id) — neither of which exposes the total.
             let rt = rt.lock().unwrap_or_else(|e| e.into_inner());
             let vs = rt.node().validators();
+            // `founding_seated`: how many of the launch files' genesis seats (`defi_launch::genesis_seats`, public bytes every
+            // node compiles in) still hold a seat. A count of public genesis facts, never a weight or a stake. A rig's checks read
+            // their OWN seats as `validators - founding_seated` (A-F100's class: the founding custodian no rig node holds).
+            let bonded = vs.bonded_ids();
+            let founding = crate::defi_launch::genesis_seats().iter().filter(|(id, _, _, _)| bonded.contains(id)).count();
             (
                 200,
-                format!("{{\"status\":\"OK\",\"validators\":{}}}", vs.len()),
+                format!("{{\"status\":\"OK\",\"validators\":{},\"founding_seated\":{}}}", vs.len(), founding),
             )
         }
         ("POST", "/path_refresh_stream") => {
@@ -8439,7 +8444,9 @@ fn faucet_off() -> (u16, String) {
 /// no matter HOW the node was launched (there is no env to set and no way to fool it from outside the actual chain).
 fn node_network_is_testnet<T: CellTransport>(rt: &Arc<Mutex<NodeRuntime<T>>>) -> bool {
     let g = rt.lock().unwrap_or_else(|e| e.into_inner());
-    g.node().params().genesis_parity_commit == crate::params::network_genesis_prefix("testnet")
+    let genesis = &g.node().params().genesis_parity_commit;
+    // A-F111: the rig network is a value-less local network like the testnet; mainnet (and every unknown name) still refuses
+    *genesis == crate::params::network_genesis_prefix("testnet") || *genesis == crate::params::network_genesis_prefix("rig")
 }
 
 fn write_response(s: &mut TcpStream, code: u16, json: &str, cors: Option<&str>) -> std::io::Result<()> {

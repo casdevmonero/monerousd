@@ -150,24 +150,67 @@ pub fn adaptive_work_checked(dag: &Dag, selected_tip: Option<BlockId>) -> (u128,
     // PINS: `one_block_stamped_at_the_drift_bound_does_not_cut_the_next_blocks_work`,
     // `one_block_stamped_at_the_median_floor_does_not_raise_the_next_blocks_work`,
     // `six_of_eleven_stamped_blocks_do_move_the_work_so_the_median_is_not_decorative`, `h10_clock_skew…`.
-    let count = sample.len() as u128;
     let (blocks_in_window, actual_ms, _, _) = daa_span(dag, &sample);
     let target_ms = blocks_in_window * dag.params().target_spacing_ms as u128;
-    let sum_work: u128 = sample.iter().map(|(_, w, _)| *w).sum();
-    let avg = (sum_work / count).max(1);
+    // ⛔ A-F110 (lane speed5, 2026-11-19) — ASERT, anchored at the window's oldest sample (docs/CONSENSUS-WEIGHT-DEEP-AUDIT-20261119.md
+    // W6-W9). The window rule (`avg × target / actual`, 4× clamp) reacted over a 60-sample average: with production found by the
+    // grind it let a 1,000-node crowd run the mesh over its target long enough for a 467 s download wait (W5). ASERT moves the work
+    // by how far the window ran ahead of or behind its schedule, exponentially with a fixed half-life (BORROWED: Bitcoin Cash's
+    // aserti3-2d, its integer reference). The debt of running AHEAD is clamped at `ASERT_AHEAD_HALVES` half-lives, so a burst a cheap
+    // genesis work allowed can never hold the work at a height no producer reaches (MEASURED in the model: 3,000 producers at genesis
+    // halted with no clamp); running BEHIND is never clamped, since a falling work is what restores production (NO CHAIN HALTS).
+    // The window's median endpoints (DB-394, `daa_span`) still decide the elapsed time, so one stamped block moves nothing.
+    // What protects it: (b) code — the rule every node computes from the same window. SCALE: a constant in nodes, items and height.
+    // cons: a different difficulty path than the window rule: a consensus change, at height 1 with the testnet reset. `complete`
+    // says only whether the samples it was computed from ARE the chain's.
+    // NETWORK UPGRADE 1 (params::upgrade1_active): ASERT for a block whose selected parent is `tip`, from the activation height on;
+    // below it the window rule, byte-identical to every block the chain already holds, so the chain's history keeps its work.
+    let child_blue = dag.get(&tip).map_or(0, |n| n.blue_score).saturating_add(1);
+    if !crate::params::upgrade1_active(dag.params(), child_blue) {
+        let count = sample.len() as u128;
+        let sum_work: u128 = sample.iter().map(|(_, w, _)| *w).sum();
+        let avg = (sum_work / count).max(1);
+        let mut next = avg.saturating_mul(target_ms) / actual_ms;
+        let lo = (avg / DAA_CLAMP).max(1);
+        let hi = avg.saturating_mul(DAA_CLAMP);
+        if next < lo {
+            next = lo;
+        }
+        if next > hi {
+            next = hi;
+        }
+        return (next.max(1), complete);
+    }
+    let anchor = sample.last().map_or(1, |(_, w, _)| *w).max(1);
+    let half_ms = (ASERT_HALF_LIFE_TARGETS as u128).saturating_mul(dag.params().target_spacing_ms as u128).max(1);
+    (asert_work(anchor, target_ms, actual_ms, half_ms, ASERT_AHEAD_HALVES).max(1), complete)
+}
 
-    let mut next = avg.saturating_mul(target_ms) / actual_ms;
-    let lo = (avg / DAA_CLAMP).max(1);
-    let hi = avg.saturating_mul(DAA_CLAMP);
-    if next < lo {
-        next = lo;
-    }
-    if next > hi {
-        next = hi;
-    }
-    // The figure is byte-identical to what `adaptive_work` has always returned; `complete` says
-    // only whether the samples it was computed from ARE the chain's.
-    (next.max(1), complete)
+/// A-F110: the ASERT half-life, in targets (the model's measured choice, W6-W9: 4 targets halted, 8 and 16 held every steady size).
+pub const ASERT_HALF_LIFE_TARGETS: u64 = 16;
+/// A-F110: the most half-lives of running AHEAD the work answers for (W9: the ahead-only bound at 8 held the 3,000-node crowd's
+/// longest gap at 18 s).
+pub const ASERT_AHEAD_HALVES: i128 = 8;
+
+/// `anchor × 2^((target − actual) / half)`, the exponent clamped above at `ahead_halves`, in integer fixed point: the exponent in
+/// 1/65536 units, 2^frac by aserti3-2d's cubic, the integer part as a shift. Pure, so it is pinned directly.
+#[must_use]
+pub fn asert_work(anchor: u128, target_ms: u128, actual_ms: u128, half_ms: u128, ahead_halves: i128) -> u128 {
+    let num = (target_ms as i128).saturating_sub(actual_ms as i128).saturating_mul(65_536);
+    let ex = (num / (half_ms.max(1) as i128)).min(ahead_halves.saturating_mul(65_536)).max(-120 * 65_536);
+    let shifts = ex >> 16; // floor
+    let frac = (ex - (shifts << 16)) as u128; // 0..65536
+    let factor = 65_536u128
+        + ((195_766_423_245_049u128 * frac + 971_821_376u128 * frac * frac + 5_127u128 * frac * frac * frac + (1u128 << 47)) >> 48);
+    let scaled = anchor.saturating_mul(factor);
+    let out = if shifts >= 0 {
+        let s = shifts as u32;
+        if s >= 64 || scaled.leading_zeros() < s { u128::MAX } else { scaled << s }
+    } else {
+        let s = (-shifts) as u32;
+        if s >= 127 { 0 } else { scaled >> s }
+    };
+    (out >> 16).max(1)
 }
 
 /// The DAA's sample at `tip`: up to `daa_sample_len` selected-chain `(timestamp, work, blue score)`, newest first, and whether
@@ -580,22 +623,50 @@ mod tests {
     use crate::hash::Hash32;
 
     // Build a linear selected chain with fixed spacing (ms) and fixed per-block work.
+    /// A-F110 (lane af110, 2026-11-19): the DAA is ASERT — `anchor × 2^((target − actual) / half)` over the window, the ahead
+    /// exponent clamped at `ASERT_AHEAD_HALVES`. The window rule this replaced answered 1000 / 2000 / 500 here (`avg × target /
+    /// actual`); the figures below are ASERT's, computed from its definition, so the pin states the rule, not a remembered number.
     #[test]
     fn daa_holds_on_target_and_hardens_when_fast() {
-        // On-target spacing (500ms, the launch heartbeat `target_spacing_ms`) => work stays at the average.
-        let (dag, tip) = linear_chain(30, 500, 1000);
-        assert_eq!(adaptive_work(&dag, Some(tip)), 1000);
-
-        // Twice-too-fast spacing (250ms) => work doubles (harder), within the 4x clamp.
-        let (dag2, tip2) = linear_chain(30, 250, 1000);
-        assert_eq!(adaptive_work(&dag2, Some(tip2)), 2000);
-
-        // Twice-too-slow spacing (1000ms) => work halves (easier).
-        let (dag3, tip3) = linear_chain(30, 1000, 1000);
-        assert_eq!(adaptive_work(&dag3, Some(tip3)), 500);
-
+        crate::params::UPGRADE1_AT_GENESIS_FOR_TEST.store(true, std::sync::atomic::Ordering::Relaxed);
+        let expect = |spacing: u64| {
+            let (dag, tip) = linear_chain(30, spacing, 1000);
+            let (sample, _) = daa_sample_at(&dag, tip);
+            let (blocks, actual, _, _) = daa_span(&dag, &sample);
+            let target = blocks as f64 * dag.params().target_spacing_ms as f64;
+            let half = ASERT_HALF_LIFE_TARGETS as f64 * dag.params().target_spacing_ms as f64;
+            let ex = ((target - actual as f64) / half).min(ASERT_AHEAD_HALVES as f64);
+            (adaptive_work(&dag, Some(tip)), 1000.0 * 2f64.powf(ex))
+        };
+        // On target (500 ms, the fixture's `target_spacing_ms`): the work stays at the anchor's.
+        let (on, _) = expect(500);
+        assert_eq!(on, 1000, "on target the work is the anchor's");
+        // Twice too fast: harder, by exactly ASERT's factor (within the cubic's 0.1 %); twice too slow: easier, the same way.
+        for spacing in [250u64, 1000] {
+            let (got, want) = expect(spacing);
+            assert!(((got as f64) - want).abs() <= want * 0.001 + 1.0, "spacing {spacing}: ASERT gives {want:.1}, the DAA answered {got}");
+        }
+        assert!(expect(250).0 > 1000 && expect(1000).0 < 1000, "fast hardens, slow eases");
         // No tip => bootstrap.
         assert_eq!(adaptive_work(&Dag::new(), None), BOOTSTRAP_WORK);
+    }
+
+    /// A-F110: `asert_work` is `anchor × 2^ex` to within the cubic's error over the whole range, and only running AHEAD is clamped:
+    /// a chain far behind its schedule keeps easing (falling work is what restores production; NO CHAIN HALTS).
+    #[test]
+    fn af110_asert_matches_its_definition_and_clamps_only_ahead() {
+        crate::params::UPGRADE1_AT_GENESIS_FOR_TEST.store(true, std::sync::atomic::Ordering::Relaxed);
+        let half = 16_000u128;
+        for d in [-200_000i128, -48_000, -8_000, -1, 0, 1, 7_999, 8_000, 40_000, 127_999] {
+            let (target, actual) = if d >= 0 { (200_000u128 + d as u128, 200_000u128) } else { (200_000u128, 200_000u128 + (-d) as u128) };
+            let got = asert_work(1_000_000, target, actual, half, ASERT_AHEAD_HALVES) as f64;
+            let want = 1_000_000.0 * 2f64.powf((d as f64 / half as f64).min(ASERT_AHEAD_HALVES as f64));
+            assert!((got - want).abs() <= want * 0.001 + 1.0, "d {d}: want {want:.1}, got {got}");
+        }
+        let far_ahead = asert_work(1_000, 10_000_000, 1_000, half, ASERT_AHEAD_HALVES);
+        assert_eq!(far_ahead, 1_000 << ASERT_AHEAD_HALVES, "⛔ A-F110: running ahead is clamped at {ASERT_AHEAD_HALVES} half-lives");
+        let far_behind = asert_work(1u128 << 40, 1_000, 1_000 + 30 * half, half, ASERT_AHEAD_HALVES);
+        assert_eq!(far_behind, 1u128 << 10, "⛔ running behind is never clamped: 30 half-lives behind is 2^-30 of the anchor");
     }
 
     /// ⭐⭐⭐ H10 — CLOCK SKEW AND TIMESTAMP MANIPULATION, MEASURED (2026-10-05, the register's network row). The rules

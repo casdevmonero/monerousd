@@ -404,6 +404,10 @@ fn the_launch() -> Option<DefiLaunch> {
     if CANONICAL_FOR_TEST.with(|c| c.borrow().is_some()) {
         return verified_launch();
     }
+    // A-F111: the rig network has no launch (no founding seat, the DeFi layer shut), as Bitcoin's regtest has no mainnet genesis
+    if crate::params::process_network_is_rig() {
+        return None;
+    }
     static LAUNCH: std::sync::OnceLock<Option<DefiLaunch>> = std::sync::OnceLock::new();
     LAUNCH.get_or_init(verified_launch).clone()
 }

@@ -957,6 +957,18 @@ impl Node {
                         // "served_seq A=43 B=44" on identical record spaces.
                         self.served_seq = certified_records.saturating_add(1);
                         self.certified_prefix_len = self.served_seq;
+                        // ⛔ A-F105 (lane speed5, 2026-11-19) — A RE-ADOPT RECORDS ITS OWN BASE. `da_macc_first` (the accumulator
+                        // before the first ordinal this node folded) is written only while empty (`da_store_membership_acc`), and a
+                        // completed prefix sets it to (1, genesis) (`complete_adopted_prefix`). So a SECOND adopt left it there: the
+                        // new prefix waited for good ("[db471] the adopted prefix (base 85) waits: the accumulator's first ordinal is
+                        // 1"), its certified marker never retired, and the joiner ended with fewer history rows and more ladder than
+                        // every replayer (replica census on 57bc8319: certified_prefix_len 1/1/2, da_leafstart_mem 6268/6268/5124,
+                        // da_macc_*_mem 27300/27300/22568, da_ladder_mem 2/2/10270). Cleared here, the next fold step records this
+                        // adopt's base and the certified accumulator before it, exactly as on a first adopt; the completion then
+                        // folds every held row from genesis and must land on that accumulator, or installs nothing (fail closed).
+                        // Every reader treats `None` as "use the held rows" (node.rs record proof, fold.rs eviction, da.rs).
+                        // cons: none — one field cleared at the one adopt site; no byte, bound or rule changes.
+                        self.da_macc_first = None;
                         eprintln!(
                             "[dsync] adopted the certified note-frontier spine: {} -> {} leaves \
                              (served_seq now {}) — the jump is now EXTENSIBLE, not just named",

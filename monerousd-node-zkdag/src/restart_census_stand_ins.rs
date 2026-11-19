@@ -400,7 +400,17 @@ impl Node {
                 }
                 (kems.len(), *h.finalize().as_bytes())
             })))),
-            ("finality", d(format!("{:?}", (self.finality.finalized_height(), self.finality.finalized_block(), self.finality.tally_rows())))),
+            // ⛔ A-F106 part 2 (lane speed5, 2026-11-19): the open tally is compared once finality RUNS (A-F100's overlay rule,
+            // net/double_spend.py). Where finality never moved (finalized 0: a chain whose founding seat no node holds), the open
+            // tally is every vote since genesis that no certificate ever used, and a bundle joiner holds only the votes carried
+            // in bodies above its anchor — MEASURED replica census on e53cce79: finalized 0 on all three, tally (242, 122) on both
+            // replayers against (221, 114) on the joiner, the census's last DIFFERS. Once finality runs, the tally holds open
+            // heights only (above finalized) and is compared as before; the finalized height and block are compared always.
+            ("finality", d(if self.finality.finalized_height() == 0 {
+                format!("{:?}", (self.finality.finalized_height(), self.finality.finalized_block()))
+            } else {
+                format!("{:?}", (self.finality.finalized_height(), self.finality.finalized_block(), self.finality.tally_rows()))
+            })),
             ("governance", d(format!("{:?}", self.governance.len()))),
             ("sites", d(format!("{:?}", self.sites.roots()))),
             ("clues", d(format!("{:?}", (self.clues.len(), self.clues.content_digest())))),

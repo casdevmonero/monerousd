@@ -449,13 +449,76 @@ impl ChainParams {
 /// Unknown/unset network name => mainnet (the value-bearing side, safe default).
 pub const MAINNET_NETWORK_ID: u64 = 0x4d55_5344_4d41_494e; // "MUSDMAIN"
 pub const TESTNET_NETWORK_ID: u64 = 0x4d55_5344_5445_5354; // "MUSDTEST"
+/// ⛔ A-F111 (lane speed5, 2026-11-19) — THE RIG NETWORK, BORROWED: Bitcoin's regtest. A local rig of this machine runs its own
+/// network: its own magic, so its genesis prefix ([`network_genesis_prefix`]) differs from the testnet's and a rig node can never
+/// join the testnet or carry a testnet note; and no compiled launch (`defi_launch::the_launch` answers `None` here), so no founding
+/// seat whose key only the live origin holds dominates its tally. MEASURED why: churn-dead on lane build 6ab5c7c0 bonded three
+/// custodians (0.03 SAT each) beside the 100,000 SAT founding seat and never priced a deposit in 3,186 s (DB-387's strictly-2/3
+/// tally). cons: a rig proves the custody mechanics with independent custodians, never the launch-day state; that state is the
+/// testnet's own check.
+pub const RIG_NETWORK_ID: u64 = 0x4d55_5344_5249_4721; // "MUSDRIG!"
 
 /// The per-network magic folded into genesis, selected by network NAME (mirrors the wallet's `canonical_net`).
 pub fn net_magic(net: &str) -> u64 {
     match net.to_ascii_lowercase().as_str() {
         "testnet" | "test" | "regtest" => TESTNET_NETWORK_ID,
+        "rig" => RIG_NETWORK_ID,
         _ => MAINNET_NETWORK_ID,
     }
+}
+
+/// Test builds: a netsim mesh that runs the rig network in-process (`NetSim::rig_network`). Process-wide, so a test that sets it
+/// runs alone (net/sim_proof.py runs each mapped test in its own process).
+#[cfg(test)]
+pub static RIG_NETWORK_FOR_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// ⭐ NETWORK UPGRADE 1 (lane af110, 2026-11-19; user: "should we add a fork height feature to our testnet where all testnet nodes
+/// automatically join our fork … so we dont have to reset the testnet every time?" — "ok lets do your recommendation and get it live on
+/// our testnet") — A-F110's rules (production is the grind; the DAA is ASERT) take effect at a HEIGHT, not by a reset. BORROWED: Bitcoin
+/// Cash's ASERT activation and every Bitcoin-family hard fork: a build carries both rules and every node switches at the same block,
+/// so the chain and its history are kept. The height is read from the chain's own identity (its genesis prefix), never a setting a
+/// node chooses, so two nodes on one network always agree on it. Testnet: this release's height; the rig network: from genesis (a rig
+/// proves the new rules); mainnet: not before it is set at launch (u64::MAX). cons: both rules live until the height passes, then the
+/// old one is deleted; a node that has not updated by the height follows the old rules and leaves the chain (the wallet warns first).
+pub const TESTNET_UPGRADE1_HEIGHT: u64 = 7_000;
+
+/// Test builds: NETWORK UPGRADE 1 from genesis on every network a test boots (netsim boots the testnet genesis), so the tests exercise
+/// the new rules. Process-wide; a test that sets it runs alone (net/sim_proof.py runs each mapped test in its own process).
+#[cfg(test)]
+pub static UPGRADE1_AT_GENESIS_FOR_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The blue score from which NETWORK UPGRADE 1 rules apply on the chain `p` names.
+#[must_use]
+pub fn upgrade1_height(p: &ChainParams) -> u64 {
+    #[cfg(test)]
+    if UPGRADE1_AT_GENESIS_FOR_TEST.load(std::sync::atomic::Ordering::Relaxed) {
+        return 0;
+    }
+    if p.genesis_parity_commit == network_genesis_prefix("rig") {
+        0
+    } else if p.genesis_parity_commit == network_genesis_prefix("testnet") {
+        TESTNET_UPGRADE1_HEIGHT
+    } else {
+        u64::MAX
+    }
+}
+
+/// Whether a block at `blue_score` on the chain `p` names is under NETWORK UPGRADE 1's rules.
+#[must_use]
+pub fn upgrade1_active(p: &ChainParams, blue_score: u64) -> bool {
+    blue_score >= upgrade1_height(p)
+}
+
+/// Whether THIS PROCESS runs the rig network (A-F111): `MONEROUSD_NET` names it, read once. The launch is a genesis fact of the
+/// testnet and mainnet only; a rig has none.
+#[must_use]
+pub fn process_network_is_rig() -> bool {
+    #[cfg(test)]
+    if RIG_NETWORK_FOR_TEST.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    static RIG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *RIG.get_or_init(|| std::env::var("MONEROUSD_NET").map_or(false, |n| net_magic(&n) == RIG_NETWORK_ID))
 }
 
 /// ⭐⭐ THE MAINNET LAUNCH ANCHOR (user 2026-11-12, on the public-testnet rollout: the mainnet genesis "has to be tied to

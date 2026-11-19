@@ -49,9 +49,9 @@ fn view_window(n: usize, dt_ms: u64, work_oldest: u128, work_newest: u128) -> Ve
 /// cross-party arms (victim vs honest origin on a 10-node wire) are the netsim `eclipse_a_victim_*` pins.
 #[test]
 fn view_quality_reads_a_difficulty_fall_as_degraded_and_a_difficulty_rise_as_trusted() {
-    let fell = Node::view_quality_of(&view_window(16, 500, 5_000, 1_000), 500);
-    let rose = Node::view_quality_of(&view_window(16, 500, 1_000, 5_000), 500);
-    let flat = Node::view_quality_of(&view_window(16, 500, 3_000, 3_000), 500);
+    let fell = Node::view_quality_of(&view_window(16, 500, 5_000, 1_000), 500, 16);
+    let rose = Node::view_quality_of(&view_window(16, 500, 1_000, 5_000), 500, 16);
+    let flat = Node::view_quality_of(&view_window(16, 500, 3_000, 3_000), 500, 16);
     eprintln!("[view] fell {fell:?} · rose {rose:?} · flat {flat:?}");
     assert!(!flat.degraded, "CALIBRATION: a flat window at the target rate is trusted: {flat:?}");
     assert!(fell.degraded, "⛔ difficulty fell 5× inside one window (≥ DAA_CLAMP) and the view read trusted: {fell:?}");
@@ -70,10 +70,10 @@ fn view_quality_reads_a_difficulty_fall_as_degraded_and_a_difficulty_rise_as_tru
 fn view_quality_catches_the_quarter_rate_class_inside_the_estimator_margin() {
     assert_eq!(Node::view_rate_floor_x1000(16), 443, "class 250 × (1 + 3/√15)");
     assert_eq!(Node::view_rate_floor_x1000(60), 347, "class 250 × (1 + 3/√59)");
-    let victim = Node::view_quality_of(&view_window(16, 1_530, 1, 1), 500);
-    let honest = Node::view_quality_of(&view_window(16, 704, 1, 1), 500);
-    let victim60 = Node::view_quality_of(&view_window(60, 1_530, 1, 1), 500);
-    let honest60 = Node::view_quality_of(&view_window(60, 704, 1, 1), 500);
+    let victim = Node::view_quality_of(&view_window(16, 1_530, 1, 1), 500, 16);
+    let honest = Node::view_quality_of(&view_window(16, 704, 1, 1), 500, 16);
+    let victim60 = Node::view_quality_of(&view_window(60, 1_530, 1, 1), 500, 60);
+    let honest60 = Node::view_quality_of(&view_window(60, 704, 1, 1), 500, 60);
     eprintln!("[view] victim {victim:?} · honest {honest:?} · victim60 {victim60:?} · honest60 {honest60:?}");
     assert!(!honest.degraded && !honest60.degraded, "CALIBRATION: the lowest measured honest rate (0.71) stays trusted: {honest:?} {honest60:?}");
     assert!(victim.degraded, "⛔ the measured eclipsed victim (rate ~0.33, the 2-of-10 class) read trusted: {victim:?}");
@@ -10078,14 +10078,13 @@ fn db223_a_book_polled_every_few_folds_or_lagging_its_scan_still_captures_its_no
 /// RED before: `Node::final_anchor` and `MemberWitnessBook::object_carrier_for` did not exist; the one leg an object could
 /// carry was the newest-root leg, which CALIBRATION (c) below shows refused at the fold door once its step is re-ordered.
 /// What is measured, on a real node's own fold, ring, journal and stream:
-///   (1) with nobody voting and a chain shorter than the ring the node names NO final step, and an object gets no leg
-///       (never a leg at a step that can move), while the send leg of the same note is ready;
-///   (2) once the chain finalizes a block, the final step is the step THAT BLOCK folded at, and the stream carries its
-///       root and the frontier's peaks at that step;
+///   (1) with nobody voting, the final step is the newest fold step less `SPEND_ANCHOR_DEPTH` (Kaspa's spendability, lane
+///       speed5 2026-11-19), and the stream carries its root and the frontier's peaks at that step;
+///   (2) a finalized checkpoint moves no spend anchor: finality is an overlay, never a gate on a send;
 ///   (3) an old note's object leg is anchored there, verifies at the fold door, and still verifies after the newest
 ///       step's root is replaced; the newest-root leg of the same note does not;
 ///   (4) a note whose record folded after the final step gets `NOT_FINAL_YET`, and gets its leg once the chain's own
-///       depth makes its step final, with no vote;
+///       depth makes its step final, with no vote; (6) a chain no deeper than the anchor depth names no final step;
 ///   (5) TAMPER: a stream that names the final root with other peaks, or a final root the chain never held, yields no
 ///       leg; a final step that moves backward is ignored.
 /// TWO-PARTY-REVIEWED: one node and one wallet book here (the book believes nothing the node says: a leg is built only if
@@ -10098,7 +10097,6 @@ fn af25_an_objects_leg_is_anchored_at_the_final_step_and_survives_a_reorder_of_t
     use crate::spend_frontier::Digest4;
     crate::node::measure_final_step_for_test(true);
     let lanes = usdm_decider::poseidon2_compress::lanes_of;
-    let ring = Node::SPINE_RING_LEN as u64;
     let mut n = Node::new(genesis_block()).unwrap();
     let depth = n.params().record_fold_depth;
     let mut ts = 5_000u64;
@@ -10136,38 +10134,22 @@ fn af25_an_objects_leg_is_anchored_at_the_final_step_and_survives_a_reorder_of_t
     book.apply_stream(&n.path_refresh_stream(book.cursor())).expect("the stream reaches the book");
     assert!(book.holds(&old) && book.leg_ready(&old).is_ok(), "PRECONDITION: the old note's SEND leg is ready");
 
-    // (1) nobody votes and the chain is shorter than the ring: no final step is named, and an object gets no leg
-    assert!(n.spine_recent_roots.back().is_some_and(|(o, _)| *o < ring), "PRECONDITION: the chain is shorter than the ring");
-    assert_eq!(n.final_fold_step(), None, "⛔ a step was called final with no vote and no depth behind it");
-    assert_eq!(n.path_refresh_stream(0).final_anchor, None);
-    assert_eq!(book.final_anchor(), None);
-    assert_eq!(book.object_leg_ready(&old), Err("the node has named no final fold step yet"), "⛔ an object was offered a leg with no final step named");
-
-    // (2) the chain finalizes the block folded one step after the old note's record
-    let old_step = n.da_record_ordinal(old_seq).expect("the old note's record has folded");
-    let (vstep, vblock) = *n.respend_reach.iter().find(|(o, _)| *o == old_step + 1).expect("the reach holds the step after the old note's");
-    assert!(n.finality.install_finalized_checkpoint(vstep, vblock), "the finalized checkpoint installs");
-    assert_eq!(n.final_fold_step(), Some(vstep), "⛔ the final step is not the step the finalized block folded at");
-    let (fstep, froot, _) = n.final_anchor().expect("the journal holds the final step's frontier");
+    // (1) KASPA'S SPENDABILITY (speed5 2026-11-19): with nobody voting, the final step is the newest fold step less
+    // SPEND_ANCHOR_DEPTH — the chain's own depth, no vote — and the stream carries its root to the book
     let newest = n.spine_recent_roots.back().copied().expect("the ring has a newest step");
-    assert_eq!(fstep, vstep);
+    let fstep = n.final_fold_step().expect("⛔ no final step was named on a chain deeper than the anchor depth, with no vote");
+    assert_eq!(fstep, newest.0 - crate::node::SPEND_ANCHOR_DEPTH, "⛔ the final step is not the newest step less SPEND_ANCHOR_DEPTH");
+    let (astep, froot, _) = n.final_anchor().expect("the journal holds the final step's frontier");
+    assert_eq!(astep, fstep);
     assert!(newest.0 > fstep && newest.1 != froot, "CALIBRATION: the final step is not the newest one, and their roots differ");
     book.apply_stream(&n.path_refresh_stream(book.cursor())).expect("the stream reaches the book");
     assert_eq!(book.final_anchor(), Some((fstep, froot)), "the stream carries the final anchor to the book");
 
-    // (4, first half) a note whose record folds after the final step
-    let young_blk = produce(&mut n, b"af25-young-note");
-    let (young, young_leaves, young_seq) = note_of(&n, &young_blk, 17);
-    book.note_arrived(young, young_leaves);
-    for i in 0..(depth + 3) {
-        produce(&mut n, &(2_000 + i).to_le_bytes());
-    }
-    book.apply_stream(&n.path_refresh_stream(book.cursor())).expect("the stream reaches the book");
-    let young_step = n.da_record_ordinal(young_seq).expect("the young note's record has folded");
-    assert!(young_step > fstep, "PRECONDITION: the young note folded after the final step");
-    assert!(book.leg_ready(&young).is_ok(), "PRECONDITION: a SEND of the young note is ready (the send path is untouched)");
-    assert_eq!(book.object_leg_ready(&young), Err(NOT_FINAL_YET), "⛔ an object was offered a leg for a note above the final step");
-    assert_eq!(book.object_carrier_for(&young, binder, blind, &[0u8; 32], &[0u8; 32]).err(), Some(NOT_FINAL_YET), "the builder gives the dry run's verdict");
+    // (2) FINALITY IS AN OVERLAY: a finalized checkpoint at an older step moves no spend anchor
+    let old_step = n.da_record_ordinal(old_seq).expect("the old note's record has folded");
+    let (vstep, vblock) = *n.respend_reach.iter().find(|(o, _)| *o == old_step + 1).expect("the reach holds the step after the old note's");
+    assert!(n.finality.install_finalized_checkpoint(vstep, vblock), "the finalized checkpoint installs");
+    assert_eq!(n.final_fold_step(), Some(fstep), "⛔ a vote moved the spend anchor (finality is an overlay, never a gate on a send)");
 
     // (3) the old note's object leg: anchored at the final step, admitted at the fold door
     let (carrier, tuple, anchor) = book.object_carrier_for(&old, binder, blind, &[0u8; 32], &[0u8; 32]).expect("⛔ a note under the final step got no object leg");
@@ -10231,41 +10213,50 @@ fn af25_an_objects_leg_is_anchored_at_the_final_step_and_survives_a_reorder_of_t
     backward.apply_stream(&s).expect("the lying answer applies");
     assert_eq!(backward.final_anchor(), Some((fstep, froot)), "⛔ a final step that moved backward was taken");
 
-    // (4, second half) NO VOTE NEEDED: the chain's own depth makes the young note's step final.
-    // The chain grows by a ring's length past the newest REAL step. An in-process node's fold stops at step 64 without
-    // the band prover (DB-396, "the band lags the fold by its whole cap"), so the 64 newer steps are stand-ins on the
-    // ring (as the ring pins above push them): the depth arm reads only their ORDINALS, and no leg is ever anchored at
-    // one. Everything an object's leg touches (the final step's root, its frontier in the journal) is the real fold's.
-    let real_newest = n.spine_recent_roots.back().copied().expect("the ring has a newest step");
-    assert!(real_newest.0 >= young_step && real_newest.0 < ring, "PRECONDITION: the young note folded, on a chain shorter than the ring");
-    for k in 1..=ring {
-        n.spine_recent_roots.push_back((real_newest.0 + k, lanes(&[0xAF, 0x25, 0x1000 + k])));
+    // (4) a note whose record folds after the final step gets NOT_FINAL_YET, then its leg once the chain's own depth
+    // (SPEND_ANCHOR_DEPTH more fold steps) makes its step final, with no vote
+    let young_blk = produce(&mut n, b"af25-young-note");
+    let (young, young_leaves, young_seq) = note_of(&n, &young_blk, 17);
+    book.note_arrived(young, young_leaves);
+    let mut i = 0u64;
+    while n.da_record_ordinal(young_seq).is_none() {
+        assert!(i < depth + 8, "PRECONDITION: the young note's record folds");
+        produce(&mut n, &(2_000 + i).to_le_bytes());
+        i += 1;
     }
-    let newest = n.spine_recent_roots.back().copied().expect("the ring has a newest step");
-    assert_eq!(n.final_fold_step(), Some(newest.0 - ring), "⛔ the depth arm is not the newest step less the ring");
-    assert_eq!(newest.0 - ring, real_newest.0, "the depth-final step is the newest step the fold really made");
+    let young_step = n.da_record_ordinal(young_seq).expect("the young note's record has folded");
+    book.apply_stream(&n.path_refresh_stream(book.cursor())).expect("the stream reaches the book");
+    assert!(young_step > n.final_fold_step().unwrap_or(0), "PRECONDITION: the young note folded above the final step");
+    assert!(book.leg_ready(&young).is_ok(), "PRECONDITION: a SEND of the young note is ready (the send path is untouched)");
+    assert_eq!(book.object_leg_ready(&young), Err(NOT_FINAL_YET), "⛔ an object was offered a leg for a note above the final step");
+    assert_eq!(book.object_carrier_for(&young, binder, blind, &[0u8; 32], &[0u8; 32]).err(), Some(NOT_FINAL_YET), "the builder gives the dry run's verdict");
+    let mut j = 0u64;
+    while n.final_fold_step().unwrap_or(0) < young_step {
+        assert!(j < crate::node::SPEND_ANCHOR_DEPTH + 8, "⛔ the chain's own depth never made the young note's step final");
+        produce(&mut n, &(3_000 + j).to_le_bytes());
+        j += 1;
+    }
     book.apply_stream(&n.path_refresh_stream(book.cursor())).expect("the stream reaches the book");
     let (dstep, droot) = book.final_anchor().expect("the stream names the depth-final step");
-    assert_eq!((dstep, droot), real_newest, "⛔ the depth-final anchor is not that step's own root");
+    assert!(dstep >= young_step, "the depth-final step covers the young note's step");
     let (ycarrier, ytuple, yanchor) = book.object_carrier_for(&young, binder, blind, &[0u8; 32], &[0u8; 32]).expect("⛔ the young note's object still waits though its step is final by depth");
     assert_eq!((yanchor, ytuple.anchor), ((dstep, droot), droot));
     assert_eq!(n.member_leg_object_verdict(&ycarrier, &leg_bytes(&ytuple), ytuple.leaf_commit, binder, MemberDoor::Fold), MemberVerdict::Member);
 
-    // the height arm, on a node whose finalized block it does not hold in reach: one step under the finalized height,
-    // never above the newest step, and nothing at height 1 (no step lies under it)
+    // (6) a chain no deeper than the anchor depth names no final step, and none is ever above the newest step
     let mut m = Node::new(genesis_block()).unwrap();
-    for i in 0..(depth + 6) {
-        produce(&mut m, &(4_000 + i).to_le_bytes());
+    assert_eq!(m.final_fold_step(), None);
+    let mut k = 0u64;
+    while m.spine_recent_roots.back().map_or(0, |(o, _)| *o) <= crate::node::SPEND_ANCHOR_DEPTH {
+        assert_eq!(m.final_fold_step(), None, "⛔ a final step was named on a chain no deeper than the anchor depth");
+        assert!(k < depth + 16, "PRECONDITION: the second node folds past the anchor depth");
+        produce(&mut m, &(4_000 + k).to_le_bytes());
+        k += 1;
     }
     let m_newest = m.spine_recent_roots.back().map(|(o, _)| *o).expect("the second node folded");
-    assert!(m_newest >= 3, "PRECONDITION: the second node folded at least three steps");
-    assert_eq!(m.final_fold_step(), None);
-    m.force_finalized_height_for_selfproof(1);
-    assert_eq!(m.final_fold_step(), None, "⛔ a finalized height of 1 named a final step (no step lies under it)");
-    m.force_finalized_height_for_selfproof(3);
-    assert_eq!(m.final_fold_step(), Some(2), "⛔ the height arm is not one step under the finalized height");
+    assert_eq!(m.final_fold_step(), Some(m_newest - crate::node::SPEND_ANCHOR_DEPTH));
     m.force_finalized_height_for_selfproof(m_newest + 500);
-    assert_eq!(m.final_fold_step(), Some(m_newest), "⛔ a final step above the newest folded step was named");
+    assert!(m.final_fold_step().is_some_and(|f| f <= m_newest), "⛔ a final step above the newest folded step was named");
     crate::node::measure_final_step_for_test(false);
 }
 

@@ -1266,17 +1266,10 @@ pub fn serve_node_over_onion_mesh(node: Node, port: u16) -> std::io::Result<()> 
                     j
                 });
                 match job {
-                    Some(job) => {
+                    Some(mut job) => {
                         let grind_t0 = std::time::Instant::now();
-                        let mined: Option<Block> = miner.as_ref().and_then(|m| {
-                            let mut header = job.block.header.clone();
-                            m.mine(&mut header).map(|pi| {
-                                let mut b = job.block.clone();
-                                b.header = header;
-                                b.pow_proof = pi;
-                                b
-                            })
-                        });
+                        // A-F110: the one grind every producer runs (`node_runtime::grind_job`)
+                        let mined: Option<Block> = miner.as_ref().and_then(|m| crate::node_runtime::grind_job(&rt, m, &mut job, now_unix_ms));
                         crate::node_runtime::PRODUCE_GRIND_MS.store(
                             grind_t0.elapsed().as_millis() as u64,
                             std::sync::atomic::Ordering::Relaxed,

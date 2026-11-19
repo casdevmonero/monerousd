@@ -4610,6 +4610,45 @@ async fn run_onion(
                 if now_ms.saturating_sub(last_heal_ms) < heal_backoff_ms {
                     continue;
                 }
+                // ⛔⛔ A-F104 (lane speed5, 2026-11-19) — PEERS THAT ARE NOT THERE ARE NOT A WEDGED CLIENT. Every rung above
+                // reads silence: failed dials, zero inbound, zero writers. A node whose peers are OFFLINE reads exactly the same.
+                // MEASURED (the live testnet origin, ~/.monerousd-v2/node.err.log, 2026-11-19): 63 DIAL WEDGE swaps and an
+                // ESCALATION exit 86 after "INBOUND SILENCE … 0 live writers" while its 4 known peers' onions all timed out —
+                // the testers' nodes were simply offline — so the network's only seed relaunched itself again and again, its
+                // RPC and the explorer down minutes each time, curing nothing (a restart cannot bring a peer online). The
+                // discriminating fact is this client's OWN onion: if a fresh rendezvous to it succeeds, the client's circuits
+                // work and the silence names absent peers, so nothing is swapped or restarted (as with live writers, above).
+                // A client that cannot reach even itself is wedged, and the swap → restart ladder runs as before.
+                // NO CHAIN HALTS: a lone node keeps producing and serving (the cash layer works alone).
+                // SCALE: one self-dial per would-be heal (the heal backoff, 60 s → 10 min), never per tick; no state, no wire.
+                // AI RESISTANT: (b) code — a peer can only make this node keep its transport (it cannot fake this node's own
+                //   rendezvous), and keeping a working transport costs nothing.
+                // cons: one onion rendezvous (≤ 60 s, bounded) per would-be heal on a silent node; a wedge that leaves the
+                //   self-rendezvous working but every outbound peer circuit broken is not healed here (NOT MEASURED to exist).
+                let own_onion = peering_heal.onion.lock().ok().and_then(|g| g.clone());
+                if let Some(own) = own_onion {
+                    let client = client_slot_heal.read().unwrap_or_else(|e| e.into_inner()).clone();
+                    let t0 = std::time::Instant::now();
+                    let reached = matches!(
+                        tokio::time::timeout(
+                            std::time::Duration::from_secs(60),
+                            client.connect((own.as_str(), crate::net::ONION_CELL_PORT)),
+                        )
+                        .await,
+                        Ok(Ok(_))
+                    );
+                    if reached {
+                        ilog(&format!(
+                            "[arti] WEDGE VERDICT WITHHELD (A-F104): {streak} failed dials and 0 live writers, but this client \
+                             reached its OWN onion in {:.1}s — its circuits work, so the silence names peers that are offline. \
+                             Nothing is swapped or restarted; this node keeps producing and serving alone.",
+                            t0.elapsed().as_secs_f64()
+                        ));
+                        last_heal_ms = now_ms;
+                        heal_backoff_ms = heal_backoff_ms.saturating_mul(2).min(600_000);
+                        continue;
+                    }
+                }
                 if heals_without_recovery >= PROCESS_RESTART_AT
                     && process_started.elapsed().as_secs() >= MIN_UPTIME_BEFORE_RESTART_SECS
                 {

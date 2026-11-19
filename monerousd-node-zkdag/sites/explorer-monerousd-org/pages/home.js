@@ -55,7 +55,7 @@ function heroHTML() {
         <div class="hero-stats" id="hero-stats">
           ${stat('height', 'Block height', 'blue score')}
           ${stat('final', 'Final height', 'settled, no reorg past it')}
-          ${stat('btime', 'Block time', 'measured · target 0.5 s')}
+          ${stat('btime', 'Block time', 'measured against the chain\'s own target')}
           ${stat('tips', 'Open tips', 'blocks at the frontier now')}
           ${stat('peers', 'Peers', 'onion-only links')}
         </div>
@@ -228,7 +228,10 @@ function paintStats(view, info, dag) {
   const bt = measuredBlockTime(dag);
   set('btime', bt && bt.sec, n => (n >= 10 ? n.toFixed(0) : n.toFixed(1)) + ' s');
   const sub = view.querySelector('#st-btime-sub');
-  if (sub) sub.textContent = bt == null ? 'not enough recent blocks' : 'over the last ' + bt.window + ' blocks · target 0.5 s';
+  // the target is the node's own (`target_spacing_ms`, derived from the frame and the relay lanes), never a typed number
+  const tgt = Number(info.target_spacing_ms);
+  const tgtTxt = isFinite(tgt) && tgt > 0 ? ' · target ' + (tgt / 1000).toFixed(tgt >= 10000 ? 0 : 2) + ' s' : '';
+  if (sub) sub.textContent = bt == null ? 'not enough recent blocks' : 'over the last ' + bt.window + ' blocks' + tgtTxt;
   view.querySelectorAll('.hero-stat').forEach(s => { s.classList.add('tick'); setTimeout(() => s.classList.remove('tick'), 900); });
 }
 

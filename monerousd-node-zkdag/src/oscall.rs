@@ -123,3 +123,14 @@ pub fn pid_is_alive(pid: u32) -> bool {
         true
     }
 }
+
+/// ⛔ A-F113 (lane speed5, 2026-11-19) — THE OS RANDOMNESS, WITHOUT A FILE DESCRIPTOR. Every reader opened `/dev/urandom`, which
+/// needs a free descriptor: MEASURED on the live origin (~/.monerousd-v2/node.err.log, 2026-11-19), launchd's default soft limit of
+/// 256 files ran out while Tor dialed offline peers, and the mix's randomness panicked ("the mix needs the OS randomness source …
+/// Too many open files", pqmix/rng.rs:22), three times, so launchd restarted the network's only seed 30 times. `getrandom` reads the
+/// kernel's CSPRNG through `getentropy` (macOS) or `getrandom(2)` (Linux), which take no descriptor (BORROWED: the crate the
+/// ecosystem's `rand` stack uses). Still FAIL-CLOSED: an error is returned, never a predictable fill.
+/// What protects it: (b) code, the OS's CSPRNG. SCALE: one syscall per call. cons: one locked crate, already in the lockfile.
+pub fn os_random(buf: &mut [u8]) -> std::io::Result<()> {
+    getrandom::getrandom(buf).map_err(|e| std::io::Error::other(e.to_string()))
+}

@@ -444,12 +444,33 @@ impl Node {
         let ids: Vec<BlockId> = side.iter().map(|(_, id, _)| *id).collect();
         let bodies = self.whole_blocks_by_ids(&ids, crate::arti_transport::BULK_FRAME_MAX / 2);
         let have: std::collections::HashSet<[u8; 32]> = bundle.fold_carry.unfolded.iter().map(|(b, _, _)| *b.id().as_bytes()).collect();
+        // A-F102: the frozen tips, for the exact counted-past test below.
+        let frozen_tips: std::collections::HashSet<BlockId> = bundle.tips.iter().copied().collect();
+        let (mut counted_n, mut uncounted_n) = (0usize, 0usize);
         let mut added = 0usize;
         for b in bodies {
             if have.contains(b.id().as_bytes()) {
                 continue;
             }
             if let Some((work, _, score)) = side.iter().find(|(_, id, _)| *id == b.id()) {
+                // ⛔ A-F102 (lane speed5, 2026-11-19, docs/NF-SHARDING-DEEP-AUDIT-20261118.md N11e) — ONLY WHAT THE FROZEN STATE
+                // COUNTS IS CARRIED. The served state counts exactly past(bundle.tips) ∪ bundle.tips at FREEZE time, while this
+                // anticone is gathered at SERVE time, so a side block born after the freeze rode uncounted: the joiner placed it
+                // with no A_tip fold and held nf_fold_seq one block short of every replayer for good (replica census: 240
+                // against 241). Re-folding it on the joiner (322e0ef6, 457247ff) was MEASURED WORSE: the joiner then trailed the
+                // seeds by 24 blocks and never reached a current view (census premise: tips 321/322/297, nf_fold_seq 368/369/331),
+                // so it is reverted. Such a block is left out here instead: it reaches the joiner as any new block does, and
+                // the joiner accepts and counts it then, as every replayer did. This node holds every frozen tip, so the past
+                // test is exact here (a tip among the block's descendants), never on the joiner's partial DAG.
+                // cons: one descendant walk per anticone candidate at serve (≤ 2 × dag_width); a post-freeze side block is
+                //   fetched by the joiner's lanes instead of riding the bundle (one block lane pull each).
+                let id = b.id();
+                let counted = frozen_tips.contains(&id) || dag.descendants_of(&id).iter().any(|d| frozen_tips.contains(d));
+                if !counted {
+                    uncounted_n += 1;
+                    continue;
+                }
+                counted_n += 1;
                 // ⛔⛔ J12 (lane speed5, 2026-11-17, docs/JOIN-FINALITY-DEEP-AUDIT-20261117.md J12) — A CARRIED BODY TRAVELS WITH
                 // ITS SIDECAR. `unfolded` crosses the wire by serde, which skips a body's cover key, wide objects and spend
                 // transactions (§22b/§22c); `carry_for` ships them in `FoldCarry::sidecars` beside every carried body and this
@@ -485,7 +506,10 @@ impl Node {
             bundle.anchor_ordinal,
         );
         // DIGITAL-CASH-PRIVACY-REVIEWED: a count of public blocks and a public position.
-        eprintln!("[join-serve] A-F94: carried {added} block(s) of the anchor's anticone (anchor ordinal {})", bundle.anchor_ordinal);
+        eprintln!(
+            "[join-serve] A-F94: carried {added} block(s) of the anchor's anticone (anchor ordinal {}); A-F102: {counted_n} counted by the frozen state, {uncounted_n} born after it left out",
+            bundle.anchor_ordinal
+        );
     }
 
     /// The newest frozen bundle that passes the very door a joiner runs. `None`: nothing to serve yet, and a young chain is walked by lanes.

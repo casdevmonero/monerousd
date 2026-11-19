@@ -33,11 +33,15 @@ impl Node {
         let Some(tip) = self.selected_tip() else {
             return ViewQuality { samples: 0, work_ratio_x1000: 0, rate_ratio_x1000: 0, degraded: true };
         };
-        Self::view_quality_of(&self.daa_window_below(&tip), self.relay.dag().params().target_spacing_ms)
+        {
+            let p = self.relay.dag().params();
+            let full = p.daa_sample_len.max(p.mtp_sample_len as u64) as usize; // the length `daa_window_below` walks to
+            Self::view_quality_of(&self.daa_window_below(&tip), p.target_spacing_ms, full)
+        }
     }
 
     /// The verdict over one DAA window (newest first), the pure core of [`Self::view_quality`].
-    pub(crate) fn view_quality_of(w: &[crate::dag::DaaSample], target_spacing_ms: u64) -> ViewQuality {
+    pub(crate) fn view_quality_of(w: &[crate::dag::DaaSample], target_spacing_ms: u64, full_len: usize) -> ViewQuality {
         if w.len() < 2 {
             return ViewQuality { samples: w.len(), work_ratio_x1000: 0, rate_ratio_x1000: 0, degraded: true };
         }
@@ -51,8 +55,28 @@ impl Node {
         let blue_span = (newest.2.saturating_sub(oldest.2) as u128).max(w.len() as u128 - 1);
         let expected_blocks = (actual_ms / target_spacing_ms.max(1) as u128).max(1);
         let rate_ratio_x1000 = (blue_span.saturating_mul(1000) / expected_blocks).min(u64::MAX as u128) as u64;
-        let degraded =
-            work_ratio_x1000 as u128 >= clamp * 1000 || rate_ratio_x1000 as u128 <= Self::view_rate_floor_x1000(w.len());
+        // ⛔ A-F108 (lane speed5, 2026-11-19) — THE HASH ARM: work arriving per unit of time (block rate × difficulty, as a
+        // share of the target's), Bitcoin Core's `PartitionCheck` signal. Since every node paces its own production to the rate
+        // the DAG shows (A-F60/A-F67) and the DAA lowers the difficulty in step, an eclipsed minority no longer runs at a quarter
+        // of the rate: MEASURED (netsim eclipse, main 7023c4b8, ten parties, two eclipsed) victim rate 0.666 of target and work
+        // fallen 3.333× inside the window — neither arm fired — while its hash share was 0.666 / 3.333 = 0.20; the honest origin
+        // read 1.052 / 1.111 = 0.95. Pacing cannot raise this product: producing faster only lowers the difficulty in step.
+        // Same floor as the rate arm (the 1/DAA_CLAMP class plus z = 3 of the window's estimator), node-local, never a halt.
+        // AI RESISTANT: (b) code and economics — an attacker evades it only by bringing the hash the honest mesh has.
+        // cons: an honest mesh that loses ~2/3 of its hash within one window reads degraded until the window turns over
+        //   ("confirming" in the wallet, 0 bytes on the wire). NOT CONFIRMED: an eclipse longer than the window whose oldest
+        //   sample is already eclipse-era reads work_ratio ~1 again; a longer-memory reference is owed.
+        // ⛔ A-F109 (lane speed5, 2026-11-19): the hash arm reads a FULL window only. A window shorter than the DAA's is a chain
+        // younger than one window (`daa_window_below` walks to genesis), whose difficulty is still descending from its
+        // bootstrap value: a fall the honest chain itself makes. MEASURED (netsim eclipse, lane 1a707384, t = 40 s, tips 11):
+        // the honest origin's 5-sample window read rate 0.733, difficulty fallen 1.777×, hash 0.41 ≤ the 5-sample floor 0.625, DEGRADED.
+        // cons: for a chain's first DAA window (60 blocks in production) only the rate and work arms judge the view; an
+        // eclipse needs a chain to eclipse, and the arms that ran before A-F108 still run there.
+        let hash_x1000 = (rate_ratio_x1000 as u128).saturating_mul(1000) / (work_ratio_x1000 as u128).max(1);
+        let hash_low = w.len() >= full_len && hash_x1000 <= Self::view_rate_floor_x1000(w.len());
+        let degraded = work_ratio_x1000 as u128 >= clamp * 1000
+            || rate_ratio_x1000 as u128 <= Self::view_rate_floor_x1000(w.len())
+            || hash_low;
         ViewQuality { samples: w.len(), work_ratio_x1000, rate_ratio_x1000, degraded }
     }
 

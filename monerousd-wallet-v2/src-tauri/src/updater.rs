@@ -81,7 +81,17 @@ fn get(url: &str, max: usize, timeout_s: u64) -> Result<Vec<u8>, String> {
         }
         return Ok(body);
     }
-    crate::tor::https_get(url, max, timeout_s)
+    // A Tor exit can fail one stream (MEASURED 2026-11-19 on the published release: "remote hostname lookup failure" on the
+    // first try, the manifest read and verified on the next): each attempt takes a fresh isolated circuit (`https_get`).
+    let mut last = String::new();
+    for _ in 0..3 {
+        match crate::tor::https_get(url, max, timeout_s) {
+            Ok(b) => return Ok(b),
+            Err(e) if e.starts_with("refused") => return Err(e),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
 }
 
 /// The manifest's key for the platform this build runs on.

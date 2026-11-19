@@ -244,6 +244,47 @@ impl ProduceJob {
 /// transition this node's own verifier refused — the caller evicts them under the lock
 /// (`NodeRuntime::evict_refused_spends`) and skips the slot, exactly what the inline path did. MEASURED
 /// before: one balance poll waited 84 s behind thirteen back-to-back 2.3 s proves.
+/// ⛔ A-F110 (lane af110, 2026-11-19) — THE GRIND IS THE PRODUCTION, the one grind of every producer (the daemon, `main.rs`; the
+/// wallet's in-process node, `serve.rs`). It grinds `job` at the node's duty (`NodeRuntime::grind_duty_milli`: its share, slow-started)
+/// until a digest meets the work; a new selected tip stops it, and the SAME proven job is rebound to the new tip (`rebind_parents`
+/// recomputes the work from the new selected parent) and ground again — the grind is memoryless, so the stop costs nothing and the
+/// prove is kept. `None` past the try cap (fail-closed: no block this attempt). The lock is held only to read the duty and the tip,
+/// and for the rebind; a tip check every 64 hashes never blocks on it. SCALE: a constant per hash.
+pub fn grind_job<T: crate::transport::CellTransport>(
+    rt: &std::sync::Mutex<NodeRuntime<T>>,
+    miner: &crate::pow::PowMiner,
+    job: &mut ProduceJob,
+    now_unix_ms: fn() -> u64,
+) -> Option<Block> {
+    loop {
+        let (duty, tip0) = {
+            let r = rt.lock().unwrap_or_else(|e| e.into_inner());
+            (r.grind_duty_milli(now_unix_ms()), r.node().selected_tip())
+        };
+        let tries = std::cell::Cell::new(0u32);
+        let stop = || {
+            tries.set(tries.get().wrapping_add(1));
+            tries.get() % 64 == 0 && rt.try_lock().map_or(false, |r| r.node().selected_tip() != tip0)
+        };
+        let mut header = job.block.header.clone();
+        match miner.mine_paced(&mut header, duty, 200_000_000, &stop) {
+            Ok(pi) => {
+                let mut b = job.block.clone();
+                b.header = header;
+                b.pow_proof = pi;
+                return Some(b);
+            }
+            Err(_) => {
+                let r = rt.lock().unwrap_or_else(|e| e.into_inner());
+                if r.node().selected_tip() == tip0 {
+                    return None;
+                }
+                r.rebind_parents(job);
+            }
+        }
+    }
+}
+
 pub fn complete_produce_job(mut job: ProduceJob) -> Result<ProduceJob, Vec<Hash32>> {
     // ⭐ THE FOUR CLASSES PROVED AT ONCE (link 28). Each transition is built and self-verified from its own inputs alone —
     // pure functions of the template (`Node::finish_*`: no node state) — so they run side by side and are laid in the order
@@ -756,6 +797,11 @@ pub(crate) fn fair_share_producers(live_writers: u64, dag_seen: Option<u64>) -> 
 /// the rate is read over that time window, and PACE_SAMPLES is only the least chain a node needs before it measures at all.
 /// BORROWED: TCP's AIMD with its decrease on a real congestion signal; Kaspa's DAA, which reads a TIME window of the chain.
 pub(crate) const PACE_SAMPLES: usize = 4;
+/// A-F110: one slow-start ramp of the grind duty, and the mean first-attempt delay: 64 targets (W7: the ramp that held the 1,000-node
+/// crowd's worst download wait at 14 s; 16 targets left it at 52 s).
+pub const GRIND_RAMP_MS: u64 = 64 * crate::dag::MESH_TARGET_SPACING_MS;
+/// A-F110: the slow start's first duty, 1 / this of the node's share (TCP's initial window; the A-F60 pace's 1/32 before it).
+pub const GRIND_SLOW_START_DIV: u64 = 32;
 /// ⭐ A-F93 — the window the mesh's rate is read over, in targets (16 × 1,953 ms ≈ 31 s).
 pub(crate) const PACE_WINDOW_TARGETS: u64 = 16;
 /// ⭐ A-F93 — the decrease fires only past this many thousandths of the target (1.5 ×), and returns the node to the target.
@@ -1790,6 +1836,9 @@ pub struct NodeRuntime<T: CellTransport> {
     /// DB-412: the memoryless gap drawn at the last production attempt (`schedule_next_production`); 0 until the first, so
     /// a fresh node produces at once. A scalar.
     next_produce_gap_ms: u64,
+    /// A-F110: when this node's grind began (its first production attempt; 0 = not yet) — the start of its slow start
+    /// ([`Self::grind_duty_milli`]). A scalar.
+    grind_start_ms: u64,
     /// DB-412: production attempts drawn so far — the draw counter keyed into `Node::production_gap_uniform`. A scalar.
     produce_draws: u64,
     /// ⭐ A-F67: the producers the DAG showed at the last measure ([`dag_seen_producers`]) — the cap on the fair-share count;
@@ -2695,6 +2744,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             fetch_proven: std::collections::VecDeque::new(),
             last_produce_ms: 0,
             next_produce_gap_ms: 0,
+            grind_start_ms: 0,
             produce_draws: 0,
             share_dag_seen: None,
             share_count: 0,
@@ -6700,15 +6750,24 @@ impl<T: CellTransport> NodeRuntime<T> {
         // no own-block minimum, and every node reads the same peers it actually heard from.
         // BORROWED: a miner reading its share of the hash rate from its share of blocks (Bitcoin).
         let _ = &span;
+        let seen_before = self.share_dag_seen;
         self.share_dag_seen = self.delivering_producers(self.tip_blue());
         let count = fair_share_producers(self.live_writers_held() as u64, self.share_dag_seen);
-        if count != self.share_count {
+        // A-F67 (lane speed5, 2026-11-19): the line also says when the DAG's figure first appears or changes. It was printed only
+        // on a COUNT change, so a node whose count reached N by its links before the DAG measured anything, and stayed at N once
+        // it did, never said what the DAG showed: the real-node check read "never measured the producers the DAG shows" (node 1:
+        // 3 count lines, every one "no measure yet", 77d0ff19) on a node it could not tell from one that measured nothing.
+        // cons: one log line per change of the figure (an integer of delivering peers; a few per hour on a steady mesh).
+        if count != self.share_count || self.share_dag_seen != seen_before {
             crate::arti_transport::ilog(&format!(
                 "[fair-share] producers {} -> {count}: {} live writer(s), the DAG shows {}",
                 self.share_count,
                 self.live_writers_held(),
                 self.share_dag_seen.map_or_else(|| "no measure yet".to_string(), |s| s.to_string())
             ));
+        }
+        // only a COUNT change restarts the window the next measure is read over (unchanged behaviour)
+        if count != self.share_count {
             self.share_count = count;
             self.share_gap_since_blue = span.map_or(u64::MAX, |sp| sp.newest_blue);
         }
@@ -7104,8 +7163,47 @@ impl<T: CellTransport> NodeRuntime<T> {
         self.last_produce_ms = now_ms;
         self.produce_draws = self.produce_draws.wrapping_add(1);
         self.measure_fair_share();
+        // ⛔ A-F110 (lane af110, 2026-11-19) — PRODUCTION IS THE GRIND, NEVER A TIMER (docs/CONSENSUS-WEIGHT-DEEP-AUDIT-20261119.md
+        // W1-W9). The gap drawn here was a memoryless timer of mean `fair_share_spacing_ms`, and the PoW grind ran only after it fired
+        // ("a handful of iterations", pow.rs), so an isolated minority producing on its timer kept the honest difficulty and laid chain
+        // weight at the honest rate (MEASURED netsim: 2 of 10 eclipsed laid 25 blocks to the honest 8's 35 in 70 s; the origin read the
+        // eclipsed chain heavier, 1859 > 1621). Now a node attempts again as soon as its last attempt ends: its rate is its hash over the
+        // work (the grind is memoryless by construction, `PowMiner::mine_paced`), and the DAA (ASERT, miner.rs) alone holds the mesh at
+        // its target. The FIRST attempt waits a memoryless delay of one ramp, so a crowd joining at once does not prove its first blocks
+        // together (W7: the joiners' first-block burst was the crowd's 210 s download wait); its duty then ramps (`grind_duty_milli`).
+        // BORROWED: Bitcoin and Kaspa — a miner mines continuously; TCP slow start for the ramp.
+        // What protects it: (b) economics — a block's weight is the hash its grind spent; the ramp and the delay limit only an honest node.
+        // SCALE: a constant per attempt. cons: a producing node's thread grinds at its duty all the time (the security).
         let u = self.node.production_gap_uniform(self.produce_draws, now_ms);
-        self.next_produce_gap_ms = memoryless_gap_ms(self.fair_share_spacing_ms(), u);
+        // NETWORK UPGRADE 1: below the activation height the timer rule, unchanged, so a node never runs a rule its peers do not
+        let tip_blue = self.node.dag().selected_tip().and_then(|t| self.node.dag().get(&t)).map_or(0, |n| n.blue_score);
+        if !crate::params::upgrade1_active(self.node.params(), tip_blue.saturating_add(1)) {
+            self.next_produce_gap_ms = memoryless_gap_ms(self.fair_share_spacing_ms(), u);
+            return;
+        }
+        if self.grind_start_ms == 0 {
+            self.grind_start_ms = now_ms.max(1);
+            self.next_produce_gap_ms = memoryless_gap_ms(GRIND_RAMP_MS, u);
+        } else {
+            self.next_produce_gap_ms = 0;
+        }
+    }
+
+    /// A-F110: this node's grind duty in ‰ of one thread, now: its share (`MONEROUSD_GRIND_SHARE`, ‰, default 1,000 — one thread at the
+    /// lowest priority the daemon sets) times its slow start (1/32 at its first attempt, doubling each [`GRIND_RAMP_MS`]). MEASURED why
+    /// (W7, the mesh model): 1,000 nodes joining in 60 s with no ramp put the worst download wait at 142-210 s; with this ramp and the first
+    /// delay, 14 s. A scalar.
+    #[must_use]
+    pub fn grind_duty_milli(&self, now_ms: u64) -> u64 {
+        // below NETWORK UPGRADE 1 the grind is the old flat-out few tries, as `PowMiner::mine` ran it
+        let tip_blue = self.node.dag().selected_tip().and_then(|t| self.node.dag().get(&t)).map_or(0, |n| n.blue_score);
+        if !crate::params::upgrade1_active(self.node.params(), tip_blue.saturating_add(1)) {
+            return 1_000;
+        }
+        let share = std::env::var("MONEROUSD_GRIND_SHARE").ok().and_then(|v| v.trim().parse::<u64>().ok()).unwrap_or(1_000).clamp(1, 1_000);
+        let ramps = if self.grind_start_ms == 0 { 0 } else { now_ms.saturating_sub(self.grind_start_ms) / GRIND_RAMP_MS.max(1) };
+        let ramp = (1_000u64 / GRIND_SLOW_START_DIV).saturating_mul(1u64 << ramps.min(16)).min(1_000);
+        (share.saturating_mul(ramp) / 1_000).max(1)
     }
 
     /// When this node's next production attempt is due — for every clock that DRIVES a runtime (the in-process mesh

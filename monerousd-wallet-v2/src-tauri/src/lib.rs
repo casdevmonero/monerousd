@@ -15690,6 +15690,15 @@ fn spend_one_note_to(
             // this nullifier lands in the node's spent set exactly when the tx is included in a block (~1s).
             let mut resp = resp;
             resp["nullifier_hex"] = serde_json::json!(hex::encode(nfb));
+            // ⭐ A-F66 (wallet half): the accepted payment is kept until the chain carries it, and handed to the node again
+            // (`pays_send_again`) — a flood that evicts it from every pool can no longer make it vanish.
+            record_pending_pay(
+                nfb,
+                (value_in, in_seed),
+                key_id,
+                &submit_body,
+                (matches!(slot, SlotSend::None) && matches!(vault, VaultSend::None)).then(|| (to_display.to_string(), send)),
+            );
             // The RECIPIENT note's public commitment — a payment receipt the payer can hand to the
             // recipient (e.g. Letter's DM-fee gate), who verifies ownership against their own scan.
             resp["recipient_cm"] =
@@ -16034,6 +16043,181 @@ fn resolve_recipient(to: &str) -> Result<String, String> {
         }
     })
 }
+/// ⭐⭐ A-F66 (wallet half, lane speed5, 2026-11-19, check spam-stamp) — AN ACCEPTED PAYMENT HAS A TRANSACTION'S LIVENESS: THE
+/// WALLET HANDS IT TO ITS NODE AGAIN UNTIL THE CHAIN CARRIES IT. A full pool admits a newcomer by evicting a plain spend
+/// (`Mempool::make_room_for`), and its doc names the defence: "its wallet re-sends it (as it does after any loss)". No wallet
+/// code did. Read 2026-11-19: `spend_one_note_to` marks the input spent the moment a node answers OK and keeps no copy of the
+/// payment, so a payment a flood evicted from every pool before a block carried it was never sent again — the payee is never
+/// paid, and the payer's balance hides a note the chain still holds (real-node spam-stamp, f96b563f: "spam_payee never got
+/// the money: the fold moved 64 steps in 577 s"). BORROWED: Bitcoin Core's `ResendWalletTransactions`.
+/// What it does, every [`PAY_SEND_AGAIN_MS`] while a payment is kept: (1) the chain carries it — its input nullifier reads
+/// `Settled` on the carrier, or is held proven spent — and the record is dropped; (2) else the SAME bytes go to the node:
+/// a node that still pools it answers OK (`AlreadyKnown`), one that evicted it pools it again; (3) a node that refuses the
+/// bytes because their evidence or anchor no longer stands (the payment cannot land as it is) has the payment PROVEN AGAIN
+/// from exactly the same input note ([`PAY_FORCED_INPUT`]), so a first send that did land makes the second a double spend
+/// every node refuses by its nullifier set — never a second payment.
+/// LOCAL-STORAGE-REQUIRED: this wallet's own unlanded payments (`pending-pays.json`, beside the pending bond), so a
+/// restart cannot lose one. bound: at most [`PAY_PENDING_KEPT`] (the oldest leaves first), each one submit body
+/// (~tens of KB); every record ends at the chain's verdict or after [`PAY_SEND_AGAIN_MAX`] passes.
+/// §9.6: no new door — the node's own `/submit_pq_tx` judges every byte as it judged the first send.
+/// AI RESISTANT: (b) code — the resend moves nothing a first send did not; the nullifier set bounds every outcome to one spend.
+/// SCALE: per wallet, constant in nodes and height; one small POST per kept payment every 15 s.
+/// cons: up to one submit per kept payment every 15 s until it lands (a few tens of KB each); a payment proven again costs
+/// one more spend proof, at most [`PAY_REPROVE_MAX`] times.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PendingPay {
+    input_nf: [u8; 32],
+    input: (u64, Digest4),
+    key_id: [u8; 32],
+    body: serde_json::Value,
+    /// `(recipient as the user named it, atomic amount)` for a plain payment, so it can be proven again; `None` for a slot
+    /// marker or a vault payment, which is only handed over again as it is.
+    again: Option<(String, u64)>,
+    passes: u32,
+    reproves: u32,
+}
+const PAY_PENDING_KEPT: usize = 32;
+const PAY_SEND_AGAIN_MS: u64 = 15_000;
+const PAY_SEND_AGAIN_MAX: u32 = 240;
+const PAY_REPROVE_MAX: u32 = 3;
+static PENDING_PAYS: std::sync::Mutex<Option<Vec<PendingPay>>> = std::sync::Mutex::new(None);
+static PAY_RESENDER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+thread_local! {
+    /// The input note a payment proven again must spend (set only by `pays_send_again`, on its own thread).
+    static PAY_FORCED_INPUT: std::cell::RefCell<Option<Digest4>> = const { std::cell::RefCell::new(None) };
+}
+
+fn pending_pays_path() -> PathBuf {
+    node_data_dir().join("pending-pays.json")
+}
+
+fn pending_pays_load(g: &mut Option<Vec<PendingPay>>) -> &mut Vec<PendingPay> {
+    g.get_or_insert_with(|| {
+        std::fs::read(pending_pays_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    })
+}
+
+fn pending_pays_save(v: &[PendingPay]) {
+    if let Ok(b) = serde_json::to_vec(v) {
+        let path = pending_pays_path();
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, b).is_ok() {
+            let _ = std::fs::rename(&tmp, &path);
+        }
+    }
+}
+
+fn record_pending_pay(input_nf: [u8; 32], input: (u64, Digest4), key_id: [u8; 32], body: &serde_json::Value, again: Option<(String, u64)>) {
+    {
+        let mut g = PENDING_PAYS.lock().unwrap_or_else(|e| e.into_inner());
+        let v = pending_pays_load(&mut g);
+        let reproves = v.iter().find(|p| p.input_nf == input_nf).map_or(0, |p| p.reproves);
+        v.retain(|p| p.input_nf != input_nf);
+        v.push(PendingPay { input_nf, input, key_id, body: body.clone(), again, passes: 0, reproves });
+        while v.len() > PAY_PENDING_KEPT {
+            v.remove(0);
+        }
+        pending_pays_save(v);
+    }
+    ensure_pay_resender();
+}
+
+fn ensure_pay_resender() {
+    PAY_RESENDER.get_or_init(|| {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(Duration::from_millis(PAY_SEND_AGAIN_MS));
+            pays_send_again();
+        });
+    });
+}
+
+/// One pass over the kept payments (see [`PendingPay`]).
+fn pays_send_again() {
+    let open_key = {
+        let g = WALLET.lock().unwrap_or_else(|e| e.into_inner());
+        g.as_ref().map(|w| *blake3::hash(&w.scan_ek).as_bytes())
+    };
+    let Some(open_key) = open_key else { return };
+    let kept: Vec<PendingPay> = {
+        let mut g = PENDING_PAYS.lock().unwrap_or_else(|e| e.into_inner());
+        pending_pays_load(&mut g).iter().filter(|p| p.key_id == open_key).cloned().collect()
+    };
+    if kept.is_empty() {
+        return;
+    }
+    let held = PROVEN_SPENT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
+    for p in kept {
+        let landed = nf_carrier::authority(&p.input_nf) == nf_carrier::Authority::Settled || held.contains(&p.input_nf);
+        let mut drop_it = landed || p.passes >= PAY_SEND_AGAIN_MAX;
+        let mut prove_again = false;
+        if !drop_it {
+            let mut urls = vec![node_url()];
+            urls.extend(node_mesh_urls());
+            let mut answer: Option<(String, String)> = None;
+            for u in &urls {
+                if let Ok(v) = agent.post(&format!("{u}/submit_pq_tx")).send_json(p.body.clone()).map_err(|_| ()).and_then(|r| r.into_json::<serde_json::Value>().map_err(|_| ())) {
+                    let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                    let reason = v.get("reason").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                    let ok = status == "OK";
+                    answer = Some((status, reason));
+                    if ok {
+                        break;
+                    }
+                }
+            }
+            if let Some((status, reason)) = &answer {
+                if status != "OK" {
+                    // the bytes cannot land as they are: their evidence or their anchor no longer stands on the chain
+                    let stale = reason.contains("absence witness") || reason.contains("anchor") || reason.contains("ANCHOR")
+                        || reason.contains("MEMBERSHIP") || reason.contains("member leg") || reason.contains("root");
+                    // two passes first: a payment that just landed reads "absence witness" too, until the carrier says Settled
+                    if stale && p.passes >= 2 && p.again.is_some() && p.reproves < PAY_REPROVE_MAX {
+                        prove_again = true;
+                    } else if !reason.contains("nullifier conflict") && !reason.contains("at its weight cap") && p.passes > 8 {
+                        // DIGITAL-CASH-PRIVACY-REVIEWED: the node's own refusal words; no note, amount, key or owner.
+                        eprintln!("[pay-again] a kept payment is still refused by its node: {status} {reason}");
+                    }
+                }
+            }
+        }
+        if prove_again {
+            let (to, atomic) = p.again.clone().unwrap_or_default();
+            // DIGITAL-CASH-PRIVACY-REVIEWED: a counter only.
+            eprintln!("[pay-again] a kept payment's evidence no longer stands — proving it again from the same note ({} of {PAY_REPROVE_MAX})", p.reproves + 1);
+            {
+                let mut g = PENDING_PAYS.lock().unwrap_or_else(|e| e.into_inner());
+                let v = pending_pays_load(&mut g);
+                if let Some(q) = v.iter_mut().find(|q| q.input_nf == p.input_nf) {
+                    q.reproves += 1;
+                }
+                pending_pays_save(v);
+            }
+            PAY_FORCED_INPUT.with(|f| *f.borrow_mut() = Some(p.input.1));
+            let r = do_transfer_atomic_mode(to, atomic, SlotSend::None, VaultSend::None);
+            PAY_FORCED_INPUT.with(|f| *f.borrow_mut() = None);
+            match r {
+                // the new send recorded itself under the same input nullifier (`record_pending_pay`)
+                Ok(_) => continue,
+                Err(e) if e.contains("PAY_AGAIN_INPUT_GONE") => drop_it = true,
+                Err(e) => eprintln!("[pay-again] proving the payment again was not taken yet: {e}"),
+            }
+        }
+        let mut g = PENDING_PAYS.lock().unwrap_or_else(|e| e.into_inner());
+        let v = pending_pays_load(&mut g);
+        if drop_it {
+            if !landed {
+                // DIGITAL-CASH-PRIVACY-REVIEWED: a counter only.
+                eprintln!("[pay-again] a kept payment was handed over {} times without the chain carrying it; it is no longer re-sent", p.passes);
+            }
+            v.retain(|q| q.input_nf != p.input_nf);
+        } else if let Some(q) = v.iter_mut().find(|q| q.input_nf == p.input_nf) {
+            q.passes += 1;
+        }
+        pending_pays_save(v);
+    }
+}
+
 fn do_transfer(to: String, amount_usdm: f64) -> Result<serde_json::Value, String> {
     do_transfer_atomic(to, usdm_to_atomic(amount_usdm)?)
 }
@@ -16148,8 +16332,24 @@ fn do_transfer_atomic_mode(to: String, send: u64, slot: SlotSend, vault: VaultSe
     let mut candidates: Vec<Spendable> = {
         let s = SCAN.lock().unwrap_or_else(|e| e.into_inner());
         let st = s.as_ref().ok_or_else(|| "no wallet open".to_string())?;
-        unspent_candidates(st)
+        match PAY_FORCED_INPUT.with(|f| *f.borrow()) {
+            // A-F66: a payment proven again spends exactly its first send's note, and only it — the nullifier set then
+            // admits at most one of the two (B7's rule). This wallet marked that note spent when the first send was
+            // accepted, so its own mark is not consulted; a note the CHAIN proved spent is never offered.
+            Some(seed) => {
+                let held = PROVEN_SPENT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                st.owned
+                    .iter()
+                    .filter(|n| n.asset == pq::USDM_ASSET_TAG && n.seed == seed && !held.contains(&n.nf))
+                    .map(|n| (n.amount, n.seed, n.note.clone()))
+                    .collect()
+            }
+            None => unspent_candidates(st),
+        }
     };
+    if PAY_FORCED_INPUT.with(|f| f.borrow().is_some()) && candidates.is_empty() {
+        return Err("PAY_AGAIN_INPUT_GONE: the payment's own note is no longer this wallet's to spend (the chain spent it)".to_string());
+    }
     // ⛔ CHANGE IN FLIGHT IS NOT "NO NOTES". MEASURED on the production path, two nodes, real binaries:
     //     BAL 5.0 owned 1
     //     SEND #1 ok=True   sent 0.5  change 4.5

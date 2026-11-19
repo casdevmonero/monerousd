@@ -2061,3 +2061,62 @@ pub(crate) fn snapshot_field_sizes(n: &Node) -> Vec<(String, usize)> {
 pub(crate) fn seq1_root_limbs(b: &[u8; 32]) -> Option<crate::spend_frontier::Digest4> {
     crate::spend_frontier::cm_bytes_to_root(b)
 }
+
+/// ⛔ A-F107 (lane speed5, 2026-11-19): one key's votes for blocks that never arrive cannot evict another voter's honest early
+/// vote from the deferred-vote pool. RED on the shared bound (highest heights evicted first): the attacker's 5,000 deferred votes
+/// filled the 4,096 rows and the honest vote at the tip — the highest key — left at once.
+#[test]
+fn af107_one_keys_deferred_votes_cannot_evict_an_honest_early_vote() {
+    use crate::validator::VoteCert;
+    let mut n = Node::new(genesis_block()).unwrap();
+    let attacker = vec![0xA7u8; 64];
+    for h in 1..=5_000u64 {
+        let block = crate::hash::Hash32::hash(&[b"af107-invented".as_slice(), &h.to_le_bytes()].concat());
+        n.defer_vote_awaiting_block(VoteCert { pubkey: attacker.clone(), block, height: h, sig: Vec::new() });
+    }
+    let honest = vec![0x0Bu8; 64];
+    let tip_block = crate::hash::Hash32::hash(b"af107-honest-tip");
+    n.defer_vote_awaiting_block(VoteCert { pubkey: honest.clone(), block: tip_block, height: 5_100, sig: Vec::new() });
+    let honest_id = crate::pqauth::pubkey_id(&honest);
+    let attacker_id = crate::pqauth::pubkey_id(&attacker);
+    assert!(n.deferred_votes.contains_key(&(5_100, honest_id)), "⛔ A-F107: the honest early vote was evicted by one key's invented votes");
+    let held = n.deferred_votes.keys().filter(|(_, v)| *v == attacker_id).count();
+    assert!(held <= crate::node::FINALITY_DEFERRED_PER_VOTER, "⛔ A-F107: one key holds {held} deferred votes");
+    assert!(n.deferred_votes.keys().filter(|(_, v)| *v == attacker_id).all(|(h, _)| *h > 5_000 - crate::node::FINALITY_DEFERRED_PER_VOTER as u64), "a voter keeps its HIGHEST heights");
+}
+
+/// ⛔ A-F108 (lane speed5, 2026-11-19): an eclipsed minority that paces itself back up still reads DEGRADED. The window the
+/// netsim eclipse measured on main 7023c4b8: rate ~0.68 of target, difficulty fallen 3.33× (both under the old arms' lines:
+/// rate floor 0.443, work clamp 4), hash share 0.20. RED on the two-arm verdict; the honest origin's window stays trusted.
+#[test]
+fn af108_an_eclipse_that_paces_itself_back_up_still_reads_degraded() {
+    let target = 1_000u64;
+    // newest first: (timestamp ms, difficulty, blue score) — 15 blocks in 22.5 s at 1 s target, difficulty 1000 → 300
+    let eclipsed: Vec<crate::dag::DaaSample> = (0..16u64)
+        .map(|i| ((15 - i) * 1_500, 300u128 + (1_000 - 300) * i as u128 / 15, 15 - i))
+        .collect();
+    let v = Node::view_quality_of(&eclipsed, target, 16);
+    assert!(v.rate_ratio_x1000 > Node::view_rate_floor_x1000(16) as u64, "CALIBRATION: the rate arm alone does not fire: {v:?}");
+    assert!(v.work_ratio_x1000 < 4_000, "CALIBRATION: the work arm alone does not fire: {v:?}");
+    assert!(v.degraded, "⛔ A-F108: an eclipsed set at 0.68 of the rate with its difficulty fallen 3.3x read trusted: {v:?}");
+    // the honest origin's window: rate ~1.05, difficulty steady — trusted
+    let honest: Vec<crate::dag::DaaSample> = (0..16u64).map(|i| ((15 - i) * 952, 1_000u128 + i as u128 * 7, 15 - i)).collect();
+    let h = Node::view_quality_of(&honest, target, 16);
+    assert!(!h.degraded, "the honest window must stay trusted: {h:?}");
+}
+
+/// ⛔ A-F109 (lane speed5, 2026-11-19): a chain younger than one DAA window is not degraded because its difficulty is still
+/// falling from the bootstrap value. The window the netsim eclipse fixture measured on its honest origin at t = 40 s (lane
+/// 1a707384): 5 samples, rate 0.733, difficulty fallen 1.777× (hash 0.41, under the 5-sample floor 0.625) — RED on A-F108's verdict.
+#[test]
+fn af109_a_young_chains_falling_difficulty_does_not_read_degraded() {
+    let target = 1_000u64;
+    // newest first: 5 samples, 4 blue blocks in 6 s (rate 0.667 over the 5-sample floor 0.625), difficulty 1777 → 1000 (hash 0.375)
+    let young: Vec<crate::dag::DaaSample> = (0..5u64).map(|i| ((4 - i) * 1_500, 1_000u128 + 777 * i as u128 / 4, 5 - i)).collect();
+    let v = Node::view_quality_of(&young, target, 16);
+    assert!(v.rate_ratio_x1000 > Node::view_rate_floor_x1000(5) as u64 && v.work_ratio_x1000 < 4_000, "CALIBRATION: {v:?}");
+    assert!(!v.degraded, "⛔ A-F109: an honest chain inside its first DAA window read degraded: {v:?}");
+    // the same shape over a FULL window is still judged by the hash arm (A-F108 holds)
+    let full: Vec<crate::dag::DaaSample> = (0..16u64).map(|i| ((15 - i) * 1_364, 1_000u128 + 2_500 * i as u128 / 15, 100 - i)).collect();
+    assert!(Node::view_quality_of(&full, target, 16).degraded, "a full window whose hash fell is still degraded");
+}

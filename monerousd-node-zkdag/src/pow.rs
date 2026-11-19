@@ -202,6 +202,41 @@ impl PowMiner {
         }
     }
 
+    /// ⛔ A-F110 (lane speed5, 2026-11-19) — THE GRIND IS THE PRODUCTION. Grind `header` as [`Self::mine`] does, at `duty_milli`
+    /// of one thread (1,000 = flat out; below it each hash is followed by a rest of `elapsed × (1000/duty − 1)`, so the node's
+    /// hash rate is that share), until a digest meets the target, `stop()` turns true (a new tip: the caller rebinds and grinds
+    /// again, which costs nothing because the grind is memoryless), or `max_tries` hashes pass. `Ok(witness)` on a find, `Err(tries)`
+    /// otherwise (the tries a stop or the cap left behind). MEASURED why (docs/CONSENSUS-WEIGHT-DEEP-AUDIT-20261119.md W1): with
+    /// production on a timer and the grind "a handful of iterations" (this file's own word above), an isolated minority laid chain
+    /// weight at the honest rate; a block found by the grind carries the work its grind spent, so weight follows hash.
+    /// What protects it: (b) economics — weight is hash spent; a node that ignores its duty only spends more of its own.
+    /// SCALE: one hash and one comparison a try; nothing grows with nodes, height or items. cons: the producing node's thread is
+    /// busy at its duty all the time (the security), at the lowest priority the caller sets.
+    pub fn mine_paced(&self, header: &mut BlockHeader, duty_milli: u64, max_tries: u64, stop: &dyn Fn() -> bool) -> Result<Vec<u8>, u64> {
+        header.miner_commitment = Hash32::ZERO;
+        header.pow_bind = Hash32::ZERO;
+        header.nonce = NONCE_BASE;
+        let duty = duty_milli.clamp(1, 1_000);
+        let mut tries = 0u64;
+        loop {
+            let t0 = std::time::Instant::now();
+            let digest = self.hasher.hash(&header.preimage());
+            tries += 1;
+            if hash_meets_target(&digest, header.work) {
+                return Ok(digest.as_bytes().to_vec());
+            }
+            header.nonce = header.nonce.wrapping_add(1);
+            if tries >= max_tries || stop() {
+                return Err(tries);
+            }
+            if duty < 1_000 {
+                // rest = elapsed × (1000 − duty) / duty, exact in nanoseconds (an integer 1000/duty would round 300 ‰ to 333 ‰)
+                let ns = t0.elapsed().as_nanos().saturating_mul((1_000 - duty) as u128) / duty as u128;
+                std::thread::sleep(std::time::Duration::from_nanos(ns.min(u64::MAX as u128) as u64));
+            }
+        }
+    }
+
     /// TEST BUILDS — the same grind on `lanes` nonces at a time: `lanes` consecutive nonces are hashed at once and the
     /// SMALLEST that meets the target wins, so the winning nonce, the witness and the try count (`nonce + 1`, which the
     /// simulator charges as simulated grind time, `Physics::ms_per_hash`) are exactly the sequential loop's — pinned by

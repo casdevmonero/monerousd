@@ -272,9 +272,7 @@ fn tag_of(mac: &[u8; 32], authenticated: &[u8]) -> [u8; 32] {
 fn entropy<const N: usize>() -> Result<[u8; N], KeystoreError> {
     use std::io::Read as _;
     let mut out = [0u8; N];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut out))
-        .map_err(|_| KeystoreError::NoEntropy)?;
+    crate::oscall::os_random(&mut out).map_err(|_| KeystoreError::NoEntropy)?;
     Ok(out)
 }
 

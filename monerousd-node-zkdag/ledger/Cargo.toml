@@ -63,3 +63,5 @@ usdm-decider = { path = "../vendor/Plonky3/usdm-decider", features = ["test-supp
 # lane speed5 2026-11-18: `nix` is Unix-only (it compiles empty on Windows); `oscall` gates its calls on cfg(unix).
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["fs", "process", "signal", "syslog", "time", "user"] }
+# A-F113: OS randomness without a file descriptor (oscall::os_random, shared with the node)
+getrandom = "0.2"

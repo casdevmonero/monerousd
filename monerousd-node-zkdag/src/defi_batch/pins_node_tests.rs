@@ -547,9 +547,17 @@ fn br15_an_order_settles_by_audit_and_its_claim_pays_exactly_its_fill_on_both_no
     let expire = DefiExpireTx { pair: 0, batch: 2, leaves: refunds };
     TEST_EXPIRE_MS.with(|c| c.set(Some(30_000)));
     assert!(expire.verdict(b.peg().defi_book(), 0, b.chain_time_ms()).is_err(), "⛔ an expiry inside the settlement window passed");
-    for i in 0..((BATCH_STEPS + 120) as u64) {
-        step(&mut a, &mut b, &mut ts, &(300 + i).to_le_bytes());
+    // FAST ISOLATION (lane speed5, 2026-11-19): step only until the expiry's own verdict passes on both parties, at most
+    // BATCH_STEPS + 120. MEASURED why: the fixed 124 real-proof steps (~42 s each on a loaded machine) ran past door-defi's
+    // 3,600 s hang guard (results.tsv 2026-11-19 02:48, "timed out after 3600 s"), so the door read FAIL on a test that was
+    // still passing. The claim is unchanged: the expiry is refused inside the window (above) and applies after it (below).
+    let mut steps = 0u64;
+    while [&a, &b].iter().any(|n| expire.verdict(n.peg().defi_book(), 0, n.chain_time_ms()).is_err()) {
+        assert!(steps < BATCH_STEPS + 120, "⛔ the settlement window never closed in {} steps", BATCH_STEPS + 120);
+        step(&mut a, &mut b, &mut ts, &(300 + steps).to_le_bytes());
+        steps += 1;
     }
+    eprintln!("[br15-e2e] the expiry window closed after {steps} step(s)");
     a.publish_defi_expire(&expire).expect("A pools the expiry");
     step(&mut a, &mut b, &mut ts, b"br15-expire");
     for (who, n) in [("A", &a), ("B", &b)] {

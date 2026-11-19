@@ -1676,6 +1676,28 @@ impl FinalityTracker {
         if block_height.saturating_add(FINALITY_VOTE_RETENTION) < self.finalized_height {
             return VoteRecord::NoWeight;
         }
+        // ⛔ A-F106 (lane speed5, 2026-11-19) — THE OPEN TALLY IS BOUNDED BY THE VOTES' OWN FRONTIER, NOT ONLY BY FINALITY. The
+        // rule above prunes against `finalized_height`, so on a chain whose finality does not move (the overlay absent, A-F100,
+        // or stalled) the open tally grew by every vote of every height for ever (NO GROWTH). MEASURED (replica census, a
+        // fixture that never finalizes): (242, 122) open rows and voters at height ~240 and climbing. The frontier is the highest
+        // height any held vote names (the last key of `voted_at`); a vote more than RETENTION under it cannot finalize anything
+        // the chain still has open (finality only extends its own chain, A-F86), so it is not tallied, and the rows under the
+        // floor leave. Finality is an overlay: nothing on the cash path reads this tally.
+        // SCALE: the open tally holds at most RETENTION heights × the voters, whatever finality does.
+        // cons: a vote that arrives more than RETENTION (4,096) heights late is not tallied — it could finalize nothing open.
+        let frontier = self.voted_at.keys().next_back().map_or(0, |(h, _)| *h).max(block_height);
+        let floor = frontier.saturating_sub(FINALITY_VOTE_RETENTION);
+        if block_height < floor {
+            return VoteRecord::NoWeight;
+        }
+        if self.voted_at.keys().next().is_some_and(|(h, _)| *h < floor) {
+            let open = self.voted_at.split_off(&(floor, [0u8; 32]));
+            // a block has ONE height, so every row naming a block under the floor is under the floor too: its voters go with it
+            for (_, gone) in std::mem::replace(&mut self.voted_at, open) {
+                self.voters.remove(&gone);
+            }
+            self.open_certs = self.open_certs.split_off(&(floor, [0u8; 32]));
+        }
         // G1: a SETTLED height finalizes nothing — the vote is judged against the slasher memory only, never tallied
         if block_height <= self.finalized_height {
             return match self.settled.get(&(block_height, voter)) {
@@ -2640,6 +2662,34 @@ mod tests {
         let stale = crate::hash::Hash32::hash(b"stale");
         assert_eq!(fin.record_verified_vote(&set, stale, 1, vid(3)), VoteRecord::NoWeight);
         assert_eq!((fin.tally_rows(), fin.settled_rows()), ((open, blocks), rows - open), "a stale vote must not re-grow the tally");
+    }
+
+    /// ⛔ A-F106 (lane speed5, 2026-11-19): the open tally is bounded while finality does NOT move. One of three equal seats
+    /// votes every height for three retention depths, so no height ever reaches 2/3 and `finalized_height` stays 0 — the case
+    /// a chain whose overlay is absent or stalled lives in. RED on the rule that pruned only against `finalized_height`
+    /// (the tally grew by one row a height: 3 × RETENTION rows); bounded by RETENTION + 1 on the vote frontier's floor.
+    #[test]
+    fn af106_the_open_tally_is_bounded_while_finality_does_not_move() {
+        let mut set = ValidatorSet::new();
+        for i in 1..=3u8 {
+            set.admit(vid(i), 2000, 0).unwrap();
+        }
+        let mut fin = FinalityTracker::new();
+        let n = FINALITY_VOTE_RETENTION * 3;
+        for h in 1..=n {
+            let block = crate::hash::Hash32::hash(&h.to_le_bytes());
+            assert_ne!(fin.record_verified_vote(&set, block, h, vid(1)), VoteRecord::Finalized, "CALIBRATION: one of three seats never finalizes");
+        }
+        assert_eq!(fin.finalized_height(), 0, "CALIBRATION: finality never moved");
+        let (open, blocks) = fin.tally_rows();
+        assert!(open <= FINALITY_VOTE_RETENTION as usize + 1, "⛔ A-F106: the open tally holds {open} rows after {n} heights with no finality");
+        assert!(blocks <= FINALITY_VOTE_RETENTION as usize + 1, "⛔ A-F106: the voters map holds {blocks} blocks after {n} heights");
+        // a vote far under the frontier is not tallied and re-grows nothing; one at the frontier still counts
+        let stale = crate::hash::Hash32::hash(b"af106-stale");
+        assert_eq!(fin.record_verified_vote(&set, stale, 1, vid(2)), VoteRecord::NoWeight);
+        assert_eq!(fin.tally_rows(), (open, blocks), "a stale vote must not re-grow the tally");
+        let fresh = crate::hash::Hash32::hash(&n.to_le_bytes());
+        assert_eq!(fin.record_verified_vote(&set, fresh, n, vid(2)), VoteRecord::Counted, "a vote at the frontier is still tallied");
     }
 
     // ADVERSARIAL: a validator that DOUBLE-SIGNS (two different blocks at the same height) is detected

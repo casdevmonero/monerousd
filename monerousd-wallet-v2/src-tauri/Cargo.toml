@@ -3,7 +3,7 @@
 [package]
 name = "monerousd-wallet-v2"
 default-run = "monerousd-wallet-v2"
-version = "0.3.0"
+version = "0.3.1"
 license = "Apache-2.0"
 edition = "2021"
 description = "MoneroUSD Wallet V2 — the first post-quantum private stablecoin desktop wallet (clean-room, Tauri)."

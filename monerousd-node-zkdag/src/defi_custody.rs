@@ -144,7 +144,7 @@ pub fn custody_entropy() -> Option<[u8; 32]> {
         return Some(b);
     }
     use std::io::Read as _;
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).ok()?;
+    crate::oscall::os_random(&mut b).ok()?;
     Some(b)
 }
 

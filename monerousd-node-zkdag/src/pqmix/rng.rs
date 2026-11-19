@@ -17,8 +17,7 @@ pub struct Rng {
 impl Rng {
     pub fn new() -> Self {
         let mut key = [0u8; 32];
-        std::fs::File::open("/dev/urandom")
-            .and_then(|mut f| f.read_exact(&mut key))
+        crate::oscall::os_random(&mut key)
             .expect("the mix needs the OS randomness source; refusing to route on predictable choices");
         Rng { key, buf: [0u8; BLOCK], at: BLOCK }
     }

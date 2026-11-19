@@ -726,20 +726,16 @@ where
                 j
             });
             match job {
-                Some(job) => {
+                Some(mut job) => {
                     // (b) OFF-LOCK: mine. Lock RELEASED for the whole grind — the FAST-pillar fix.
                     //     `miner` is Option (PowMiner::new can fail to derive secrets / init the kernel); a
                     //     None miner or a failed grind ⇒ None ⇒ no block this spacing (fail-closed).
+                    // ⛔ A-F110 (lane af110, 2026-11-19): THE GRIND IS THE PRODUCTION. It runs at this node's duty
+                    // (`NodeRuntime::grind_duty_milli`: its share, slow-started) until a digest meets the work; a new selected tip
+                    // stops it, and the SAME proven job is rebound to the new tip (`rebind_parents` recomputes the work from the new
+                    // selected parent) and ground again — the grind is memoryless, so the stop costs nothing and the prove is kept.
                     let grind_t0 = std::time::Instant::now();
-                    let mined: Option<Block> = miner.as_ref().and_then(|m| {
-                        let mut header = job.block.header.clone();
-                        m.mine(&mut header).map(|pi| {
-                            let mut b = job.block.clone();
-                            b.header = header;
-                            b.pow_proof = pi;
-                            b
-                        })
-                    });
+                    let mined: Option<Block> = miner.as_ref().and_then(|m| usdmd_node::node_runtime::grind_job(&rt, m, &mut job, now_unix_ms));
                     usdmd_node::node_runtime::PRODUCE_GRIND_MS.store(
                         grind_t0.elapsed().as_millis() as u64,
                         std::sync::atomic::Ordering::Relaxed,
@@ -990,9 +986,7 @@ fn load_or_create_onion_seed(port: u16) -> [u8; 32] {
     }
     // FRESH per-node identity from the OS CSPRNG — FAIL LOUD on any failure, never a fixed/deterministic fallback.
     let mut s = [0u8; 32];
-    let mut f = std::fs::File::open("/dev/urandom")
-        .or_fatal("usdmd: cannot open /dev/urandom for the per-node identity — refusing to start with a fixed identity");
-    f.read_exact(&mut s)
+    usdmd_node::oscall::os_random(&mut s)
         .or_fatal("usdmd: failed to read 32 CSPRNG bytes for the per-node identity — refusing to start with a fixed identity");
     assert!(
         s.iter().any(|&x| x != 0),

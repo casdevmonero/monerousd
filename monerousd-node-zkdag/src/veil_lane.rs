@@ -923,7 +923,7 @@ impl Client {
 /// nothing (a read asked with predictable shares would hide nothing).
 pub fn os_random(buf: &mut [u8]) -> bool {
     use std::io::Read as _;
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(buf)).is_ok()
+    crate::oscall::os_random(buf).is_ok()
 }
 
 static CLIENT: std::sync::LazyLock<std::sync::Mutex<Client>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(Client::default()));

@@ -2787,8 +2787,12 @@ impl NetSim {
         // MEASURED 2026-10-04 13:5x (eclipse-pin4.log): an `all(..)` over the shared heights read TRUE for an eclipsed victim
         // whose chain had diverged so far that the two 256-height windows shared NO height — vacuous. The gate's sampler
         // counts agree/disagree; one chain is at least one agreeing height and no disagreeing one.
+        // ⛔ A-F103 (2026-11-19): GENESIS NEVER COUNTS. Height 0 is the same block on every node of the network by construction,
+        // so it proves nothing about which chain a node follows. MEASURED (postadopt.log 01:27): a fresh joiner holding
+        // only genesis (tip 0, dag 1) read "one chain" with node 0 at tip 70 one second after it booted (agree 1 at height 0,
+        // below = 0), and PA.2's join wait returned before the joiner had done anything. Census S-VACUOUS-GENESIS-AGREE.
         let (mut agree, mut disagree) = (0usize, 0usize);
-        for (h, id) in va.iter().filter(|(h, _)| **h <= below) {
+        for (h, id) in va.iter().filter(|(h, _)| **h > 0 && **h <= below) {
             match vb.get(h) {
                 Some(other) if other == id => agree += 1,
                 Some(_) => disagree += 1,
@@ -3327,7 +3331,8 @@ impl NetSim {
         let floor = ta.min(tb).saturating_sub(GATE_DEPTH);
         let (mut agree, mut disagree) = (0usize, 0usize);
         for (s, ida) in &a {
-            if *s > floor {
+            // A-F103: genesis is shared by construction and never counts as agreement
+            if *s == 0 || *s > floor {
                 continue;
             }
             match b.get(s) {
@@ -3655,16 +3660,37 @@ mod tests {
         // cons: none — no assertion changed; the eclipse's own rate collapse is a property of the producers it cuts away.
         let mut sim = NetSim::with_params(10, Physics::from_env(), seed, params).with_band_double();
         sim.make_replayable();
+        crate::params::UPGRADE1_AT_GENESIS_FOR_TEST.store(true, std::sync::atomic::Ordering::Relaxed); // A-F110's rules from genesis
         let (origin, victim, adversary) = (0usize, 8usize, 9usize);
         sim.run(40_000, 5_000);
+        // A-F103: one chain now needs a shared height above genesis, which ten producers reach a few blocks past the 40 s mark;
+        // waited for in 5 s steps, at most 80 s more (it read true at 40 s only through genesis, which every node holds)
+        for _ in 0..16 {
+            if sim.one_chain_between(origin, victim) {
+                break;
+            }
+            sim.run(5_000, 5_000);
+        }
         assert!(sim.one_chain_between(origin, victim), "CALIBRATION: before the eclipse the victim follows the origin's chain");
         let q0 = sim.rt(victim).node().view_quality();
         eprintln!("[eclipse] honest view before the eclipse: {q0:?}");
         assert!(!q0.degraded, "CALIBRATION: an honest, converged view is not degraded: {q0:?}");
+        // A-F110 (lane af110, 2026-11-19): production is the grind, and a node's FIRST attempt waits a memoryless delay of one ramp
+        // (`GRIND_RAMP_MS`, 64 targets), so the honest majority is producing only once every party has begun. MEASURED (186b5519):
+        // eclipsed at ~40 s, parties 0, 3, 5 and 6 (the origin among them) had produced nothing, and the comparison read the pair
+        // against a mesh still starting. The eclipse begins once every party has laid a block (bounded: 20 ramps).
+        let all_started = |s: &NetSim| s.report.produced.iter().all(|&p| p > 0);
+        let mut waited = 0u64;
+        while !all_started(&sim) && waited < 20 * crate::node_runtime::GRIND_RAMP_MS {
+            sim.run(5_000, 5_000);
+            waited += 5_000;
+        }
+        assert!(all_started(&sim), "CALIBRATION: every party produced before the eclipse — produced {:?}", sim.report.produced);
         // THE ECLIPSE: the victim keeps only the adversary; the adversary keeps only the victim.
         sim.isolate(victim, &[adversary]);
         sim.isolate(adversary, &[victim]);
         let produced_before: Vec<u64> = sim.report.produced.clone();
+        let eclipse_from_ms = sim.now;
         // THE PRIVATE PAYMENT: a real note (its commitment proven by the mint-validity carrier) staged on the adversary.
         let note_sk = usdm_decider::poseidon2_compress::lanes_of(&[0xEC11u64, 0x95E0, 0x0004, 1_000]);
         let blind = usdm_decider::poseidon2_compress::lanes_of(&[0xB1u64, 0xB2, 0xB3, 0xB4]);
@@ -3675,10 +3701,32 @@ mod tests {
         note.extend_from_slice(&cm_bytes);
         note.resize(crate::cover::PQ_NOTE_BYTES, 0);
         sim.rt(adversary).node_mut().stage_credit_note(note);
-        // long enough for the DAA window (`daa_sample_len` samples) to turn over at the eclipsed set's rate — the
-        // time-to-fire the launch documentation states (DB-380 §6 d): MEASURED ~one selected block per 4 s under two
-        // producers, so 16 samples need ≥ 64 s; 100 s leaves the window wholly inside the eclipse (60 samples: 240/300 s)
-        sim.run(100_000, 5_000);
+        // until the victim's DAA window (the selected chain the verdict walks, `daa_window_below`) holds ONLY eclipse-era
+        // blocks — the premise of the verdict, MEASURED rather than assumed from a time. ⛔ MEASURED why (lane f7cb1749): a fixed
+        // 100 s gave the eclipsed pair 10 private blocks, the 16-sample window still held 6 honest ones, and the mixed window
+        // read rate 0.740, fall 1.230 (trusted); on 6ea8901b the same 100 s gave 16 and read degraded. Bounded at 600 s
+        // simulated (a pair that cannot lay one window in ten minutes is itself the finding, printed below).
+        let window_turned = |sim: &NetSim| -> bool {
+            let rt = sim.rt(victim);
+            let node = rt.node();
+            let dag = node.dag();
+            let want = dag.params().daa_sample_len.max(dag.params().mtp_sample_len as u64) as usize;
+            let mut cur = dag.selected_tip();
+            for _ in 0..want {
+                let Some(id) = cur else { return false };
+                if !sim.born.get(&id).is_some_and(|(_, t)| *t >= eclipse_from_ms) {
+                    return false;
+                }
+                cur = dag.get(&id).and_then(|n| n.selected_parent);
+            }
+            true
+        };
+        let mut eclipse_ms = 0u64;
+        while !window_turned(&sim) && eclipse_ms < 600_000 {
+            sim.run(5_000, 5_000);
+            eclipse_ms += 5_000;
+        }
+        eprintln!("[eclipse] the victim's window turned over to eclipse-era blocks after {} s simulated: {}", eclipse_ms / 1000, window_turned(&sim));
         let adversary_blocks: Vec<BlockId> = sim.born.iter().filter(|(_, (from, _))| *from == adversary).map(|(id, _)| *id).collect();
         let victim_holds_private_blocks = adversary_blocks.iter().filter(|id| sim.rt(victim).node().dag().contains(id)).count();
         // what the parties HOLD — the adversary, the victim and the honest origin, never what a call returned
@@ -3694,7 +3742,35 @@ mod tests {
             sim.report.produced
         );
         assert!(victim_holds_private_blocks > 0, "CALIBRATION: the eclipse delivered the adversary's private blocks to the victim");
-        assert!(on_adversary, "CALIBRATION: the private payment rode the adversary's own chain");
+        // ⛔ A-F110 (lane af110, 2026-11-19): CHAIN WEIGHT FOLLOWS HASH. The eclipsed pair is 2 of 10 producers; with production a
+        // timer the honest origin read the pair's chain HEAVIER than its own (main 6ea8901b: peer blue_work 1859 > ours 1621). With
+        // production the grind, the pair lays weight at its own hash share, so the honest chain must outweigh the victim's.
+        let weight = |sim: &NetSim, who: usize| {
+            let rt = sim.rt(who);
+            let node = rt.node();
+            let dag = node.dag();
+            dag.selected_tip().and_then(|t| dag.get(&t)).map_or(0, |b| b.blue_work)
+        };
+        // the honest chain is the heaviest an honest party holds (a single party's view may lag its peers'), never the origin's alone
+        let honest_w = (0..sim.report.produced.len()).filter(|&i| i != victim && i != adversary).map(|i| weight(&sim, i)).max().unwrap_or(0);
+        let victim_w = weight(&sim, victim);
+        eprintln!("[eclipse] chain weight after the eclipse: heaviest honest {honest_w} (origin {}), eclipsed victim {victim_w}", weight(&sim, origin));
+        assert!(honest_w > victim_w, "⛔ A-F110: the eclipsed pair (2 of 10 producers) laid a chain as heavy as the honest mesh: honest {honest_w} vs victim {victim_w}");
+        // ⛔ §BA (2026-11-19): a producer can no longer INVENT a payment, even on its own private chain — the graft refuses a
+        // note no chain object justifies ("§BA REFUSED a note this block carries that NOTHING justifies"), so the bare staged
+        // note above rides nowhere (MEASURED on 57bc8319: recorded on adversary false, victim false, origin false). That is
+        // the chain refusing the forgery, so this calibration no longer asks for it: the eclipse's teeth are the private
+        // CHAIN — blocks the adversary laid during the eclipse that the victim holds and the honest origin holds none of.
+        let private_era: Vec<BlockId> = sim
+            .born
+            .iter()
+            .filter(|(_, (from, t))| *from == adversary && *t >= eclipse_from_ms)
+            .map(|(id, _)| *id)
+            .collect();
+        let origin_holds_private = private_era.iter().filter(|id| sim.rt(origin).node().dag().contains(id)).count();
+        let _ = on_adversary;
+        assert!(!private_era.is_empty(), "CALIBRATION: the adversary laid a private chain during the eclipse");
+        assert_eq!(origin_holds_private, 0, "CALIBRATION: the eclipse held — the honest origin holds none of the {} private block(s)", private_era.len());
         assert!(!on_honest, "CALIBRATION: the eclipse held — the private payment never reached the honest parties");
         // ⛔ THE DEFENSE (DB-380 §3b): the victim's own chain tells it the view is degraded — one producer's chain runs at a
         // quarter of the mesh's rate or lets its difficulty fall 4× within one window. The verdict must FIRE under the
@@ -3734,12 +3810,24 @@ mod tests {
     #[test]
     fn eclipse_a_victim_recovers_to_the_honest_chain_when_one_honest_circuit_returns() {
         let EclipseRig { mut sim, origin, victim, .. } = eclipse_fixture();
+        // what each chain WEIGHS on each party (tip blue score, tip blue work, blocks held) — the fork choice the heal turns on
+        let weigh = |sim: &NetSim, who: usize| -> String {
+            let rt = sim.rt(who);
+            let node = rt.node();
+            let dag = node.dag();
+            let (score, work) = dag.selected_tip().and_then(|t| dag.get(&t)).map_or((0, 0), |b| (b.blue_score, b.blue_work));
+            let held = dag.len();
+            format!("n{who} score {score} work {work} held {held}")
+        };
+        let parties: Vec<usize> = (0..sim.report.produced.len()).collect();
+        eprintln!("[eclipse-weigh] at the heal: {}", parties.iter().map(|p| weigh(&sim, *p)).collect::<Vec<_>>().join(" · "));
         sim.restore(victim, origin);
         let mut recovered_at_ms: Option<u64> = None;
         for slice in 1..=6u64 {
             sim.run(20_000, 5_000);
             let one = sim.one_chain_between(origin, victim);
             let vq = sim.rt(victim).node().view_quality();
+            eprintln!("[eclipse-weigh] heal +{} s: {}", slice * 20, parties.iter().map(|p| weigh(&sim, *p)).collect::<Vec<_>>().join(" · "));
             eprintln!("[eclipse] heal +{} s: victim one-chain with origin {one}; victim view {vq:?}", slice * 20);
             if one {
                 recovered_at_ms = Some(slice * 20_000);
@@ -4233,6 +4321,13 @@ mod tests {
         let mut sim = NetSim::with_params(6, Physics::from_env(), seed, params);
         let (heavy, light): ([usize; 4], [usize; 2]) = ([0, 1, 2, 3], [4, 5]);
         sim.run(40_000, 5_000);
+        // A-F103: a shared height above genesis, waited for in 5 s steps, at most 80 s more
+        for _ in 0..16 {
+            if (1..6).all(|p| sim.one_chain_between(0, p)) {
+                break;
+            }
+            sim.run(5_000, 5_000);
+        }
         assert!(
             (1..6).all(|p| sim.one_chain_between(0, p)),
             "CALIBRATION: before the partition every party follows one chain"
@@ -4674,7 +4769,7 @@ mod journey_tests {
         // two-node mesh): raised as the layer-2 pins raise theirs — custody seated, node 0's mined SAT bonded.
         let mut sim = NetSim::testnet(2, Physics::from_env(), 0xA5_2026_1101).with_band_double().boot_from_disk();
         assert!(
-            run_until(&mut sim, 600_000, |s| s.one_chain_between(0, 1) && (0..2).all(|i| s.rt(i).node().validators().bonded_ids().len() == 2)).is_some(),
+            run_stage(&mut sim, "a5 one chain with both custody seats", 600_000, 120_000, 0, |s| s.one_chain_between(0, 1) && (0..2).all(|i| s.rt(i).node().validators().bonded_ids().len() == 2)).is_ok(),
             "PRECONDITION: one chain with both custody seats"
         );
         assert!(sim.seat_sat_custody(0, 900_000), "PRECONDITION: node 0 bonds the SAT it mined as custody weight on both nodes");
@@ -4710,7 +4805,7 @@ mod journey_tests {
             }
             // every send's fee has reached the pool once both nodes hold the same pool and it has grown by the sends' share
             let want = pool0 + u64::from(sends) * PROTOCOL_FEE_ATOMIC * STAKERS_BPS / 10_000;
-            run_until(&mut sim, 180_000, |s| pool(s, 0) >= want && pool(s, 0) == pool(s, 1));
+            let _ = run_stage(&mut sim, "a5 the pool reaches its want on both nodes", 180_000, 120_000, 0, |s| pool(s, 0) >= want && pool(s, 0) == pool(s, 1));
             let (pool1, t1) = (pool(&sim, 0), sim.now);
             assert_eq!(pool1, pool(&sim, 1), "A5 ({level}): the two nodes hold different stakers' pools — the pool is not a function of the chain");
             assert!(pool1 >= want, "A5 ({level}): the pool grew {} after {sends} sends, under the stakers' share {} of their base fees", pool1 - pool0, want - pool0);
@@ -7355,7 +7450,7 @@ mod journey_tests {
         let a = credit(&sim, 0, 9_101);
         let b = credit(&sim, 1, 9_102);
         assert!(
-            run_until(&mut sim, 180_000, |s| [0, 1].iter().all(|&i| holds(s, i, &a) && holds(s, i, &b))).is_some(),
+            run_stage(&mut sim, "restart_census_every_field_survives_a_production_restart (line 7363)", 180_000, 120_000, 0, |s| [0, 1].iter().all(|&i| holds(s, i, &a) && holds(s, i, &b))).ok().is_some(),
             "CALIBRATION: both credits are held by both nodes"
         );
         let spent = spend_when_spendable(&mut sim, 0, &a, 1, 120_000).is_ok();
@@ -7476,7 +7571,13 @@ mod journey_tests {
     /// TWO-PARTY-REVIEWED: three independent `Node`s over the simulated wire; the assertion reads what EACH node holds.
     #[test]
     fn db437_a_seated_mesh_holds_every_seat_and_every_node_finalizes() {
-        let mut sim = NetSim::testnet(3, Physics::from_env(), 0x7131_0437_2026_1008).boot_from_disk();
+        // A-F112 (lane speed5, 2026-11-19): the production shape — every daemon's prove worker keeps its band moving. Without it no
+        // party ever proves its band, production refuses a template once the band lags past 32 steps (DB-353 P7), and the mesh
+        // stood at tip 57 with band next 9 (lane 2d9e3f68), so no level ever reached the 48-deep vote window (F6).
+        // and the rig network (A-F111): the testnet launch seats a founding custodian no party holds, so its tally never reaches two
+        // thirds (MEASURED lane 91f45224: with the band prover the mesh reached tips 791-792 and still finalized [0, 0, 0])
+        crate::params::RIG_NETWORK_FOR_TEST.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut sim = NetSim::testnet(3, Physics::from_env(), 0x7131_0437_2026_1008).with_band_prover().boot_from_disk();
         let seats = |s: &NetSim| (0..3).map(|i| s.rt(i).node().validators().finality_seats().len()).collect::<Vec<_>>();
         let fin = |s: &NetSim| {
             (0..3)
@@ -7486,9 +7587,12 @@ mod journey_tests {
                 })
                 .collect::<Vec<_>>()
         };
-        let seated = run_until(&mut sim, 300_000, |s| seats(s).iter().all(|&k| k == 3));
+        let seated = run_stage(&mut sim, "db437_a_seated_mesh_holds_every_seat_and_every_node_finalizes (line 7494)", 300_000, 120_000, 0, |s| seats(s).iter().all(|&k| k == 3)).ok();
         assert!(seated.is_some(), "⛔ every node must hold the three seats from the blocks that carried them — held {:?}", seats(&sim));
-        let finalized = run_until(&mut sim, 600_000, |s| fin(s).iter().all(|(h, _)| *h > 0));
+        // A-F112 (lane speed5, 2026-11-19): a vote names a level `MERGEABLE_DEPTH` (48) below the tip (F6, 2026-11-18) and is
+        // tallied once a later block carries it to the fold; at this mesh's measured ~11 s a level (tips 57 at 637 s) that is past
+        // the 600 s this stage had before F6. HYPOTHESIS under test: finality arrives inside 1,800 s.
+        let finalized = run_stage(&mut sim, "db437_a_seated_mesh_holds_every_seat_and_every_node_finalizes (line 7496)", 1_800_000, 120_000, 0, |s| fin(s).iter().all(|(h, _)| *h > 0)).ok();
         let f = fin(&sim);
         let tips: Vec<u64> = (0..3).map(|i| sim.rt(i).node().tip_height()).collect();
         eprintln!("[db437] seats {:?} · finalized (height, block) {:?} · tips {tips:?}", seats(&sim), f.iter().map(|(h, b)| (*h, b.map(|b| b.to_hex()[..8].to_string()))).collect::<Vec<_>>());
@@ -7500,6 +7604,43 @@ mod journey_tests {
                 }
             }
         }
+    }
+
+    /// ⛔ A-F107 ATTACK (lane speed5, 2026-11-19; attacks.txt `deferred-vote-flood`): a seated mesh of three finalizes; then node 0's
+    /// deferred-vote pool — the door a vote for a block the node does not hold yet enters (`Node::defer_vote_awaiting_block`) — is
+    /// flooded with 5,000 invented votes under one key, one a height. The node must keep that key to its fixed share
+    /// (`FINALITY_DEFERRED_PER_VOTER`) and finality must keep advancing on every node. RED before A-F107's per-voter bound: the
+    /// pool's oldest-first eviction let one key's invented votes push out every honest early vote.
+    /// Needs three parties: finality needs a seated mesh (DB-437), which two parties of this simulator do not form.
+    /// TWO-PARTY-REVIEWED: three independent `Node`s over the simulated wire; the flood lands on node 0 and the assertion reads the
+    /// finalized height EACH node holds (nodes 1 and 2 observe node 0's votes through the chain they share).
+    #[test]
+    fn af107_a_flood_of_one_keys_deferred_votes_does_not_stop_finality() {
+        // the rig network (A-F111): the testnet launch seats a founding custodian no party holds, so a testnet mesh of three never
+        // reaches two thirds and never finalizes (MEASURED, this test on d3e695e5: finalized [0, 0, 0] after 600 s simulated)
+        crate::params::RIG_NETWORK_FOR_TEST.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut sim = NetSim::testnet(3, Physics::from_env(), 0xAF10_7000_2026_1119).with_band_prover().boot_from_disk();
+        let fin = |s: &NetSim| (0..3).map(|i| s.rt(i).node().finalized_height()).collect::<Vec<_>>();
+        let before = run_stage(&mut sim, "af107: the seated mesh finalizes", 1_800_000, 120_000, 0, |s| fin(s).iter().all(|&h| h > 0)).ok();
+        assert!(before.is_some(), "CALIBRATION: the seated mesh finalizes before the flood — finalized {:?}", fin(&sim));
+        let f0 = fin(&sim);
+        let attacker = vec![0xA7u8; 64];
+        let attacker_id = crate::pqauth::pubkey_id(&attacker);
+        let top = sim.rt(0).node().tip_height() + 10_000;
+        for h in top..top + 5_000 {
+            let block = crate::hash::Hash32::hash(&[b"af107-flood".as_slice(), &h.to_le_bytes()].concat());
+            sim.rt(0).node_mut().defer_vote_awaiting_block(crate::validator::VoteCert { pubkey: attacker.clone(), block, height: h, sig: Vec::new() });
+        }
+        let held = sim.rt(0).node().deferred_votes_of(&attacker_id);
+        eprintln!("[af107] flood of 5,000 invented votes under one key: node 0 holds {held} of them, pool {}", sim.rt(0).node().deferred_votes_len());
+        assert!(held <= crate::node::FINALITY_DEFERRED_PER_VOTER, "⛔ A-F107: one key holds {held} deferred votes on node 0");
+        let moved = run_stage(&mut sim, "af107: finality advances past the flood", 600_000, 120_000, 0, |s| {
+            let now = (0..3).map(|i| s.rt(i).node().finalized_height()).collect::<Vec<_>>();
+            now.iter().zip(&f0).all(|(n, b)| n > b)
+        })
+        .ok();
+        eprintln!("[af107] finalized before {f0:?} → after {:?}", fin(&sim));
+        assert!(moved.is_some(), "⛔ A-F107: finality stopped after one key flooded the deferred-vote pool — {f0:?} → {:?}", fin(&sim));
     }
 
     /// ⭐⭐⭐ DB-402 R1 — THE REPLICATED-STATE CENSUS, dedicated pin: two nodes, credits on each, a spend, the same resting
@@ -7516,7 +7657,7 @@ mod journey_tests {
         let a = credit(&sim, 0, 9_401);
         let b = credit(&sim, 1, 9_402);
         assert!(
-            run_until(&mut sim, 180_000, |s| [0, 1].iter().all(|&i| holds(s, i, &a) && holds(s, i, &b))).is_some(),
+            run_stage(&mut sim, "replica_census_every_replicated_field_agrees_across_the_mesh (line 7524)", 180_000, 120_000, 0, |s| [0, 1].iter().all(|&i| holds(s, i, &a) && holds(s, i, &b))).ok().is_some(),
             "CALIBRATION: both credits are held by both nodes"
         );
         // MEASURED 2026-10-06 (db402-pins-202615.log): the node-built spend helper answers `MemberCarrierRequired` on this
@@ -7570,7 +7711,7 @@ mod journey_tests {
         let mut sim = launch_mesh_of(4, journey::seed(0x7131_0425_2026_1025)).boot_from_disk();
         sim.step_census = false;
         sim.charge_cpu = false; // a deterministic schedule: one seed, one run (the launch leg charges CPU; the seed varies it)
-        let moved = run_until(&mut sim, 600_000, |s| (0..4).all(|i| s.rt(i).node().served_seq() >= 40));
+        let moved = run_stage(&mut sim, "replica_census_four_launch_nodes_agree_once_the_fold_has_moved (line 7578)", 600_000, 120_000, 0, |s| (0..4).all(|i| s.rt(i).node().served_seq() >= 40)).ok();
         assert!(moved.is_some(), "CALIBRATION: the fold moves on all four nodes");
         sim.run(30_000, 10_000);
         let rows = sim.replica_census("pin4");
@@ -7631,7 +7772,7 @@ mod journey_tests {
         sim.make_replayable();
         let mut sim = sim.boot_from_disk();
         sim.step_census = false;
-        let moved = run_until(&mut sim, 900_000, |s| (0..5).all(|i| s.rt(i).node().served_seq() >= 40));
+        let moved = run_stage(&mut sim, "replica_census_five_replayers_agree_once_the_fold_has_moved (line 7639)", 900_000, 120_000, 0, |s| (0..5).all(|i| s.rt(i).node().served_seq() >= 40)).ok();
         assert!(moved.is_some(), "CALIBRATION: the fold passes ordinal 40 on all five nodes");
         let shares: Vec<usize> = (0..5)
             .map(|i| {
@@ -7663,6 +7804,79 @@ mod journey_tests {
             bad.len(),
             bad.join("\n")
         );
+    }
+
+    /// ⛔ A-F96 ATTACK (lane speed5, 2026-11-19) — SIX PRODUCERS HOLD ONE CHAIN. MEASURED on the launch simulator (seed
+    /// 0x1A0C_2026_1117, main c3c9e6e7): 2 and 3 producers held one chain, 4 producers (6 parties) left 1 of 6 on node 0's chain,
+    /// 8 only node 0. The claim (UNBOUNDED NODES): every party reaches node 0's chain (`one_chain_between`, the live gate's
+    /// predicate, genesis never counting: A-F103) and still holds it a minute of production later.
+    /// TWO-PARTY-REVIEWED: six independent `Node`s; the assertion is cross-node.
+    #[test]
+    fn af96_six_producers_reach_one_chain_and_hold_it() {
+        // MESH_N: the party count (default 6, the size the split was measured from); run by hand at 10 and 20 for the scale
+        // ladder (memory ~200 MB a party, charter §5), N past that is the mesh model's (net/pace.py)
+        let n: usize = std::env::var("MESH_N").ok().and_then(|v| v.parse().ok()).filter(|n: &usize| *n >= 2).unwrap_or(6);
+        let mut sim = NetSim::testnet(n, Physics::from_env(), 0x1A0C_2026_1117).with_band_double();
+        sim.make_replayable();
+        let mut sim = sim.boot_from_disk();
+        sim.step_census = false;
+        let one = move |s: &NetSim| (1..n).all(|i| s.one_chain_between(0, i));
+        let t0 = std::time::Instant::now();
+        if let Err(why) = run_stage(&mut sim, &format!("{n} producers reach one chain"), 300_000, 120_000, 0, one) {
+            let split: Vec<usize> = (1..n).filter(|&i| !sim.one_chain_between(0, i)).collect();
+            panic!("⛔ A-F96 at {n}: {why} — off node 0's chain: {split:?}; produced {:?}", sim.report.produced);
+        }
+        let t_one = sim.now;
+        let h0 = sim.rt(0).node().tip_height();
+        sim.run(60_000, 10_000);
+        let split: Vec<usize> = (1..n).filter(|&i| !sim.one_chain_between(0, i)).collect();
+        let rate = (sim.rt(0).node().tip_height().saturating_sub(h0)) as f64 / 60.0;
+        eprintln!(
+            "[a-f96] {n} producers: one chain at {} s simulated, then {:.2} chain blocks/s for 60 s, off-chain {split:?}, produced {:?}, wall {:?}",
+            t_one / 1000, rate, sim.report.produced, t0.elapsed()
+        );
+        assert!(split.is_empty(), "⛔ A-F96 at {n}: a minute later {split:?} are off node 0's chain; produced {:?}", sim.report.produced);
+    }
+
+    /// ⛔ A-F101 ATTACK (lane speed5, 2026-11-19; docs/LIVE-BAND-STALL-DEEP-AUDIT-20261118.md) — A NODE THAT JOINED BY BUNDLE KEEPS
+    /// THE BAND MOVING WHEN EVERY OTHER PROVER GOES DARK. The live testnet stopped at band step 5,428 for good: its origin had
+    /// adopted a bundle, so it held only the spent-set shards `nf_wanted_shards` gave it (its rendezvous share once more than
+    /// `NF_SHARD_REPLICATION` (4) provers stood), and when the holders of the rest left nobody could serve them. Six parties here
+    /// (five provers, past the replication), the sixth joins by bundle, then all five go dark: the joiner must want every shard
+    /// and its band must move on alone. RED-FIRST by its own switch: `EXP_NF_REPL=4` restores the share-out rule (da.rs).
+    /// TWO-PARTY-REVIEWED: six independent `Node`s; the claim is what the survivor does after the others leave.
+    #[test]
+    fn af101_a_bundle_joiner_keeps_the_band_moving_when_every_other_prover_goes_dark() {
+        let mut sim = NetSim::testnet(6, Physics::from_env(), 0xAF10_1119_2026_1119).with_band_double().with_template_double();
+        sim.make_replayable();
+        let mut sim = sim.boot_from_disk();
+        sim.step_census = false;
+        let joiner = 5usize;
+        sim.hold_down(joiner);
+        let reach = sim.rt(0).node().band_journal_reach() as u64;
+        if let Err(why) = run_stage(&mut sim, "the five provers' band passes the journal reach", 3_600_000, 120_000, 0, |s| {
+            (0..5).all(|i| s.rt(i).node().band_next_ordinal() > reach + 32)
+        }) {
+            panic!("CALIBRATION: {why}");
+        }
+        sim.join_fresh(joiner).expect("the joiner boots from an empty datadir");
+        if let Err(why) = run_stage(&mut sim, "the joiner adopts a bundle and holds a current view", 600_000, 120_000, joiner, |s| {
+            s.rt(joiner).node().spine_state().0 && view_current(s, joiner)
+        }) {
+            panic!("CALIBRATION: {why}");
+        }
+        let all = 1usize << usdm_decider::nf_sparse_air::NF_BAND_BITS;
+        let wanted = sim.rt(joiner).node().nf_wanted_shards().len();
+        assert_eq!(wanted, all, "⛔ A-F101: a node with no budget that joined by bundle wants {wanted} of {all} spent-set shards");
+        for i in 0..5 {
+            sim.hold_down(i);
+        }
+        let b0 = sim.rt(joiner).node().band_next_ordinal();
+        if let Err(why) = run_stage(&mut sim, "with every other prover dark, the joiner's band moves 16 steps", 300_000, 120_000, joiner, |s| {
+            s.rt(joiner).node().band_next_ordinal() >= b0 + 16
+        }) {
+            panic!("⛔ A-F101: {why} (band next {b0} -> {})", sim.rt(joiner).node().band_next_ordinal());
+        }
     }
 
     /// ⛔ §POLES T2 (lane a 2026-10-26) — A DSYNC JOINER HOLDS THE SAME STATE AS THE NODES THAT REPLAYED (Kaspa pruning-point
@@ -7702,7 +7916,24 @@ mod journey_tests {
         if let Err(why) = run_stage(&mut sim, "the joiner reaches one chain and a current view", 600_000, 120_000, 2, |s| {
             s.one_chain_between(0, 2) && view_current(s, 2) && s.rt(2).node().tip_height() + 4 >= s.rt(0).node().tip_height()
         }) {
-            panic!("CALIBRATION: {why}");
+            // each premise on its own line BEFORE anything heavy: two runs ended with exit 1 inside this arm and printed nothing
+            eprintln!("[census-premise] one chain {} · tips {}/{}/{}", sim.one_chain_between(0, 2), sim.rt(0).node().tip_height(), sim.rt(1).node().tip_height(), sim.rt(2).node().tip_height());
+            let c = info(&sim, 2);
+            eprintln!("[census-premise] joiner view present {} matches {} wedged {} · nf_fold_seq {}", c["nf_view_present"], c["nf_view_matches_acc"], c["fold_wedged"], c["nf_fold_seq"]);
+            eprintln!("[census-premise] seeds nf_fold_seq {} / {}", info(&sim, 0)["nf_fold_seq"], info(&sim, 1)["nf_fold_seq"]);
+            panic!(
+                "CALIBRATION: {why} — one chain {} · view {}/{} wedged {} · tips {}/{} · nf_fold_seq {}/{}/{} · {}",
+                sim.one_chain_between(0, 2),
+                c["nf_view_present"],
+                c["nf_view_matches_acc"],
+                c["fold_wedged"],
+                sim.rt(0).node().tip_height(),
+                sim.rt(2).node().tip_height(),
+                info(&sim, 0)["nf_fold_seq"],
+                info(&sim, 1)["nf_fold_seq"],
+                c["nf_fold_seq"],
+                diag(&sim)
+            );
         }
         assert!(sim.rt(2).node().spine_state().0, "CALIBRATION: the joiner adopted a certified bundle (the arm's premise)");
         let served = sim.rt(0).node().served_seq();
@@ -7713,6 +7944,22 @@ mod journey_tests {
         }
         for i in 0..3 {
             eprintln!("[join3-retention] n{i}: {}", sim.rt(i).node().retention_shape_for_test());
+        }
+        // A-F102: the joiner's spend-facing accumulators beside a replayer's — the census key holds the block COUNT, so a count
+        // that never agrees reads NOT-QUIET; these say whether the state a wallet spends against agrees all the same
+        for i in [0usize, 2] {
+            let rt = sim.rt(i);
+            let n = rt.node();
+            let h = |d: &crate::spend_frontier::Digest4| format!("{:?}", &d[..2]);
+            eprintln!(
+                "[a-f102] n{i}: A_tip {} fold base {} (seq {}) nf_fold_seq {} nf_blocks {} band next {}",
+                h(&n.nf_unspent_acc()),
+                h(&n.nf_fold_base().0),
+                n.nf_fold_base().1,
+                n.nf_fold_seq(),
+                n.nf_blocks_folded(),
+                n.band_next_ordinal()
+            );
         }
         let rows = sim.replica_census("join3");
         let bad: Vec<String> = rows
@@ -7896,7 +8143,7 @@ mod journey_tests {
         }
         let wall = std::time::Instant::now();
         let reach = sim.rt(0).node().band_journal_reach() as u64;
-        let grown = run_until(&mut sim, 3_600_000, |s| (0..seeds).all(|i| s.rt(i).node().band_next_ordinal() > reach + 32));
+        let grown = run_stage(&mut sim, "launch_sim_seeds_then_waves_of_fresh_joiners_each_follow_the_chain (line 7920)", 3_600_000, 120_000, 0, |s| (0..seeds).all(|i| s.rt(i).node().band_next_ordinal() > reach + 32)).ok();
         assert!(grown.is_some(), "CALIBRATION: the seeds' band passes the journal reach ({reach}) before the first joiner: {}", diag(&sim));
         eprintln!("[launch] {seeds} seed(s) grew past the journal reach ({reach}) in {} s simulated", grown.unwrap_or(0) / 1000);
         let follows = |s: &NetSim, j: usize| {
@@ -8653,7 +8900,7 @@ mod journey_tests {
         let mut sim = NetSim::testnet(n, Physics::from_env(), seed).with_band_double().boot_from_disk();
         sim.charge_cpu = true;
         sim.census_inbound();
-        let converged = run_until(&mut sim, 300_000, |s| (1..n).all(|i| s.one_chain_between(0, i)));
+        let converged = run_stage(&mut sim, "sim_perf_load_p10_throughput_knee_and_p11_interval (line 8677)", 300_000, 120_000, 0, |s| (1..n).all(|i| s.one_chain_between(0, i))).ok();
         assert!(converged.is_some(), "CALIBRATION: the {n}-node mesh converges to one chain: {}", diag(&sim));
         eprintln!("[perf-load] {n} node(s) one chain after {converged:?} sim ms (wall {:?})", wall.elapsed());
 
@@ -9268,7 +9515,7 @@ mod journey_tests {
         let seed = journey::seed(0x0DB4_4420_2610_2100);
         let n = 3;
         let mut sim = NetSim::testnet(n, Physics::from_env(), seed).with_band_double().boot_from_disk();
-        let converged = run_until(&mut sim, 300_000, |s| (1..n).all(|i| s.one_chain_between(0, i)));
+        let converged = run_stage(&mut sim, "db444_a_send_reaches_every_peer_by_inventory_and_no_node_floods_its_body (line 9292)", 300_000, 120_000, 0, |s| (1..n).all(|i| s.one_chain_between(0, i))).ok();
         assert!(converged.is_some(), "CALIBRATION: the mesh converges to one chain: {}", diag(&sim));
         let k = 0x0DB4_4401u64;
         assert!(
@@ -9321,7 +9568,7 @@ mod journey_tests {
         let seed = journey::seed(0x0DB4_4820_2610_2100);
         let n = 4;
         let mut sim = NetSim::testnet(n, Physics::from_env(), seed).with_band_double().boot_from_disk();
-        let converged = run_until(&mut sim, 300_000, |s| (1..n).all(|i| s.one_chain_between(0, i)));
+        let converged = run_stage(&mut sim, "db448_a_tx_fetch_asks_an_announcer_and_never_a_non_holder_while_the_pool_is_still (line 9345)", 300_000, 120_000, 0, |s| (1..n).all(|i| s.one_chain_between(0, i))).ok();
         assert!(converged.is_some(), "CALIBRATION: the mesh converges to one chain: {}", diag(&sim));
         let keys: Vec<u64> = (0..n as u64).map(|i| 0x0DB4_4801 + i).collect();
         for &k in &keys {
@@ -9658,7 +9905,7 @@ mod journey_tests {
         // every node PRODUCING on one chain (a non-origin node that has not joined yet produces nothing: partitioned then, its
         // side could never build a chain of its own)
         assert!(
-            run_until(&mut sim, 600_000, |s| (0..4).all(|i| s.report.produced[i] >= 3) && (1..4).all(|i| s.one_chain_between(0, i)))
+            run_stage(&mut sim, "the_state_invariant_names_a_split_deeper_than_the_fold_depth_and_clears_when_healed (line 9682)", 600_000, 120_000, 0, |s| (0..4).all(|i| s.report.produced[i] >= 3) && (1..4).all(|i| s.one_chain_between(0, i))).ok()
                 .is_some(),
             "CALIBRATION: the mesh converges with every node producing (produced {:?})",
             sim.report.produced
@@ -9666,14 +9913,14 @@ mod journey_tests {
         assert_eq!(sim.state_divergence(), None, "a converged mesh reads clean");
         let depth = sim.params.record_fold_depth;
         sim.partition(&[0, 1]);
-        let split = run_until(&mut sim, 900_000, |s| s.state_divergence().is_some_and(|d| d.starts_with("selected chain")));
+        let split = run_stage(&mut sim, "the_state_invariant_names_a_split_deeper_than_the_fold_depth_and_clears_when_healed (line 9690)", 900_000, 120_000, 0, |s| s.state_divergence().is_some_and(|d| d.starts_with("selected chain"))).ok();
         eprintln!("[invariant-calibration] split named after {split:?} sim ms (produced {:?}): {:?}", sim.report.produced, sim.state_divergence());
         assert!(
             split.is_some(),
             "⛔ two sides partitioned 2|2 for 900 simulated s ({depth}-step fold depth) were never named a selected-chain divergence"
         );
         sim.heal(&[0, 1]);
-        let healed = run_until(&mut sim, 900_000, |s| (1..4).all(|i| s.one_chain_between(0, i)) && s.state_divergence().is_none());
+        let healed = run_stage(&mut sim, "the_state_invariant_names_a_split_deeper_than_the_fold_depth_and_clears_when_healed (line 9697)", 900_000, 120_000, 0, |s| (1..4).all(|i| s.one_chain_between(0, i)) && s.state_divergence().is_none()).ok();
         eprintln!("[invariant-calibration] healed after {healed:?} sim ms: {:?}", sim.state_divergence());
         assert!(
             healed.is_some(),
@@ -11207,7 +11454,7 @@ mod journey_tests {
                 panic!("PRECONDITION: node {i} restarts from its own files: {e}");
             }
         }
-        assert!(run_until(&mut sim, 180_000, |s| s.one_chain_between(0, 1)).is_some(), "PRECONDITION: one chain after both restarts");
+        assert!(run_stage(&mut sim, "sim_stake_round_after_both_nodes_restart_passes_on_a_pair (line 11231)", 180_000, 120_000, 0, |s| s.one_chain_between(0, 1)).ok().is_some(), "PRECONDITION: one chain after both restarts");
         let mut t3 = T3Carry::default();
         let released = tier3_bond(&mut sim, &mut v, &wall, &w1, within, &mut t3).is_some()
             && matches!(tier3_mature_and_unbond(&mut sim, &mut v, &wall, &w1, within, &mut t3, None), T3Wait::Done);
