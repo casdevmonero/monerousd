@@ -15,6 +15,7 @@
 // TWO-PARTY-REVIEWED: a front-end module, not a test. Its second party is the wallet that frames it; that crossing is
 // exercised with the real wallet and real nodes (scratchpad/net/dex.py), never inside this file.
 import { ask, esc, coinDot } from './native.js';
+import * as market from './market.js';
 
 export const USDM = '0'.repeat(48);
 export const UNIT = 100000000; // every token has 8 decimals; an NFT is ONE atomic unit
@@ -92,8 +93,33 @@ export const dot = (a) => {
   const s = label(a);
   const hue = a && a.tag ? parseInt(String(a.tag).slice(0, 6), 16) % 360 : 24;
   if (a && a.kind === 'coin' && (a.symbol === 'USDm' || a.symbol === 'SAT')) return coinDot(a.symbol);
-  return '<span class="coin" style="background:radial-gradient(circle at 30% 25%, hsl(' + hue + ' 90% 72%), hsl(' + hue + ' 75% 48%) 60%, hsl(' + hue + ' 80% 22%))">' + esc(s.slice(0, 1).toUpperCase()) + '</span>';
+  const id = a && /^[0-9a-f]{64}$/i.test(String(a.id || '')) ? a.id : a && /^[0-9a-f]{64}$/i.test(String(a.token || '')) ? a.token : '';
+  const tag = a && isTag(a.tag) ? a.tag : '';
+  return '<span class="coin" data-logo-id="' + esc(String(id).toLowerCase()) + '" data-logo-tag="' + esc(String(tag).toLowerCase()) + '" style="background:radial-gradient(circle at 30% 25%, hsl(' + hue + ' 90% 72%), hsl(' + hue + ' 75% 48%) 60%, hsl(' + hue + ' 80% 22%))">' + esc(s.slice(0, 1).toUpperCase()) + '</span>';
 };
+// ── A TOKEN'S OWN PICTURE, FROM THE CHAIN (user 2026-11-19: "the picture i uploaded for the token logo never uploaded on chain";
+// MEASURED: it had — CAS's record says has_art and the node serves its 6,417-byte JPEG — but every token icon here was a drawn
+// letter). Every icon `dot` draws is filled, once it is on the page, with the picture the chain recorded at the token's
+// creation (lib/market.js `picture`: through the wallet's own node, or the node behind this page). The letter stays where the
+// chain holds no picture. A picture never changes (bound by digest), so each is read once a visit.
+const logoIds = new Map(); // tag -> id (or '' when the chain names none)
+async function logoUrl(id, tag) {
+  let k = String(id || '');
+  if (!k && tag) {
+    if (!logoIds.has(tag)) { try { const r = await market.asset(tag); logoIds.set(tag, r && r.found && r.id ? String(r.id).toLowerCase() : ''); } catch (_) { return ''; } }
+    k = logoIds.get(tag);
+  }
+  return k ? market.picture(k) : '';
+}
+function fillLogos() {
+  document.querySelectorAll('span.coin[data-logo-id]:not([data-logo-read]),span.coin[data-logo-tag]:not([data-logo-read])').forEach((el) => {
+    const id = el.dataset.logoId || '', tag = el.dataset.logoTag || '';
+    if (!id && !tag) return;
+    el.dataset.logoRead = '1';
+    logoUrl(id, tag).then((url) => { if (url && el.isConnected) { el.style.background = 'center / cover no-repeat url("' + url + '")'; el.textContent = ''; } }).catch(() => { /* the letter stays */ });
+  });
+}
+if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') new MutationObserver(fillLogos).observe(document.documentElement, { childList: true, subtree: true });
 export function copyButton(text, words) {
   const b = document.createElement('button');
   b.type = 'button';

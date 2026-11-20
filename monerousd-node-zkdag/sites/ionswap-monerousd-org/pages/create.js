@@ -85,11 +85,26 @@ export default async function render(view /* , ctx */) {
     const go = $('crGo');
     go.disabled = true;
     go.textContent = 'Confirm in your wallet…';
+    // A NOTICE NOBODY MISSES (user 2026-11-19: "make the notification stating that you are creating a token more noticable
+    // because i didnt notice it at first"): pinned at the top of the screen for as long as the wallet is making the token.
+    const what = st.kind === 'nft' ? 'NFT' : 'token';
+    const banner = document.createElement('div');
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'assertive');
+    banner.style.cssText = 'position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:9999;width:min(560px,calc(100vw - 32px));' +
+      'padding:16px 18px;border-radius:16px;background:linear-gradient(135deg,#ff8a1f,#ff5a00);color:#140800;font-weight:600;' +
+      'box-shadow:0 12px 40px rgba(255,110,0,.45);display:flex;gap:12px;align-items:center;font-size:16px;line-height:1.35';
+    const say = (t, sub) => { banner.innerHTML = '<span style="font-size:22px">⏳</span><span>' + esc(t) + (sub ? '<br><span style="font-weight:500;font-size:14px;opacity:.85">' + esc(sub) + '</span>' : '') + '</span>'; };
+    say('Confirm the ' + what + ' ' + sym() + ' in your wallet', 'Your wallet shows the cost first. Nothing is made until you confirm.');
+    document.body.appendChild(banner);
+    const making = setTimeout(() => say('Creating ' + sym() + '…', 'Your wallet is making the ' + what + ' and sending it to the chain. This takes up to a minute: keep this page open.'), 4000);
+    const unpin = (ok, t, sub) => { clearTimeout(making); say(t, sub); banner.querySelector('span').textContent = ok ? '✅' : '⚠️'; if (!ok) banner.style.background = '#3a1616'; if (!ok) banner.style.color = '#ffd9d9'; setTimeout(() => banner.remove(), ok ? 8000 : 10000); };
     try {
       const made = await dex.create({ kind: 'token', symbol: sym(), name: $('crName').value.trim(), supply: supply(), artHex: st.art ? gen.toHex(st.art) : undefined });
       // keep the card with its picture on this device, so the token shows its own picture here
       if (made.card && st.art) { try { const c = await dex.addCard(made.card); await store.keep({ tag: c.tag, card: c.card, symbol: c.symbol, name: c.name, kind: c.kind, art_hex: c.art_hex, art_mime: c.art_mime }); } catch (_) { /* the token exists all the same */ } }
       const tag = String(made.asset_tag_hex || '').toLowerCase();
+      unpin(true, sym() + ' is created', st.kind === 'nft' ? 'It reaches your wallet within a block or two.' : 'Its whole supply reaches your wallet within a block or two. Next: create its pool.');
       const done = $('crDone');
       done.innerHTML = '<div class="card glow stack"><div class="eyebrow">Created</div><h2>' + esc(sym()) + ' is yours</h2>' +
         '<p class="muted">' + (st.kind === 'nft' ? 'The one and only is on its way to your wallet.' : 'The whole supply is on its way to your wallet.') + ' It shows up within a block or two, and the chain itself records its name' + (st.art ? ' and picture' : '') + ', so anyone can find it by its id. Its card, if you want to hand it to someone directly:</p>' +
@@ -100,10 +115,19 @@ export default async function render(view /* , ctx */) {
       a.className = 'ghost';
       a.href = (st.kind === 'nft' ? '#/nfts?t=' : '#/token?t=') + tag;
       a.textContent = st.kind === 'nft' ? 'Open my NFTs' : 'Open its market';
+      if (st.kind !== 'nft' && /^[0-9a-f]{64}$/i.test(String(made.asset_id || ''))) {
+        // the next step on Uniswap is the pool: this token's own, against USDm, opened by the deposit its creator makes
+        const pool = document.createElement('a');
+        pool.className = 'cta';
+        pool.href = '#/pools?token=' + String(made.asset_id).toLowerCase();
+        pool.textContent = 'Create its pool';
+        btns.appendChild(pool);
+      }
       btns.appendChild(a);
       done.scrollIntoView({ behavior: 'smooth', block: 'center' });
       go.textContent = 'Created';
     } catch (e) {
+      unpin(false, sym() + ' was not created', dex.errText(e));
       $('crMsg').innerHTML = '<div class="note bad">' + esc(dex.errText(e)) + '</div>';
       st.busy = false;
       paint();

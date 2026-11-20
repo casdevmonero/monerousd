@@ -26,6 +26,7 @@
 import { S, learn, ask, esc, usd, coinAmt, coinDot, connectNote, privateNote } from '../lib/native.js';
 import * as dex from '../lib/dex.js';
 import * as pl from '../lib/pools.js';
+import * as market from '../lib/market.js';
 
 const PAGE = 50; // pools a page of the list
 const NEXT_READ_MS = 20000; // the gap between background reads of the open view (a pool changes once a block)
@@ -50,7 +51,7 @@ const kindChip = (p) => (p.kind === 'curve' ? '<span class="chip live">launch cu
 
 function row(p, rank) {
   return '<a class="item" href="#/pools?token=' + esc(p.token) + '" style="text-decoration:none;color:inherit">' +
-    '<span class="muted num" style="min-width:2ch;text-align:right">' + rank + '</span>' +
+    '<span class="muted num" style="min-width:2ch;text-align:right">' + rank + '</span>' + dex.dot({ symbol: p.symbol, token: p.token }) +
     '<span class="t">' + esc(pl.label(p)) + ' · USDm</span>' +
     '<b class="num">' + esc(money(p.liquidity_usdm_atomic)) + '</b>' +
     // the kind sits on the second line, where a phone has room for it (in the title it was cut off at 375 px)
@@ -72,7 +73,7 @@ async function listView(root) {
   root.innerHTML = '<div><div class="eyebrow">Pools</div><h1>Add liquidity. <em>Take it out whenever you want.</em></h1>' +
     '<p class="lead">Every pool here was made by people. You hold your part as shares in your own wallet, and handing them back returns both assets, at any time, asking nobody. You can also choose to lock your part until a date, to show you are staying: a green lock marks a pool whose liquidity is mostly locked, an orange one a pool whose providers can leave at any time.</p></div>' +
     '<div class="card stack"><input class="field" id="plQ" type="search" autocomplete="off" spellcheck="false" placeholder="Search pools: name, symbol or id" aria-label="Search every pool by a token\'s name, its symbol or its id">' +
-    '<div class="row"><b id="plHead">Top pools by liquidity</b><span style="display:inline-flex;gap:10px;align-items:center"><span class="muted" id="plCount"></span><a class="btn primary" href="#/pools" id="plCreate">+ Create a pool</a></span></div>' +
+    '<div class="row"><b id="plHead">Top pools by liquidity</b><span style="display:inline-flex;gap:10px;align-items:center"><span class="muted" id="plCount"></span><a class="btn primary" href="#/pools?new=1" id="plCreate">+ Create a pool</a></span></div>' +
     '<div class="list" id="plList"><div class="note">Reading your node…</div></div>' +
     '<button type="button" class="ghost" id="plMore" hidden>Show more</button></div>' +
     '<div class="card stack" id="plMinePos" hidden></div>' +
@@ -106,7 +107,6 @@ async function listView(root) {
   let typing = 0;
   q.addEventListener('input', () => { clearTimeout(typing); typing = setTimeout(() => { query = q.value.trim(); load(true); }, 250); });
   more.addEventListener('click', () => load(false));
-  root.querySelector('#plCreate').addEventListener('click', (e) => { e.preventDefault(); root.querySelector('#plOpen').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   load(true);
   positionsCard(root.querySelector('#plMinePos'));
   openCard(root.querySelector('#plOpen'));
@@ -152,22 +152,41 @@ async function positionsCard(box) {
   }
 }
 
-/** "Open a pool": one of the tokens this wallet holds, by its id. */
-async function openCard(box) {
+/** "Create a pool" (user 2026-11-19: "Ionswap should be able to privately see that i have the assets available to create the
+ *  pool"): the tokens THIS wallet holds, read by the wallet from its own notes (nothing leaves this computer), each with its
+ *  pool's state on the chain — "Create its pool" where none exists yet, "Add liquidity" where one does. A token whose card
+ *  carries no chain id is named by the chain's own record by its tag (lib/market.js `asset`). */
+async function openCard(box, alone) {
   if (!S.wallet) {
     box.innerHTML = '<div class="row"><h2>Create a pool</h2></div><p class="muted">Anyone can open a pool for a token they hold: a deposit of the token and USDm sets its first price, and every user on the chain sees it and can trade on it.</p>' + connectNote('to create a pool');
     return;
   }
-  box.innerHTML = '<div class="row"><h2>Create a pool for a token you hold</h2></div>' +
-    '<p class="muted">A token has one pool against USDm. The first deposit sets its price; every later one joins at the pool\'s own price.</p>' +
+  box.innerHTML = '<div class="row"><h2>Create a pool</h2>' + (alone ? '<a class="ghost" href="#/pools" style="text-decoration:none">All pools</a>' : '') + '</div>' +
+    '<p class="muted">Pair a token you hold with USDm. Your first deposit sets its price; from then on every user on the chain sees the pool, trades on it and can add liquidity beside you. Your wallet reads what you hold on this computer: no one else learns it.</p>' +
     '<div id="plMine" class="list"><div class="note">Reading your wallet…</div></div>';
+  const list = box.querySelector('#plMine');
   try {
-    const held = (await dex.holdings()).filter((a) => a.kind !== 'nft' && a.id && Number(a.atomic) > 0);
-    box.querySelector('#plMine').innerHTML = held.map((a) => '<a class="item" href="#/pools?token=' + esc(a.id) + '" style="text-decoration:none;color:inherit">' + dex.dot(a) +
-      '<span class="t">' + esc(dex.label(a)) + '</span><b class="num">' + esc(dex.amountText(a, a.atomic)) + '</b><span class="s">Open its pool, or add to it</span></a>').join('') ||
-      '<div class="note">Your wallet holds no token yet. <a href="#/create">Launch one</a>, or buy one on the <a href="#/tokens">tokens page</a>.</div>';
+    const all = await dex.holdings();
+    const usdm = all.find((a) => a.tag === dex.USDM);
+    const held = all.filter((a) => a.kind !== 'nft' && a.kind !== 'share' && a.kind !== 'coin' && a.tag !== dex.USDM && Number(a.atomic) > 0);
+    await Promise.all(held.map(async (a) => {
+      if (!pl.isToken(a.id)) { try { const r = await market.asset(a.tag); if (r && r.found && pl.isToken(r.id)) { a.id = String(r.id).toLowerCase(); a.symbol = a.symbol || r.symbol; } } catch (_) { /* named below by its tag */ } }
+      if (pl.isToken(a.id)) { try { const r = await ask('ionPool', { token: a.id }, 25000); a.poolFound = !!(r && r.found); a.curve = !!(r && r.found && r.pool && r.pool.kind === 'curve'); } catch (_) { a.poolFound = null; } }
+    }));
+    if (!box.isConnected) return;
+    const rows = held.filter((a) => pl.isToken(a.id)).map((a) => {
+      const act = a.curve ? 'On its launch curve: buy and sell it' : a.poolFound ? 'Add liquidity to its pool' : 'Create its pool';
+      return '<a class="item" href="#/pools?token=' + esc(a.id) + '" style="text-decoration:none;color:inherit">' + dex.dot(a) +
+        '<span class="t">' + esc(dex.label(a)) + ' · USDm</span><b class="num">' + esc(dex.amountText(a, a.atomic)) + ' ' + esc(dex.label(a)) + '</b>' +
+        '<span class="s">' + (a.poolFound ? '' : '<span class="chip">no pool yet</span> ') + esc(act) + ' ›</span></a>';
+    }).join('');
+    const waiting = held.filter((a) => !pl.isToken(a.id)).length;
+    list.innerHTML = (rows || '<div class="note">Your wallet holds no token yet. <a href="#/create">Create one</a> (its whole supply arrives in your wallet), or buy one on the <a href="#/tokens">tokens page</a>.</div>') +
+      (waiting ? '<div class="note">' + waiting + ' token' + (waiting === 1 ? '' : 's') + ' in your wallet ' + (waiting === 1 ? 'is' : 'are') + ' not on your node\'s record yet (a token just created appears within a block or two). This list reads again on its own.</div>' : '') +
+      '<p class="muted small">You pair it with USDm: you hold ' + esc(money(pl.big(usdm ? usdm.atomic : 0))) + '.</p>';
+    if (waiting && alone) setTimeout(() => { if (box.isConnected) openCard(box, alone); }, NEXT_READ_MS);
   } catch (e) {
-    box.querySelector('#plMine').innerHTML = '<div class="note bad">' + esc(dex.errText(e)) + '</div>';
+    list.innerHTML = privateNote(e, 'balances');
   }
 }
 
@@ -618,5 +637,9 @@ export default async function render(view /* , ctx */) {
   if (!S.wallet) await learn();
   const token = (dex.params().get('token') || '').toLowerCase();
   if (pl.isToken(token)) await poolView(root, token);
-  else await listView(root);
+  else if (dex.params().get('new')) {
+    // its own screen, as Uniswap's "New position": the coin pools (given at launch, owned by nobody) are not part of it
+    root.innerHTML = '<div><div class="eyebrow">Pools</div><h1>Create a pool. <em>Your token, your market.</em></h1></div><div class="card stack" id="plOpen"></div>';
+    await openCard(root.querySelector('#plOpen'), true);
+  } else await listView(root);
 }

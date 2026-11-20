@@ -196,13 +196,16 @@ function usdmCoinSvg() { const n = ++_logoSeq; return LOGO_USDM.replace(/(uRimO|
 // ⛔ FOUND that day (audit lane): everything that was not BTC or SAT was drawn as the MoneroUSD coin, so a Monero swap
 // showed MoneroUSD's logo beside "XMR". A symbol the chain has no mark for gets the chain's generated coin for that
 // symbol, never another asset's logo.
-function assetLogo(sym) {
+function assetLogo(sym, tag) {
   const raw = String(sym || '').replace(/[^A-Za-z0-9]/g, '');
   const s = raw.toUpperCase().replace(/^W(?=BTC|XMR|ETH|ZEC|SOL)/, ''); // a wrapped name → its coin
   if (s === 'USDM') return `<span class="asset-logo">${usdmCoinSvg()}</span>`; // the wallet's own coin, drawn inline
   // an asset with no name yet: a plain chip that claims nothing (never MoneroUSD's coin beside something that is not USDm)
   if (s === '') return '<span class="asset-logo" style="display:grid;place-items:center;border-radius:50%;background:#2a2a33;color:#9aa0ad;font-weight:800">?</span>';
-  return `<span class="asset-logo"><img src="${SOVEREIGN_BASE}/api/token-logo/${s}" alt="${s}" style="width:100%;height:100%;border-radius:50%;object-fit:cover" /></span>`;
+  // a created token is drawn with the picture the chain recorded for it, found by its own tag (a symbol is not unique); the
+  // site host falls back to the generated coin when the chain holds none (user 2026-11-19)
+  const t = /^[0-9a-f]{48}$/i.test(String(tag || '')) ? '?tag=' + String(tag).toLowerCase() : '';
+  return `<span class="asset-logo"><img src="${SOVEREIGN_BASE}/api/token-logo/${s}${t}" alt="${s}" style="width:100%;height:100%;border-radius:50%;object-fit:cover" /></span>`;
 }
 // ⭐ SATOSHI — one read of everything the wallet shows about SAT: the asset's tag key (so `assetLabel` names the balance
 // row), whether this node seals its mining rewards to THIS wallet (provisioned on the spot if not), how many rewards this
@@ -995,7 +998,7 @@ function renderHeldAssets(b) {
     const title = coin || (c ? c.symbol : 'asset ' + String(tag).slice(0, 6) + '…');
     const under = coin ? '' : c ? c.name + ' · ' + String(tag).slice(0, 6) + '…' : 'reading its name from the chain';
     const amount = nft ? (Number(atomic[tag]) >= 1 ? 'the only one' : '') : (Number(atomic[tag]) / 1e8).toLocaleString(undefined, { maximumFractionDigits: 8 });
-    return '<div class="held-asset">' + sanitizeHtml(assetLogo(coin || (c && c.symbol) || '?')) +
+    return '<div class="held-asset">' + sanitizeHtml(assetLogo(coin || (c && c.symbol) || '?', coin ? '' : tag)) +
       '<div class="held-asset-name"><b>' + escapeHtml(title) + (nft ? ' <span class="held-asset-kind">NFT</span>' : '') + '</b><span>' + escapeHtml(under) + '</span></div>' +
       '<div class="held-asset-amt">' + escapeHtml(amount) + '</div></div>';
   }));
@@ -2767,6 +2770,13 @@ async function refreshUpdateBanner() {
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(refreshUpdateBanner, 5000);
   setInterval(() => { if (document.visibilityState === 'visible') refreshUpdateBanner(); }, 30 * 60 * 1000);
+  // a person who brings the wallet back to the front sees a release published since the last look (user 2026-11-19: "i have
+  // the wallet open now and dont see the automatic new update banner upon the release" — the 30-minute tick had not come round).
+  // At most one look every two minutes: the manifest (~1 KB) and its signature (3,309 B) over Tor, nothing about this wallet.
+  let lastLook = Date.now();
+  const lookAgain = () => { if (document.visibilityState === 'visible' && Date.now() - lastLook > 120000) { lastLook = Date.now(); refreshUpdateBanner(); } };
+  document.addEventListener('visibilitychange', lookAgain);
+  window.addEventListener('focus', lookAgain);
 });
 function wireUpdates() {
   const b = document.getElementById('btnVerifyRelease');
@@ -4006,7 +4016,10 @@ async function _dappProviderCall(method, params, ctx) {
       const onChain = {};
       await Promise.all(tags.map(async (t) => {
         const known = t === USDM_ASSET_TAG_HEX || (window.__ASSET_SYMBOLS || {})[t] || cards[String(t).toLowerCase()];
-        if (!known) onChain[t] = await chainAssetRecord(t);
+        // a card names a token but carries no chain id (a pool, a market and a page all ask by id), so a token whose card has
+        // none is also read from the chain's record (user 2026-11-19: a token just created was missing from "Create a pool")
+        const card = cards[String(t).toLowerCase()];
+        if (!known || (card && card.kind !== 'nft' && !card.id)) onChain[t] = await chainAssetRecord(t);
       }));
       return { assets: tags.map((t) => {
         const c = cards[String(t).toLowerCase()] || onChain[t];
@@ -4014,7 +4027,7 @@ async function _dappProviderCall(method, params, ctx) {
         return { tag: t, atomic: Number(atomic[t] || 0), symbol: core || (c && c.symbol) || null,
           name: core ? (core === 'USDm' ? 'MoneroUSD' : core) : ((c && c.name) || null),
           kind: core ? 'coin' : ((c && c.kind) || 'unknown'), card: (c && c.card) || null,
-          id: (c && c.id) || null, collection: (c && c.collection) || '', pool: (c && c.pool) || '',
+          id: (c && c.id) || (onChain[t] && onChain[t].id) || null, collection: (c && c.collection) || (onChain[t] && onChain[t].collection) || '', pool: (c && c.pool) || (onChain[t] && onChain[t].pool) || '',
           lock_week: (c && c.lock_week) || 0, unlock_secs: (c && c.unlock_secs) || 0 };
       }) };
     }
@@ -4046,7 +4059,15 @@ async function _dappProviderCall(method, params, ctx) {
         warning: WARN_IRREVERSIBLE + ' The creation price is not refunded. Only confirm if you started this in the app.' }))) throw new Error('USER_DECLINED: the user cancelled in the wallet');
       // `artHex`: the asset's own picture. The core checks it, binds its digest into the asset, and returns a card that carries it.
       const made = await _tauriInvoke('dapp_provider_create_token', { params: { name, symbol, maxSupply: kind === 'nft' ? '1' : String(whole), decimals: 8, kind, logoDigestHex: p.logoDigestHex || undefined, artHex: p.artHex || undefined, collection: collection || undefined } });
-      if (made && made.card) { try { await rememberAssetCard(made.card); } catch (_) { /* created all the same; its card is in the reply */ } }
+      if (made && made.card) {
+        try {
+          const c = await rememberAssetCard(made.card);
+          // the creator knows its token's chain id from the creation itself: kept beside the name, so the pools page and the
+          // token's market find it at once, before the chain's record has reached this wallet's node
+          const all = assetCards();
+          if (c && all[c.tag] && /^[0-9a-f]{64}$/.test(String(made.asset_id || ''))) { all[c.tag].id = String(made.asset_id); try { localStorage.setItem(ASSET_CARDS_KEY, JSON.stringify(all)); } catch (_) { /* named for this session */ } }
+        } catch (_) { /* created all the same; its card is in the reply */ }
+      }
       trackPending('Creating ' + (kind === 'nft' ? 'the NFT ' : 'the token ') + symbol, chainCheck.assetHeld(made && made.asset_tag_hex), 'in your wallet');
       return made;
     }

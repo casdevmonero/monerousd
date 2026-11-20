@@ -1222,6 +1222,32 @@ impl SovereignServer {
                     .chars()
                     .filter(|c| c.is_ascii_alphanumeric())
                     .collect();
+                // A CREATED TOKEN'S OWN PICTURE (user 2026-11-19: "the picture i uploaded for the token logo never uploaded on
+                // chain" — MEASURED: it had; CAS's record says has_art and the node serves its 6,417-byte JPEG, but this route
+                // drew a generated coin by symbol). A symbol is not unique (anyone may create another "CAS"), so the picture
+                // is found by the token's own TAG (`?tag=<48 hex>`, what its notes carry): this node's record of that asset,
+                // then the picture its creation bound by digest. No picture, or no record yet: the generated coin below.
+                let tag: String = target.split('?').nth(1).unwrap_or("").split('&')
+                    .find_map(|kv| kv.strip_prefix("tag=")).unwrap_or("").chars().take(48).collect::<String>().to_ascii_lowercase();
+                if tag.len() == 48 && tag.bytes().all(|c| c.is_ascii_hexdigit()) {
+                    let art = loopback_rpc_post("/dir/asset", &format!("{{\"tag\":\"{tag}\"}}"))
+                        .and_then(|b| serde_json::from_str::<serde_json::Value>(b.trim()).ok())
+                        .filter(|r| r.get("has_art").and_then(serde_json::Value::as_bool) == Some(true))
+                        .and_then(|r| r.get("id").and_then(|v| v.as_str()).map(str::to_string))
+                        .filter(|id| id.len() == 64 && id.bytes().all(|c| c.is_ascii_hexdigit()))
+                        .and_then(|id| loopback_rpc_post("/dir/asset_art", &format!("{{\"id\":\"{id}\"}}")))
+                        .and_then(|b| serde_json::from_str::<serde_json::Value>(b.trim()).ok());
+                    if let Some(a) = art {
+                        let mime = a.get("mime").and_then(|v| v.as_str()).unwrap_or("");
+                        let hex = a.get("art_hex").and_then(|v| v.as_str()).unwrap_or("");
+                        let bytes: Option<Vec<u8>> = (hex.len() % 2 == 0)
+                            .then(|| (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok()).collect())
+                            .flatten();
+                        if let (true, Some(body)) = (matches!(mime, "image/png" | "image/jpeg" | "image/webp"), bytes) {
+                            return Some(HttpResponse { status: 200, reason: "OK", content_type: mime.to_string(), body, site_root: None, veil: None });
+                        }
+                    }
+                }
                 // SATOSHI: the native token's real logo (the user's painting, PNG); every other symbol keeps its
                 // deterministic generated SVG coin
                 if sym.eq_ignore_ascii_case("SAT") {
