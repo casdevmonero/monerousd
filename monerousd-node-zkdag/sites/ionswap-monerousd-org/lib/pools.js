@@ -9,7 +9,7 @@
 //
 // TWO-PARTY-REVIEWED: a front-end module, not a test. Its second party is the wallet that frames it; that crossing is
 // exercised with the real wallet and real nodes, never inside this file.
-import { ask } from './native.js';
+import { ask, provider } from './native.js';
 
 const READ = 25000;
 const SLOW = 240000; // an order proves one or two spends in the wallet before it is sent
@@ -51,10 +51,23 @@ export const FEE_USDM_NEEDED = NETWORK_FEE + 1n;
 export const needsFeeText = 'This needs about $0.001 of USDm in your wallet for the network fee, and your wallet holds less.';
 
 // ── asks (the wallet reads its own node; no server is named and none learns which pool a person looks at)
-export const list = (q, skip = 0, max = 50) => ask('ionPools', { q: String(q || ''), skip, max }, READ).then(keepFees);
+// O1-INFINITY-REVIEWED: no storage is read back; this asks the node's own public pool rows (`/ion/pools` pages of at most 100), the same rows the wallet relays.
+const connected = () => !!provider();
+async function served(path, params) {
+  const r = await fetch(path + '?' + new URLSearchParams(params), { cache: 'no-store' });
+  if (!r.ok || r.headers.get('X-Sov-Source')) throw new Error('Connect your wallet to see the pools: no node is behind this copy of the page.');
+  return r.json();
+}
+export const list = (q, skip = 0, max = 50) =>
+  (connected() ? ask('ionPools', { q: String(q || ''), skip, max }, READ) : served('/api/ion/pools', { q: String(q || ''), skip, max })).then(keepFees);
 /** One pool, and beside it what THIS wallet holds for it. The second read is the wallet's own notes, so the wallet
  *  answers it only when its user lets this site see balances; without that the pool still reads and `mine` is null. */
 export async function pool(token) {
+  if (!connected()) {
+    const r = keepFees(await served('/api/ion/pool', { token }));
+    r.mine = null; r.mineWhy = new Error('Connect your wallet to add liquidity or trade in this pool.');
+    return r;
+  }
   const r = keepFees(await ask('ionPool', { token }, READ));
   try { r.mine = await ask('ionPosition', { token }, READ); } catch (e) { r.mine = null; r.mineWhy = e; }
   return r;

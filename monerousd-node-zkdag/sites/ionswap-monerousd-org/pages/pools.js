@@ -72,7 +72,7 @@ async function listView(root) {
   root.innerHTML = '<div><div class="eyebrow">Pools</div><h1>Add liquidity. <em>Take it out whenever you want.</em></h1>' +
     '<p class="lead">Every pool here was made by people. You hold your part as shares in your own wallet, and handing them back returns both assets, at any time, asking nobody. You can also choose to lock your part until a date, to show you are staying: a green lock marks a pool whose liquidity is mostly locked, an orange one a pool whose providers can leave at any time.</p></div>' +
     '<div class="card stack"><input class="field" id="plQ" type="search" autocomplete="off" spellcheck="false" placeholder="Search pools: name, symbol or id" aria-label="Search every pool by a token\'s name, its symbol or its id">' +
-    '<div class="row"><b id="plHead">Top pools by liquidity</b><span class="muted" id="plCount"></span></div>' +
+    '<div class="row"><b id="plHead">Top pools by liquidity</b><span style="display:inline-flex;gap:10px;align-items:center"><span class="muted" id="plCount"></span><a class="btn primary" href="#/pools" id="plCreate">+ Create a pool</a></span></div>' +
     '<div class="list" id="plList"><div class="note">Reading your node…</div></div>' +
     '<button type="button" class="ghost" id="plMore" hidden>Show more</button></div>' +
     '<div class="card stack" id="plMinePos" hidden></div>' +
@@ -106,10 +106,12 @@ async function listView(root) {
   let typing = 0;
   q.addEventListener('input', () => { clearTimeout(typing); typing = setTimeout(() => { query = q.value.trim(); load(true); }, 250); });
   more.addEventListener('click', () => load(false));
+  root.querySelector('#plCreate').addEventListener('click', (e) => { e.preventDefault(); root.querySelector('#plOpen').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   load(true);
   positionsCard(root.querySelector('#plMinePos'));
   openCard(root.querySelector('#plOpen'));
-  ask('nativePools', {}, 25000).then((r) => { if (root.isConnected) root.querySelector('#plCoin').innerHTML = coinCards(r) || '<div class="note">Your node named no coin pools.</div>'; })
+  if (!S.wallet) root.querySelector('#plCoin').innerHTML = connectNote('to see the coin pools');
+  else ask('nativePools', {}, 25000).then((r) => { if (root.isConnected) root.querySelector('#plCoin').innerHTML = coinCards(r) || '<div class="note">Your node named no coin pools.</div>'; })
     .catch((e) => { if (root.isConnected) root.querySelector('#plCoin').innerHTML = '<div class="note bad">' + esc(dex.errText(e)) + '</div>'; });
 }
 
@@ -152,7 +154,11 @@ async function positionsCard(box) {
 
 /** "Open a pool": one of the tokens this wallet holds, by its id. */
 async function openCard(box) {
-  box.innerHTML = '<div class="row"><h2>Open a pool for a token you hold</h2></div>' +
+  if (!S.wallet) {
+    box.innerHTML = '<div class="row"><h2>Create a pool</h2></div><p class="muted">Anyone can open a pool for a token they hold: a deposit of the token and USDm sets its first price, and every user on the chain sees it and can trade on it.</p>' + connectNote('to create a pool');
+    return;
+  }
+  box.innerHTML = '<div class="row"><h2>Create a pool for a token you hold</h2></div>' +
     '<p class="muted">A token has one pool against USDm. The first deposit sets its price; every later one joins at the pool\'s own price.</p>' +
     '<div id="plMine" class="list"><div class="note">Reading your wallet…</div></div>';
   try {
@@ -607,10 +613,9 @@ export default async function render(view /* , ctx */) {
   const root = document.createElement('section');
   root.className = 'ion page';
   view.appendChild(root);
-  if (!S.wallet && !(await learn())) {
-    root.innerHTML = '<div><div class="eyebrow">Pools</div><h1>Add liquidity. <em>Take it out whenever you want.</em></h1></div>' + connectNote('to see the pools');
-    return;
-  }
+  // PUBLIC BEFORE ANY WALLET (user 2026-11-19): every pool on the chain is listed and readable with no wallet connected
+  // (lib/pools.js reads the node behind this page); only adding, removing and trading ask for the wallet.
+  if (!S.wallet) await learn();
   const token = (dex.params().get('token') || '').toLowerCase();
   if (pl.isToken(token)) await poolView(root, token);
   else await listView(root);

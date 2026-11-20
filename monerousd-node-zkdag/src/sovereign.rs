@@ -978,6 +978,32 @@ impl SovereignServer {
             // by the one coin table (`bridge_assets`). This arm mirrors that answer for the pages this host serves. No
             // number is formed here: a chain with no mark answers an empty list, and an unreachable node answers 503.
             // DIGITAL CASH: public market prices only; the request names no coin, no user and no amount.
+            // IONSWAP POOLS, PUBLIC (user 2026-11-19: "public liquidity pools for all users on the chain to see and trade on").
+            // Every pool's row (its two balances, share count, price) is what every node publishes (`/ion/pools`,
+            // `/ion/pool`), so the pools page lists them before any wallet connects, read from THIS machine's own node
+            // like the price marks above: no server of ours learns which pool a person looks at. Only the query's
+            // fields pass, each re-formed here (a search of at most 64 letters, digits or spaces, a page offset and
+            // length, a 64-hex token id); a position or a balance never crosses this route (that is the wallet's
+            // `ionPosition`, under its "balances" grant). Scale: one loopback read per page view, under the node's own page bound.
+            p if p == "/api/ion/pools" || p == "/api/ion/pool" => {
+                let qs = target.split('?').nth(1).unwrap_or("");
+                let field = |k: &str| qs.split('&').find_map(|kv| kv.split_once('=').filter(|(n, _)| *n == k)).map(|(_, v)| pct_decode(v)).unwrap_or_default();
+                let num = |k: &str| field(k).parse::<u64>().unwrap_or(0);
+                let (route, body) = if p == "/api/ion/pools" {
+                    let q: String = field("q").chars().filter(|c| c.is_ascii_alphanumeric() || *c == ' ').take(64).collect();
+                    ("/ion/pools", format!("{{\"q\":\"{q}\",\"skip\":{},\"max\":{}}}", num("skip"), num("max").clamp(1, 100)))
+                } else {
+                    let t = field("token").to_ascii_lowercase();
+                    if t.len() != 64 || !t.bytes().all(|c| c.is_ascii_hexdigit()) {
+                        return Some(HttpResponse::json(400, "Bad Request", r#"{"status":"MALFORMED_TOKEN"}"#));
+                    }
+                    ("/ion/pool", format!("{{\"token\":\"{t}\"}}"))
+                };
+                match loopback_rpc_post(route, &body) {
+                    Some(b) if serde_json::from_str::<serde_json::Value>(b.trim()).is_ok() => Some(HttpResponse::json(200, "OK", b.trim())),
+                    _ => Some(HttpResponse::json(503, "Service Unavailable", r#"{"status":"UNAVAILABLE","error":"node not reachable for the pools"}"#)),
+                }
+            }
             "/api/price-marks" | "/v1/price-marks" => {
                 let marks = loopback_rpc_body("/price_marks").and_then(|b| serde_json::from_str::<serde_json::Value>(b.trim()).ok());
                 match marks.as_ref().and_then(|v| v.get("marks")).and_then(|m| m.as_array()) {
