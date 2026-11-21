@@ -99,7 +99,7 @@ jobs:
           # tap) are not built here (run 44256233250: wallet-harness did not compile on Linux, where that radio is absent).
           npx tauri build --bundles ${{ matrix.bundles }} --config '{"bundle":{"active":true,"resources":["sidecar/*","sites/**/*"],"icon":["icons/32x32.png","icons/128x128.png","icons/128x128@2x.png","icons/icon.icns","icons/icon.ico"]}}' -- --bin monerousd-wallet-v2
 
-      - name: Smoke — the installer exists and the bundled node inside it starts
+      - name: Check installer contents
         shell: bash
         run: |
           B=target/release/bundle   # the shared target dir (CARGO_TARGET_DIR): Tauri writes its bundles there
@@ -114,7 +114,20 @@ jobs:
               "$APP"/Contents/Resources/sidecar/usdmd-node --version
               hdiutil detach /tmp/musd ;;
             Windows)
-              ls "$B"/msi/*.msi "$B"/nsis/*.exe ;;
+              ls "$B"/msi/*.msi "$B"/nsis/*.exe
+              # Check the NSIS installer users download against this job's release build.
+              node_file=sidecar/usdmd-node.exe
+              site_file=sites/ionswap-monerousd-org/index.html
+              for installer in "$B"/nsis/*.exe; do
+                unpack=$(mktemp -d target/nsis-smoke.XXXXXXXX)
+                7z x -tNSIS "-o$unpack" "$installer" monerousd-wallet-v2.exe "$node_file" "$site_file"
+                for file in monerousd-wallet-v2.exe "$node_file" "$site_file"; do
+                  test -s "$unpack/$file" || { echo "Missing or empty in $installer: $file" >&2; exit 1; }
+                done
+                cmp target/release/monerousd-wallet-v2.exe "$unpack/monerousd-wallet-v2.exe"
+                cmp target/release/usdmd-node.exe "$unpack/$node_file"
+                cmp "monerousd-node-zkdag/$site_file" "$unpack/$site_file"
+              done ;;
             Linux)
               ls "$B"/deb/*.deb "$B"/appimage/*.AppImage
               # the listing goes to a file first: `dpkg-deb -c | grep -q` broke tar's pipe when grep stopped at its first match

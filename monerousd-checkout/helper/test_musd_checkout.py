@@ -27,6 +27,7 @@ import musd_checkout as mc  # noqa: E402
 STAND_IN = r'''
 import json, sys, secrets
 paid, locked, deadline = set(), set(), set()
+now_ms = None
 def out(ok, op, v):
     print(json.dumps({"ok": ok, "op": op, **({"result": v} if ok else {"error": v})}), flush=True)
 sys.stdin.readline()                      # the recovery phrase line
@@ -38,7 +39,7 @@ for line in sys.stdin:
     if op == "poscharge":
         whole, _, frac = w[1].partition(".")
         out(True, op, {"amount_atomic": int(whole) * 10**8 + int((frac + "0" * 8)[:8]), "nonce": secrets.token_hex(16),
-                       "expiry_ms": int(__import__("time").time() * 1000) + 120000, "address": "shop", "pubkey": "00", "sig": "00"})
+                       "expiry_ms": now_ms + 120000, "address": "shop", "pubkey": "00", "sig": "00"})
     elif op == "chargeawait":
         out(True, op, {"paid": w[1] in paid})
     elif op == "purchase_accept":
@@ -54,6 +55,7 @@ for line in sys.stdin:
     elif op == "test_pay":      paid.add(w[1]); out(True, op, {})
     elif op == "test_lock":     locked.add(w[1]); out(True, op, {})
     elif op == "test_deadline": deadline.add(w[1]); out(True, op, {})
+    elif op == "test_time":     now_ms = int(w[1]); out(True, op, {})
     else: out(False, op, "unknown command")
 '''
 
@@ -61,17 +63,27 @@ KEY = "k" * 32
 HOST = "b" * 56 + ".onion"
 
 
-class HelperTest(unittest.TestCase):
+class WalletTestCase(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False)
-        self.tmp.write(STAND_IN)
-        self.tmp.close()
-        self.wallet = mc.Wallet([sys.executable, self.tmp.name], seed_line="phrase")
+        with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as script:
+            self.addCleanup(os.unlink, script.name)
+            script.write(STAND_IN)
+        self.wallet = mc.Wallet([sys.executable, script.name], seed_line="phrase")
+        self.addCleanup(self.wallet.proc.communicate)
+        self.set_time(1_800_000_000_000)
+
+    def set_time(self, now_ms):
+        self.wallet.call("test_time", now_ms)
+        self.now_ms = now_ms
+
+
+class HelperTest(WalletTestCase):
+    def setUp(self):
+        super().setUp()
         self.hooks = []
-        self.now = [1_800_000_000_000]
         cfg = {"api_key": KEY, "merchant_name": "Corner Shop", "wallet_host": HOST, "webhook_url": "http://shop.invalid/hook",
                "webhook_secret": "s" * 32, "products": {"tea": {"title": "Green tea", "amount": "4.50"}}}
-        self.checkout = mc.Checkout(cfg, self.wallet, post=lambda url, body, sig: self.hooks.append((url, body, sig)), clock=lambda: self.now[0])
+        self.checkout = mc.Checkout(cfg, self.wallet, post=lambda url, body, sig: self.hooks.append((url, body, sig)), clock=lambda: self.now_ms)
 
         class H(mc.Handler):
             checkout = self.checkout
@@ -79,13 +91,10 @@ class HelperTest(unittest.TestCase):
 
         self.H = H
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.addCleanup(self.httpd.server_close)
         self.base = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.wallet.proc.kill()
-        os.unlink(self.tmp.name)
+        self.addCleanup(self.httpd.shutdown)
 
     def call(self, method, path, body=None, key=None, raw=False):
         req = urllib.request.Request(self.base + path, method=method, data=None if body is None else json.dumps(body).encode(),
@@ -144,17 +153,20 @@ class HelperTest(unittest.TestCase):
 
     def test_a_charge_is_renewed_and_a_payment_on_an_earlier_one_still_counts(self):
         a = self.new()
-        first = self.call("GET", f"/v1/pay/{a['token']}/offer")[1]["charge"]["nonce"]
-        self.now[0] += 90_000  # most of the charge's signed two minutes are gone
-        second = self.call("GET", f"/v1/pay/{a['token']}/offer")[1]["charge"]["nonce"]
+        offer_path = f"/v1/pay/{a['token']}/offer"
+        first = self.call("GET", offer_path)[1]["charge"]["nonce"]
+        self.assertEqual(self.call("GET", offer_path)[1]["charge"]["nonce"], first)
+        self.set_time(self.now_ms + 90_000)  # most of the charge's signed two minutes are gone
+        second = self.call("GET", offer_path)[1]["charge"]["nonce"]
         self.assertNotEqual(first, second)
+        self.assertEqual(self.call("GET", offer_path)[1]["charge"]["nonce"], second)
         self.wallet.call("test_pay", first)
         self.assertEqual(self.call("GET", f"/v1/pay/{a['token']}/status")[1]["status"], "paid")
 
     def test_an_unpaid_plain_order_expires_and_a_finished_order_never_moves_again(self):
         a = self.new()
         nonce = self.call("GET", f"/v1/pay/{a['token']}/offer")[1]["charge"]["nonce"]
-        self.now[0] += 71 * 60_000
+        self.set_time(self.now_ms + 71 * 60_000)
         self.assertEqual(self.call("GET", f"/v1/pay/{a['token']}/status")[1]["status"], "expired")
         self.wallet.call("test_pay", nonce)
         self.assertEqual(self.call("GET", f"/v1/pay/{a['token']}/status")[1]["status"], "expired")
@@ -220,7 +232,7 @@ class HelperTest(unittest.TestCase):
         v, request = self.protected()
         t = v["token"]
         self.call("POST", f"/v1/pay/{t}/request", {"request": request})
-        self.now[0] = v["deadline_ms"] + 1
+        self.set_time(v["deadline_ms"] + 1)
         self.assertEqual(self.call("GET", f"/v1/pay/{t}/status")[1]["status"], "expired")
         self.assertEqual(self.call("POST", f"/v1/pay/{t}/code", {"code": request["id"] + ":good"})[0], 400)
 
@@ -264,29 +276,67 @@ class HelperTest(unittest.TestCase):
         self.assertNotIn("<script>alert(1)", page)
         self.assertNotIn("<img src=x>", page)
 
+    def test_product_link_decodes_one_path_segment_once(self):
+        product_id = "Café + 10%20"
+        self.checkout.cfg["products"][product_id] = {"title": "Coffee", "amount": "4.50"}
+        path = "/buy/Caf%C3%A9%20+%2010%2520"
+        code, page = self.call("GET", path, raw=True)
+        self.assertEqual(code, 200)
+        self.assertIn(b"Coffee", page)
+        self.assertIsNotNone(self.checkout.by_reference("item:" + product_id))
 
-class ShopifyTest(unittest.TestCase):
+    def test_hosted_page_renders_payment_actions_only_while_waiting(self):
+        view = self.new()
+        order = self.checkout.by_id(view["order_id"])
+        for status in ("open", "accepted", "locked", "paid", "expired", "cancelled"):
+            with self.subTest(status=status):
+                order["status"] = status
+                code, page = self.call("GET", "/pay/" + view["token"], raw=True)
+                self.assertEqual(code, 200)
+                self.assertEqual(b'<div id="payment-actions" hidden>' in page, status not in ("open", "accepted"))
+
+
+class ShopifyTest(WalletTestCase):
     def setUp(self):
-        self.tmp = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False)
-        self.tmp.write(STAND_IN)
-        self.tmp.close()
-        self.wallet = mc.Wallet([sys.executable, self.tmp.name], seed_line="phrase")
-        self.checkout = mc.Checkout({"api_key": KEY, "wallet_host": HOST}, self.wallet)
+        super().setUp()
+        self.checkout = mc.Checkout({"api_key": KEY, "wallet_host": HOST}, self.wallet, clock=lambda: self.now_ms)
         self.order = {"id": 77, "name": "#1077", "token": "tok77", "total_outstanding": "30.00", "currency": "USD",
-                      "financial_status": "pending", "payment_gateway_names": ["MonerousD"], "note_attributes": []}
+                      "financial_status": "pending", "payment_gateway_names": ["MonerousD"], "tags": "gift, priority",
+                      "note_attributes": [{"name": "Gift message", "value": "Happy birthday!"}]}
+        self.state = None
         self.asked = []
+        self.marked_paid = threading.Event()
 
         def ask(method, what, body=None):
-            self.asked.append((method, what, body))
-            if method == "PUT" and "note_attributes" in body["order"]:
-                self.order["note_attributes"] = body["order"]["note_attributes"]
-            return {"order": dict(self.order)}
+            if method == "GET":
+                return {"order": dict(self.order)}
+            self.assertEqual((method, what), ("POST", "graphql.json"))
+            query, variables = body["query"], body["variables"]
+            if query.startswith("query"):
+                self.assertIn('metafield(key: "musd_state")', query)
+                self.assertEqual(variables["id"], "gid://shopify/Order/77")
+                field = {"value": self.state} if self.state is not None else None
+                return {"data": {"order": {"metafield": field}}}
+            if "metafieldsSet(" in query:
+                op = "metafieldsSet"
+                field, = variables["fields"]
+                self.assertEqual((field["ownerId"], field["key"], field.get("namespace")), ("gid://shopify/Order/77", "musd_state", None))
+                self.state = field["value"]
+            elif "tagsAdd(" in query:
+                op = "tagsAdd"
+                self.assertEqual(variables["id"], "gid://shopify/Order/77")
+                self.order["tags"] = ", ".join(dict.fromkeys(self.order["tags"].split(", ") + variables["tags"]))
+            else:
+                op = "orderMarkAsPaid"
+                self.assertIn("orderMarkAsPaid(", query)
+                self.assertEqual(variables["input"]["id"], "gid://shopify/Order/77")
+                self.order["financial_status"] = "paid"
+            self.asked.append(op)
+            if op == "orderMarkAsPaid":
+                self.marked_paid.set()
+            return {"data": {op: {"userErrors": []}}}
 
         self.shopify = mc.Shopify({"shop": "x.myshopify.com", "admin_token": "t"}, self.checkout, ask=ask)
-
-    def tearDown(self):
-        self.wallet.proc.kill()
-        os.unlink(self.tmp.name)
 
     def test_only_the_buyers_own_pending_dollar_order_placed_with_monerousd_opens(self):
         for key in ("", "wrong"):
@@ -305,19 +355,74 @@ class ShopifyTest(unittest.TestCase):
 
     def test_the_order_is_marked_paid_only_after_the_wallet_says_so_and_its_state_rides_on_the_order(self):
         o = self.shopify.open_order("77", "tok77")
-        self.assertFalse(any(m == "POST" for m, _, _ in self.asked))
+        self.assertEqual(self.asked, ["metafieldsSet"])
+        self.assertEqual(self.order["note_attributes"], [{"name": "Gift message", "value": "Happy birthday!"}])
         self.checkout.orders.clear()  # the helper restarted: the order comes back from Shopify's own record
         again = self.shopify.open_order("77", "tok77")
         self.assertEqual((again["id"], again["refs"]), (o["id"], o["refs"]))
+        self.assertEqual(self.asked, ["metafieldsSet"])
         self.wallet.call("test_pay", again["refs"][0])
         self.assertEqual(self.checkout.refresh(again)["status"], "paid")
-        for _ in range(200):
-            if any(m == "POST" for m, _, _ in self.asked):
-                break
-            threading.Event().wait(0.01)
-        marks = [b for m, w, b in self.asked if m == "POST" and w == "graphql.json"]
-        self.assertEqual(len(marks), 1)
-        self.assertEqual(marks[0]["variables"]["input"]["id"], "gid://shopify/Order/77")
+        self.assertTrue(self.marked_paid.wait(2))
+        self.shopify.open_order("77", "tok77")
+        self.assertEqual(self.asked, ["metafieldsSet", "metafieldsSet", "orderMarkAsPaid"])
+
+    def test_legacy_state_migrates_without_replacing_notes_or_tags(self):
+        self.shopify.mode = "protected"
+        o = self.shopify.open_order("77", "tok77")
+        legacy = {"name": "musd_state", "value": self.state}
+        self.order["note_attributes"].append(legacy)
+        self.state = None
+        self.checkout.orders.clear()
+        restored = self.shopify.open_order("77", "tok77")
+        self.assertEqual(restored["id"], o["id"])
+        self.assertEqual(self.state, legacy["value"])
+        restored["status"] = "locked"
+        self.shopify.heard(restored)
+        self.assertEqual(self.order["tags"], "gift, priority, MonerousD payment held: ship now")
+        self.assertEqual(self.order["note_attributes"], [{"name": "Gift message", "value": "Happy birthday!"}, legacy])
+        self.checkout.orders.clear()
+        self.assertEqual(self.shopify.open_order("77", "tok77")["status"], "locked")
+        self.assertEqual(self.asked, ["metafieldsSet", "metafieldsSet", "metafieldsSet", "tagsAdd"])
+
+    def test_rejected_metafield_write_retries_the_same_checkout(self):
+        ask = self.shopify.ask
+        def reject_write(method, what, body=None):
+            if body and "metafieldsSet(" in body["query"]:
+                return {"data": {"metafieldsSet": {"userErrors": [{"message": "could not write"}]}}}
+            return ask(method, what, body)
+        self.shopify.ask = reject_write
+        with self.assertRaises(OSError):
+            self.shopify.open_order("77", "tok77")
+        original = self.checkout.by_reference("shopify:77")
+        self.shopify.ask = ask
+        self.assertIs(self.shopify.open_order("77", "tok77"), original)
+        self.assertEqual(self.state, self.checkout.state_of(original))
+
+    def test_concurrent_paid_update_accepts_only_the_confirmed_order(self):
+        o = self.shopify.open_order("77", "tok77")
+        o["status"] = "paid"
+        ask = self.shopify.ask
+        gid = "gid://shopify/Order/77"
+        paid_order = {"id": gid, "displayFinancialStatus": "PAID"}
+        reply = {"data": {"orderMarkAsPaid": {"order": paid_order, "userErrors": [{"message": "Order cannot be marked as paid."}]}}}
+
+        def other_request_paid_first(method, what, body=None):
+            if body and "orderMarkAsPaid(" in body["query"]:
+                self.assertIn("order { id displayFinancialStatus }", body["query"])
+                return reply
+            return ask(method, what, body)
+
+        self.shopify.ask = other_request_paid_first
+        self.assertIs(self.shopify.open_order("77", "tok77"), o)
+        for reported_id, status in ((gid, "PENDING"), ("gid://shopify/Order/88", "PAID")):
+            with self.subTest(reported_id=reported_id, status=status), self.assertRaises(OSError):
+                paid_order.update(id=reported_id, displayFinancialStatus=status)
+                self.shopify.open_order("77", "tok77")
+        paid_order.update(id=gid, displayFinancialStatus="PAID")
+        reply["errors"] = [{"message": "query failed"}]
+        with self.assertRaises(OSError):
+            self.shopify.open_order("77", "tok77")
 
 
 if __name__ == "__main__":

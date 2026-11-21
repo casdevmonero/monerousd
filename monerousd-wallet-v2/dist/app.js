@@ -3139,7 +3139,7 @@ function satMaxBucket() {
   return Number.isInteger(v) ? v : 1;
 }
 function satCoin() { return state.satCoin || 'BTC'; }
-function coinText(v, coin) { return Number(v).toLocaleString(undefined, { maximumFractionDigits: coin === 'XMR' ? 8 : 8 }) + ' ' + coin; }
+function coinText(v, coin) { return Number(v).toLocaleString(undefined, { maximumFractionDigits: coin === 'XMR' ? 12 : 8 }) + ' ' + coin; }
 function satText(v) { return Number(v).toLocaleString(undefined, { maximumFractionDigits: 4 }) + ' SAT'; }
 // The coin's dollar price from the chain's mark; null when the chain holds no mark yet (trading never needs one: a pool reads no mark, only these dollar labels do).
 async function satCoinUsd(coin) {
@@ -3252,8 +3252,16 @@ async function doBuySat(typed, rows) {
   renderSatDeposit(q, coin, rows);
 }
 function renderSatDeposit(q, coin, rows) {
-  const amount = Number(q.deposit_atomic) / (coin === 'XMR' ? 1e12 : 1e8);
-  rows.innerHTML = '<div class="settings-row"><div><b>Send exactly ' + escapeHtml(coinText(amount, coin)) + '</b></div><div class="mono selectable">' + escapeHtml(q.deposit_address || 'Waiting for the reserve address…') + '</div>' +
+  const atomic = q.deposit_atomic_text ?? (Number.isSafeInteger(q.deposit_atomic) ? String(q.deposit_atomic) : '');
+  if (typeof atomic !== 'string' || !/^[1-9]\d*$/.test(atomic)) {
+    rows.textContent = 'The exact deposit amount is unavailable. Check the quote before sending.';
+    return;
+  }
+  const decimals = coin === 'XMR' ? 12 : 8;
+  const digits = atomic.padStart(decimals + 1, '0');
+  const fraction = digits.slice(-decimals).replace(/0+$/, '');
+  const amount = digits.slice(0, -decimals) + (fraction ? '.' + fraction : '');
+  rows.innerHTML = '<div class="settings-row"><div><b>Send exactly ' + escapeHtml(amount + ' ' + coin) + '</b></div><div class="mono selectable">' + escapeHtml(q.deposit_address || 'Waiting for the reserve address…') + '</div>' +
     (q.deposit_address ? '<button class="chip" data-copy="' + escapeHtml(q.deposit_address) + '">Copy address</button>' : '') +
     '<div class="muted">Your order goes out on its own once the deposit confirms and mints, and your SAT arrives here.</div></div>';
   rows.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', () => { try { navigator.clipboard.writeText(b.dataset.copy); b.textContent = 'Copied'; } catch (_) {} }));

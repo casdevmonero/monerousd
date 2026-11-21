@@ -1,0 +1,45 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root)
+name: Contributor checks
+
+on:
+  pull_request:
+    paths:
+      - 'monerousd-goods/**'
+      - 'monerousd-node-zkdag/models/custody-lifecycle/**'
+      - 'monerousd-node-zkdag/src/custody_vaults.rs'
+      - 'monerousd-node-zkdag/.cargo/config.toml'
+      - 'tools/musd'
+      - 'tools/test_musd.py'
+      - '.github/workflows/contributor-checks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'monerousd-goods/**'
+      - 'monerousd-node-zkdag/models/custody-lifecycle/**'
+      - 'monerousd-node-zkdag/src/custody_vaults.rs'
+      - 'monerousd-node-zkdag/.cargo/config.toml'
+      - 'tools/musd'
+      - 'tools/test_musd.py'
+      - '.github/workflows/contributor-checks.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test the goods crate
+        working-directory: monerousd-goods
+        run: cargo test --locked
+      - name: Test the standalone custody lifecycle model
+        working-directory: monerousd-node-zkdag/models/custody-lifecycle
+        run: cargo test --locked --release
+      - name: Test the musd command line
+        run: python3 tools/test_musd.py

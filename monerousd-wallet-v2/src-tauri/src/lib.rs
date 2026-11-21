@@ -19426,6 +19426,8 @@ pub(crate) fn coin_deposit_start(asset: &str, atomic: u64) -> Result<serde_json:
     let mut r = buy_swap_coin(asset.to_string(), 1.0, false, Some((atomic, deposit)))?;
     if let Some(o) = r.as_object_mut() {
         o.insert("deposit_atomic".into(), serde_json::json!(deposit));
+        // The wallet displays the exact amount, including quotes outside JavaScript's safe integer range.
+        o.insert("deposit_atomic_text".into(), serde_json::json!(deposit.to_string()));
         o.insert("coin_atomic".into(), serde_json::json!(atomic));
     }
     Ok(r)

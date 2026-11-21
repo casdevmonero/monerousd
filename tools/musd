@@ -9,9 +9,9 @@
   musd wallet new | restore | address | balance | send <to> <amount> | history | faucet <amount>
   musd network [auto|tor|own]         show or pick the network the node travels on
 
-Everything lives in ~/.musd (MUSD_HOME). The steps, in order, are in docs/CLI-RUN-LIST.md. Same programs, same checks and same chain
-rules as the desktop wallet: the wallet commands run the app's own wallet code (`wallet-harness`), and the node is `usdmd-node`."""
-import getpass, hashlib, hmac, json, os, secrets, shutil, signal, subprocess, sys, time, urllib.error, urllib.request
+Everything lives in ~/.musd (MUSD_HOME). The wallet commands run the desktop wallet's own code
+(`wallet-harness`), and the node is `usdmd-node`."""
+import getpass, hashlib, hmac, json, os, re, secrets, shutil, signal, subprocess, sys, time, urllib.error, urllib.request
 
 HOME = os.path.expanduser(os.environ.get("MUSD_HOME", "~/.musd"))
 NET = os.environ.get("MUSD_NET", "testnet")
@@ -224,7 +224,12 @@ def cmd_node(args):
 
 def local_names():
     d = os.path.join(HOME, "nodes")
-    return sorted((n for n in os.listdir(d) if n.startswith("local")), key=lambda n: int(n[5:])) if os.path.isdir(d) else []
+    if not os.path.isdir(d):
+        return []
+    # Match only the numbered directories that `chain up` creates.
+    with os.scandir(d) as entries:
+        names = [e.name for e in entries if re.fullmatch(r"local(?:0|[1-9][0-9]*)", e.name) and e.is_dir()]
+    return sorted(names, key=lambda n: int(n[5:]))
 
 
 def cmd_chain(args):

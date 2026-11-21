@@ -1,0 +1,29 @@
+# Copyright (c) 2026, The MoneroUSD Protocol
+# SPDX-License-Identifier: Apache-2.0 (see LICENSE and NOTICE at the repository root)
+name: Checkout helper tests
+
+on:
+  pull_request:
+    paths:
+      - 'monerousd-checkout/helper/**'
+      - '.github/workflows/checkout-helper-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'monerousd-checkout/helper/**'
+      - '.github/workflows/checkout-helper-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run checkout helper tests
+        working-directory: monerousd-checkout/helper
+        run: python3 test_musd_checkout.py

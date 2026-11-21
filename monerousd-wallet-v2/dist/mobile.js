@@ -33,8 +33,8 @@
     wallet: [{ label: 'Wallet', all: true }],
     send: [
       // the card first, paying in person right under it, the @name, then the form (user 2026-11-10)
-      { label: 'Pay', sel: ['#debitCard', '#btnTapStart', '#usernamePanel', '#payPanel'], show: () => window.setSendMode && window.setSendMode('pay') },
-      { label: 'POS', sel: ['#requestPanel'], show: () => window.setSendMode && window.setSendMode('request') },
+      { label: 'Pay', sel: ['#debitCard', '#btnTapStart', '#usernamePanel', '#payPanel'], show: () => window.setSendMode?.('pay') },
+      { label: 'POS', sel: ['#requestPanel'], show: () => window.setSendMode?.('request') },
     ],
     buy: [
       { label: 'Buy', sel: [':scope > .card'], show: () => tap('#buyModeSeg [data-mode="buy"]') },

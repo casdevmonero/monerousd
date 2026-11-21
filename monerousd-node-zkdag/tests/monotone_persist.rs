@@ -24,46 +24,28 @@ fn a_lighter_snapshot_can_never_overwrite_the_tall_checkpoint() {
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("state-test.snap");
 
-    // A minimal REAL snapshot via the node itself (the same singleton struct the live node persists).
-    // Genesis from the lib's own canonical header — the single genesis source every entrypoint uses.
-    let genesis = usdmd_node::block::Block {
-            cover_key: None,
-            wide_objects: Vec::new(),
-            tx_bodies: Vec::new(),
-            agg_tables: Vec::new(),
-            note_commitments: Vec::new(),
-        header: usdmd_node::block::genesis_header(),
-        tx_ids: vec![],
-        pow_proof: Vec::new(),
-        output_notes: Vec::new(),
-        oli_tags: Vec::new(),
-        account_targets: Vec::new(),
-        bond_set: Vec::new(),
-        // §BA — the block's own justification for the notes it carries. An empty set is the honest value
-        // for a fixture block that carries no credited note; `credit_set_root` folds it either way.
-        credit_set: Vec::new(),
-        dir_set: Vec::new(),
-        letter_set: Vec::new(),
-        tag_evidence: Vec::new(),
-        note_transition: None,
-        nullifier_proof: usdmd_node::block::NfBlockProof::default(),
-        cover_transition: None,
-        member_transition: None,
-    };
-    let mut node = usdmd_node::node::Node::new(genesis).unwrap();
-    let mut note = vec![0u8; 1153];
-    note[0..32].copy_from_slice(&[0xC3u8; 32]);
-    node.record_note_payload(1, &note);
-    let tall = node.export_snapshot().expect("tip -> snapshot");
+    let node = usdmd_node::node::Node::new(usdmd_node::block::genesis_block()).unwrap();
+    let island = node.export_snapshot().expect("genesis snapshot");
+    // The persistence gate compares these two counters. Genesis already has its minimum weight.
+    let mut tall = node.export_snapshot().expect("incumbent snapshot");
+    tall.blue_score = island.blue_score + 1;
+    tall.height = island.height + 1;
 
     persist::save(&path, &tall).expect("tall checkpoint saves");
     let on_disk = persist::load(&path).expect("tall checkpoint loads back");
-    assert_eq!(on_disk.height, tall.height, "round-trips");
+    assert_eq!(
+        (on_disk.blue_score, on_disk.height),
+        (tall.blue_score, tall.height),
+        "round-trips"
+    );
 
     // RED: the ISLAND — same path, lighter weight, the exact measured clobber shape. Must be REFUSED.
-    let mut island = node.export_snapshot().expect("snapshot again");
-    island.blue_score = tall.blue_score.saturating_sub(1);
-    island.height = tall.height.saturating_sub(1);
+    assert!(
+        (island.blue_score, island.height) < (tall.blue_score, tall.height),
+        "candidate must be strictly lighter: candidate {:?}, incumbent {:?}",
+        (island.blue_score, island.height),
+        (tall.blue_score, tall.height),
+    );
     persist::save(&path, &island).expect("refusal returns Ok so shutdown paths still complete");
     let after = persist::load(&path).expect("checkpoint still present");
     assert_eq!(

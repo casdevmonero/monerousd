@@ -5,7 +5,7 @@
 Key facts:
 - Privacy: confidential notes, one-time nullifiers in a spent set, zero-knowledge proofs; every block has the same shape so activity cannot be counted. The scan key never leaves the user's device.
 - Post-quantum: ML-KEM-768, ML-DSA-65, Poseidon2, WHIR, BLAKE3, SHA-3. No elliptic curves.
-- Consensus: GHOSTDAG block-DAG; each block folds into a recursive proof, so new nodes join at the tip. Block time measured about 5 s on two real nodes (2026-11-17); target 1,953 ms; goal 500 ms. DAG width 32, constant proof of at most 1.8 MB.
+- GHOSTDAG orders blocks in a DAG of width 32. To adopt a peer’s snapshot, a new node checks sampled proof of work and at least 32 later block headers that commit to the snapshot’s state. Two nodes measured about 5 s per block on 2026-11-17. The target is 1,953 ms and the goal is 500 ms.
 - USDm: the dollar of MoneroUSD, minted against BTC or XMR deposits, over-collateralized. Flat network fee $0.001 per transaction.
 - SAT (Satoshi): reward asset. 21,000,000 maximum; 19,000,000 issued only by block rewards halving every 64,634,101 blocks (four years at the 1,953 ms target; real dates follow the real block rate); developer set-aside capped at 2,000,000, proven at genesis, exact amount private. Validators bond SAT; 25% of fees buy SAT for bonders; direct SAT/BTC and SAT/XMR pools opening at $1.
 - DeFi layer (Ion Swap): sealed batch trading; orders are encrypted to a per-epoch threshold key, bonded validators clear each batch on secret shares and open only one clearing price per pair per batch; settlement is proven. Volumes, depth, positions and traders are never published.

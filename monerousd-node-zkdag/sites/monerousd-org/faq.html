@@ -63,7 +63,7 @@
   <details><summary>What is Dark Solidity?</summary><p>MoneroUSD's smart-contract language and zero-knowledge virtual machine. Your wallet runs a contract call and proves it ran correctly; every node verifies the proof without re-running the contract or seeing its inputs. Values stay commitments, everything is post-quantum, and a contract can't mint or hold funds. <a href="/defi#dsol">Read more</a>.</p></details>
   <details><summary>What is the MoneroUSD Veil?</summary><p>MoneroUSD's own post-quantum mix network: three-hop layered packets, constant cover traffic, private transaction origin and private reads. It's partly built and in testing. <a href="/veil">Read more</a>.</p></details>
   <details><summary>What is Sovereign?</summary><p>A browser for websites that live on the network: publish in three taps, own the site with your wallet key, and every byte is checked against the chain. Parts are built; .mud names and sharded hosting are in design. <a href="/sovereign">Read more</a>.</p></details>
-  <details><summary>Will phones run full nodes?</summary><p>That's the design goal: node state stays the same size as the chain grows, and a new node joins at the tip by checking one recursive proof. It's being measured on real nodes.</p></details>
+  <details><summary>Will phones run full nodes?</summary><p>That's the design goal. To limit the history it needs to download, a new node can check a peer’s snapshot against mined block headers and then catch up from there. See <a href="/run-node">node requirements and measurements</a>.</p></details>
 </div></section>
 </main>
 <footer>
