@@ -154,16 +154,16 @@
   <div class="wrap split">
     <div class="rv">
       <div class="kick">Consensus &amp; scale</div>
-      <h2>Parallel blocks, one order. <span class="or">The whole chain in one proof.</span></h2>
-      <p>Blocks are produced in parallel and ordered the same way by every node (GHOSTDAG, as in Kaspa). Each block folds into a recursive proof, so a new node checks one proof and joins at the tip instead of replaying history.</p>
+      <h2>Parallel blocks, <span class="or">one order.</span></h2>
+      <p>Blocks are produced in parallel and ordered the same way by every node (GHOSTDAG, as in Kaspa). A new node can start from a peer’s snapshot. It checks proof of work on sampled block headers and verifies that at least 32 later headers commit to the snapshot’s state.</p>
       <ul class="ticks">
-        <li>A block-time target of 1.953 s, derived from what the relay can carry — 32 parallel blocks, a constant proof of at most 1.8 MB</li>
+        <li>A block-time target of 1.953 s, derived from what the relay can carry — 32 parallel blocks</li>
         <li>Node state stays the same size as the chain grows — built so phones can run full nodes</li>
         <li>One kind of node: it mines, verifies, proves and relays. No trusted servers.</li>
       </ul>
       <p class="muted" style="margin-top:16px;font-size:15px">Targets are tracked on real nodes and published as they are measured.</p>
     </div>
-    <div class="diagram anim rv" role="img" aria-label="Blocks in parallel lanes link to the blocks before them and fold into one recursive proof">
+    <div class="diagram anim rv" role="img" aria-label="GHOSTDAG orders parallel blocks. A joining node checks mined headers and their commitments to a snapshot.">
       <svg viewBox="0 0 600 340">
         <g stroke="rgba(255,122,0,.35)" stroke-width="1.6">
           <line x1="62" y1="170" x2="118" y2="110"/><line x1="62" y1="170" x2="118" y2="230"/><line x1="152" y1="110" x2="208" y2="80"/><line x1="152" y1="110" x2="208" y2="170"/><line x1="152" y1="230" x2="208" y2="170"/><line x1="152" y1="230" x2="208" y2="260"/><line x1="242" y1="80" x2="298" y2="140"/><line x1="242" y1="170" x2="298" y2="140"/><line x1="242" y1="170" x2="298" y2="210"/><line x1="242" y1="260" x2="298" y2="210"/>
@@ -177,9 +177,9 @@
         <g class="seq d5"><path d="M336 175 L404 175" stroke="#ff7a00" stroke-width="2.5" class="flow"/>
           <path d="M490 92 L562 134 L562 216 L490 258 L418 216 L418 134 Z" fill="rgba(255,122,0,.1)" stroke="#ff7a00" stroke-width="3"/>
           <path d="M490 118 L540 147 L540 203 L490 232 L440 203 L440 147 Z" fill="none" stroke="rgba(255,171,77,.45)" stroke-width="1.5" class="pulse"/>
-          <text x="490" y="172" text-anchor="middle" fill="#f4f1ee" font-size="18" font-weight="700">ONE PROOF</text><text x="490" y="194" text-anchor="middle" fill="#ffab4d" font-size="15" font-family="JBM,monospace">≤ 1.8 MB · constant</text></g>
+          <text x="490" y="172" text-anchor="middle" fill="#f4f1ee" font-size="18" font-weight="700">SNAPSHOT</text><text x="490" y="194" text-anchor="middle" fill="#ffab4d" font-size="13" font-family="JBM,monospace">32+ headers</text></g>
         <text x="180" y="318" text-anchor="middle" fill="#8b8b95" font-size="16">GHOSTDAG gives every node the same order</text>
-        <text x="490" y="318" text-anchor="middle" fill="#8b8b95" font-size="16" class="seq d6">join at the tip</text>
+        <text x="490" y="318" text-anchor="middle" fill="#8b8b95" font-size="16" class="seq d6">sync from snapshot</text>
       </svg>
     </div>
   </div>

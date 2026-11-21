@@ -37,13 +37,16 @@
     box.appendChild(el("p", isProtected
       ? "Your payment is held in escrow until you confirm receipt. If your order is not delivered, it is refunded automatically."
       : "This payment is final the moment it lands, like cash."));
+    var actions = el("div");
+    actions.hidden = Boolean(statusUrl);
+    box.appendChild(actions);
     var pay = el("a", "Pay with MonerousD", "display:block;text-align:center;background:#0071e3;color:#fff;text-decoration:none;border-radius:12px;padding:.9rem;font-weight:600");
     pay.setAttribute("href", link);
-    box.appendChild(pay);
+    actions.appendChild(pay);
     var copy = el("p", "Wallet on another device? Copy this into it:", "font-size:.85em;color:#6e6e73");
     copy.appendChild(el("br"));
     copy.appendChild(el("code", link, "word-break:break-all"));
-    box.appendChild(copy);
+    actions.appendChild(copy);
     var line = el("p", "Status: ");
     var status = el("strong", "checking…");
     line.appendChild(status);
@@ -70,8 +73,7 @@
       var open = j.status === "open" || j.status === "accepted";
       seenOpen = seenOpen || open;
       status.textContent = WORDS[j.status] || String(j.status || "checking…");
-      pay.hidden = !open;
-      copy.hidden = !open;
+      actions.hidden = !open;
       form.hidden = !(codeUrl && j.status === "locked");
       if (j.refund_code) { refund.hidden = false; refundCode.textContent = j.refund_code; }
       if (seenOpen && j.status === "paid" && paidUrl) location.href = paidUrl;

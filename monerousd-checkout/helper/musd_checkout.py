@@ -391,6 +391,8 @@ class Shopify:
     asks the shop's own Admin API for the order (the shop's token, from the config), shows the pay page, and marks the
     order paid when the wallet says the money arrived. The order's signed state is kept ON the Shopify order."""
 
+    HELD_TAG = "MonerousD payment held: ship now"
+
     def __init__(self, cfg, checkout, ask=None):
         self.shop = cfg["shop"]
         self.token = cfg["admin_token"]
@@ -411,19 +413,45 @@ class Shopify:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read() or b"{}")
 
+    def _graphql(self, field, query, variables):
+        reply = self.ask("POST", "graphql.json", {"query": query, "variables": variables})
+        result = (reply.get("data") or {}).get(field)
+        if not reply.get("errors") and result is not None:
+            if not result.get("userErrors"):
+                return result
+            # Another request can finish the payment after our order read.
+            if field == "orderMarkAsPaid":
+                order = result.get("order") or {}
+                if order.get("id") == variables["input"]["id"] and order.get("displayFinancialStatus") == "PAID":
+                    return result
+        raise OSError(f"Shopify did not complete {field}")
+
     def open_order(self, order_id, key):
         """The checkout order for a Shopify order, made once. `key` is the order's own secret (its token, or its whole
         order status address, which Shopify gives only to the buyer), so only the buyer can open its pay page."""
         if not str(order_id).isdigit():
             raise ValueError("that is not an order")
         reference = f"shopify:{order_id}"
-        order = self.ask("GET", f"orders/{order_id}.json?fields=id,name,token,order_status_url,total_outstanding,currency,financial_status,payment_gateway_names,note_attributes").get("order") or {}
+        order = self.ask("GET", f"orders/{order_id}.json?fields=id,name,token,order_status_url,total_outstanding,currency,financial_status,payment_gateway_names,note_attributes,tags").get("order") or {}
         secrets_of_order = [str(order.get(k)) for k in ("token", "order_status_url") if order.get(k)]
         if not order or not key or not any(hmac.compare_digest(s, str(key)) for s in secrets_of_order):
             raise KeyError("no such order")
-        known = self.checkout.by_reference(reference)
-        if known is not None:
-            return known
+        # Omitting the namespace selects this app's reserved namespace on both read and write.
+        order_data = self._graphql("order", 'query($id: ID!) { order(id: $id) { metafield(key: "musd_state") { value } } }',
+                                   {"id": f"gid://shopify/Order/{order_id}"})
+        metafield = order_data["metafield"]
+        saved = metafield["value"] if metafield is not None else None
+        with self.checkout.lock:
+            o = self.checkout.by_reference(reference)
+            if o is None:
+                if saved is not None:
+                    o = self.checkout.order_from_state(saved)
+                else:
+                    o = self._restore_legacy_or_create(order, reference)
+        self._sync(o, saved, order)
+        return o
+
+    def _restore_legacy_or_create(self, order, reference):
         for attribute in order.get("note_attributes") or []:
             if attribute.get("name") == "musd_state":
                 return self.checkout.order_from_state(attribute.get("value", ""))
@@ -433,30 +461,34 @@ class Shopify:
             raise ValueError("this order is not waiting for a payment")
         if not any(self.gateway in str(g).lower() for g in order.get("payment_gateway_names") or []):
             raise ValueError("this order was not placed with the MonerousD payment method")
-        view = self.checkout.create(reference, f"Order {order.get('name', order_id)}", order["total_outstanding"], self.mode)
-        o = self.checkout.by_id(view["order_id"])
-        self.keep_state(o)
-        return o
+        view = self.checkout.create(reference, f"Order {order.get('name', order['id'])}", order["total_outstanding"], self.mode)
+        return self.checkout.by_id(view["order_id"])
 
-    def keep_state(self, o):
-        order_id = o["reference"].split(":", 1)[1]
-        self.ask("PUT", f"orders/{order_id}.json", {"order": {"id": int(order_id), "note_attributes": [{"name": "musd_state", "value": self.checkout.state_of(o)}]}})
+    def _sync(self, o, saved=None, order=None):
+        gid = "gid://shopify/Order/" + o["reference"].split(":", 1)[1]
+        with o.setdefault("_shopify_lock", threading.Lock()):
+            state = self.checkout.state_of(o)
+            if state != saved:
+                self._graphql("metafieldsSet",
+                              "mutation($fields: [MetafieldsSetInput!]!) { metafieldsSet(metafields: $fields) { userErrors { message } } }",
+                              {"fields": [{"ownerId": gid, "key": "musd_state", "type": "single_line_text_field", "value": state}]})
+            if order is not None and order.get("financial_status") not in ("pending", "partially_paid"):
+                return
+            if o["status"] == "paid":
+                self._graphql("orderMarkAsPaid",
+                              "mutation($input: OrderMarkAsPaidInput!) { orderMarkAsPaid(input: $input) { order { id displayFinancialStatus } userErrors { message } } }",
+                              {"input": {"id": gid}})
+            elif o["status"] == "locked" and (order is None or self.HELD_TAG not in [t.strip() for t in (order.get("tags") or "").split(",")]):
+                self._graphql("tagsAdd", "mutation($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { message } } }",
+                              {"id": gid, "tags": [self.HELD_TAG]})
 
     def heard(self, o):
         if not o["reference"].startswith("shopify:"):
             return
-        order_id = o["reference"].split(":", 1)[1]
         try:
-            self.keep_state(o)
-            if o["status"] == "paid":
-                self.ask("POST", "graphql.json", {
-                    "query": "mutation($input: OrderMarkAsPaidInput!) { orderMarkAsPaid(input: $input) { userErrors { message } } }",
-                    "variables": {"input": {"id": f"gid://shopify/Order/{order_id}"}},
-                })
-            elif o["status"] == "locked":
-                self.ask("PUT", f"orders/{order_id}.json", {"order": {"id": int(order_id), "tags": "MonerousD payment held: ship now"}})
+            self._sync(o)
         except (OSError, ValueError, KeyError):
-            pass  # the next status change, or the next visit to the pay page, writes it again
+            pass  # the next status change or visit to /shopify/pay reconciles the order again
 
 
 PAY_PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -470,8 +502,10 @@ input{{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid #d2d2d7;b
 </style></head><body><main>
 <h1>{merchant}</h1><div>{title}</div><div class="amt">${amount}</div>
 <p>{promise}</p>
-<a class="btn" id="pay" href="{link}">Pay with MonerousD</a>
+<div id="payment-actions"{payment_hidden}>
+<a class="btn" href="{link}">Pay with MonerousD</a>
 <p class="small">Wallet on another device? Copy this into it:<br><code>{link}</code></p>
+</div>
 <p>Status: <span id="st"></span></p>
 <form id="codeform" hidden><p class="small">Received your order? Tap Confirm receipt in your wallet, or enter your release code here.</p>
 <input id="code" autocomplete="off" placeholder="Release code"><button class="btn" type="submit">Confirm receipt</button></form>
@@ -480,7 +514,7 @@ input{{width:100%;box-sizing:border-box;padding:.7rem;border:1px solid #d2d2d7;b
 const words={{open:"waiting for payment",accepted:"waiting for payment",locked:"payment held safely",paid:"paid. Thank you.",cancelled:"cancelled",expired:"expired"}};
 const base={base_js}, back={return_js};
 function show(j){{document.getElementById("st").textContent=words[j.status]||j.status;
-document.getElementById("pay").hidden=!(j.status==="open"||j.status==="accepted");
+document.getElementById("payment-actions").hidden=!(j.status==="open"||j.status==="accepted");
 document.getElementById("codeform").hidden=j.status!=="locked";
 if(j.refund_code){{document.getElementById("refund").hidden=false;document.getElementById("refundcode").textContent=j.refund_code;}}
 if(j.status==="paid"&&back)location.href=back;}}
@@ -542,6 +576,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             amount=html.escape(dollars(o["amount"])),
             promise=html.escape(promise),
             link=html.escape(c.link(o), quote=True),
+            payment_hidden="" if o["status"] in ("open", "accepted") else " hidden",
             base_js=json.dumps(f"{c.cfg.get('public_url', '').rstrip('/')}/v1/pay/{o['token']}"),
             return_js=json.dumps(c.cfg.get("return_url", "")),
             status_js=json.dumps(o["status"]),
@@ -559,10 +594,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self._pay_page(c.by_token(parts[1]))
             if method == "GET" and len(parts) == 2 and parts[0] == "buy":
                 # a price-list item: any page anywhere sells it with one ordinary link
-                item = (c.cfg.get("products") or {}).get(parts[1])
+                product_id = urllib.parse.unquote(parts[1], errors="strict")
+                item = (c.cfg.get("products") or {}).get(product_id)
                 if item is None:
                     raise KeyError("no such item")
-                view = c.create(f"item:{parts[1]}", item["title"], item["amount"], item.get("mode", "pay_now"), item.get("deadline_hours"))
+                view = c.create(f"item:{product_id}", item["title"], item["amount"], item.get("mode", "pay_now"), item.get("deadline_hours"))
                 return self._send(303, {"pay_url": view["pay_url"]}, headers=[("Location", f"/pay/{view['token']}")])
             if method == "GET" and parts == ["shopify", "pay"] and self.shopify is not None:
                 o = self.shopify.open_order(query.get("id", [""])[0], query.get("key", [""])[0])

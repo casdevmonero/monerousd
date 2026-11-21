@@ -5,7 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1">
 <title>Run a MoneroUSD Node — One Node Type, Constant Size</title>
-<meta name="description" content="Every MoneroUSD node mines, verifies, proves and relays, joins at the tip with one proof, and is built to stay small. Downloads open with the public testnet.">
+<meta name="description" content="Run a MoneroUSD testnet node. Learn how it checks a peer’s snapshot, catches up with recent blocks, and resumes after a restart.">
 <link rel="canonical" href="https://monerousd.org/run-node">
 <meta name="theme-color" content="#060607">
 <link rel="icon" href="/logo.svg" type="image/svg+xml">
@@ -31,7 +31,7 @@
   <p style="margin-top:20px"><span class="status st-test">Public testnet is live</span></p>
 </div></header>
 <section class="s"><div class="wrap grid3">
-  <div class="card rv"><h3>Joins at the tip</h3><p>A new node checks one recursive proof of the whole chain and starts at the tip. A restart resumes from where it left off — no replay of history.</p></div>
+  <div class="card rv"><h3>How a new node catches up</h3><p>Before adopting a peer’s snapshot, the node checks proof of work on sampled block headers and verifies that at least 32 later headers commit to the snapshot’s state. On a young chain it can fetch blocks individually. A restart resumes from saved state.</p></div>
   <div class="card rv"><h3>Constant state</h3><p>Node state stays the same size as the chain grows: 0.9 GB memory, 290 MB disk, 42 MB binary. Phone-class hardware can run a full node.</p></div>
   <div class="card rv"><h3>Earns its keep</h3><p>Nodes that produce blocks earn SAT, and a share of fees through the miner pool. Bond SAT to validate custody and finality.</p></div>
 </div></section>

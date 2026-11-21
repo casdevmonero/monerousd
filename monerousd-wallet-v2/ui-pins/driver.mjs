@@ -942,6 +942,24 @@ const FLOWS = {
   // nothing value-moving is sent. Leaving SAT takes USDm off the pay choices again.
   async buy_sat_screen(page) {
     await createWallet(page);
+    const depositAmounts = await page.evaluate(() => {
+      const label = (coin, quote) => {
+        const rows = document.createElement('div');
+        renderSatDeposit(quote, coin, rows);
+        return rows.querySelector('b')?.textContent || null;
+      };
+      return [
+        label('XMR', { deposit_atomic: 123456789123 }),
+        label('XMR', { deposit_atomic: 1 }),
+        label('BTC', { deposit_atomic: 12345678 }),
+        label('XMR', { deposit_atomic_text: '9007199254740993', deposit_atomic: 9007199254740992 }),
+        label('XMR', { deposit_atomic: 9007199254740992 }),
+      ];
+    });
+    const expectedAmounts = ['Send exactly 0.123456789123 XMR', 'Send exactly 0.000000000001 XMR',
+      'Send exactly 0.12345678 BTC', 'Send exactly 9007.199254740993 XMR', null];
+    step('deposit instructions preserve every quoted atomic unit and omit an inexact amount',
+      JSON.stringify(depositAmounts) === JSON.stringify(expectedAmounts), JSON.stringify(depositAmounts));
     await page.click('.nav-item[data-view="buy"]');
     await page.waitForSelector('#buyGetSat');
     step('Pay with USDm is hidden while buying USDm', await page.$eval('#buyPayUsdm', (b) => b.classList.contains('hidden')));

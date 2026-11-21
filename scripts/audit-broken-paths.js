@@ -29,52 +29,59 @@
 //
 // Usage
 //   node scripts/audit-broken-paths.js                  # all roots
-//   node scripts/audit-broken-paths.js --root build-1261
+//   node scripts/audit-broken-paths.js --root desktop-wallet
+//   node scripts/audit-broken-paths.js --root monerousd-wallet-v2/dist
 //   node scripts/audit-broken-paths.js --json
 //
-// Roots audited
-//   build-1261/                 (desktop wallet)
-//   ion-monerousd-org/frontend/ (Ion Swap web)
-//
-// To extend with a new root: add it to ROOTS below + supply its
-// {htmlEntry, preloadFile, mainFile} mapping. The IPC + electronAPI
-// checks no-op when those files don't exist (e.g. for browser-only
-// codebases).
+// --root accepts desktop-wallet, ionswap, or a configured directory path
+// relative to the repository. A name selects the legacy deployment directory
+// when present, otherwise the public source directory. A path selects it exactly.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 // ── Per-root config ─────────────────────────────────────────────
-const REPO = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-const ROOTS = [
-  {
-    name:    'desktop-wallet',
-    base:    path.join(REPO, 'build-1261'),
-    htmlEntries: ['renderer/index.html'],
-    jsRoots:  ['renderer'],
-    preload:  'preload.js',
-    mainProc: 'main.js',
-    // Renderer also sources from `lib/`, `pages/`, etc. — same root.
-  },
-  {
-    name:    'ionswap',
-    base:    path.join(REPO, 'ion-monerousd-org', 'frontend'),
-    htmlEntries: ['index.html'],
-    jsRoots:  ['.'],          // app.js + pages/ + lib/ all under this dir
-    preload:  null,           // browser-only
-    mainProc: null,
-  },
-];
+const LAYOUTS = {
+  'desktop-wallet': [
+    { dir: 'build-1261', htmlEntries: ['renderer/index.html'], jsRoots: ['renderer'], preload: 'preload.js', mainProc: 'main.js' },
+    { dir: 'monerousd-wallet-v2/dist' },
+  ],
+  ionswap: [
+    { dir: 'ion-monerousd-org/frontend' },
+    { dir: 'monerousd-node-zkdag/sites/ionswap-monerousd-org' },
+  ],
+};
 
 // ── CLI args ────────────────────────────────────────────────────
-const ARGS = process.argv.slice(2);
-const ROOT_FILTER = (() => {
-  const i = ARGS.indexOf('--root');
-  return i >= 0 ? ARGS[i + 1] : null;
-})();
-const JSON_OUT = ARGS.includes('--json');
+let options;
+try {
+  options = parseArgs({ options: { root: { type: 'string' }, json: { type: 'boolean' } } }).values;
+} catch (error) {
+  console.error(`[audit-broken-paths] ${error.message}`);
+  process.exit(2);
+}
+
+const roots = [];
+for (const [name, layouts] of Object.entries(LAYOUTS)) {
+  let layout;
+  if (options.root === undefined || options.root === name) {
+    layout = layouts.find(({ dir }) => fs.existsSync(path.join(REPO, dir))) ?? layouts.at(-1);
+  } else {
+    layout = layouts.find(({ dir }) => path.relative(path.resolve(REPO, options.root), path.join(REPO, dir)) === '');
+  }
+  if (layout) {
+    roots.push({ name, base: path.join(REPO, layout.dir), htmlEntries: ['index.html'], jsRoots: ['.'], ...layout });
+  }
+}
+if (!roots.length) {
+  console.error(`[audit-broken-paths] Unknown root "${options.root}". Use desktop-wallet, ionswap, or a configured directory path.`);
+  process.exit(2);
+}
 
 // ── Browser built-ins that are always safe to call without
 //    a renderer-side definition. Anything NOT in this list and
@@ -333,7 +340,6 @@ function checkUndefinedWindowCalls(root, jsFile, exportsSet) {
 
 // ── Audit driver ────────────────────────────────────────────────
 function auditRoot(root) {
-  if (ROOT_FILTER && root.name !== ROOT_FILTER && root.base !== ROOT_FILTER) return;
   if (!fs.existsSync(root.base)) {
     found('root-missing', root.name, root.base, 0, 'root path does not exist');
     return;
@@ -353,9 +359,9 @@ function auditRoot(root) {
   for (const f of jsFiles) checkUndefinedWindowCalls(root, f, exportsSet);
 }
 
-for (const root of ROOTS) auditRoot(root);
+for (const root of roots) auditRoot(root);
 
-if (JSON_OUT) {
+if (options.json) {
   process.stdout.write(JSON.stringify({ findings, count: findings.length }, null, 2));
   process.exit(findings.length === 0 ? 0 : 1);
 }

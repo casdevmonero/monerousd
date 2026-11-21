@@ -156,9 +156,9 @@ kbd{font:600 12.5px JBM,monospace;background:rgba(255,255,255,.08);border:1px so
         <span class="label">DAG width — blocks produced in parallel, ordered by GHOSTDAG</span>
       </div>
       <div class="spec-card">
-        <span class="val">≤ 1.8 MB</span>
-        <span class="unit">constant</span>
-        <span class="label">Recursive proof size — one proof covers the whole chain</span>
+        <span class="val">32</span>
+        <span class="unit">headers minimum</span>
+        <span class="label">Later mined headers that must commit to a snapshot’s state before a node adopts it</span>
       </div>
       <div class="spec-card">
         <span class="val">O(1)</span>
@@ -180,7 +180,7 @@ kbd{font:600 12.5px JBM,monospace;background:rgba(255,255,255,.08);border:1px so
       </div>
     </div>
 
-    <div class="diagram anim rv" role="img" aria-label="Parallel block-DAG with GHOSTDAG ordering folding into one recursive proof" style="margin-top:36px">
+    <div class="diagram anim rv" role="img" aria-label="GHOSTDAG orders parallel blocks. A new node uses mined headers to verify a snapshot before catching up." style="margin-top:36px">
       <svg viewBox="0 0 800 280" style="font-family:Outfit,system-ui,sans-serif">
         <text x="400" y="24" text-anchor="middle" fill="var(--or)" font-size="14" font-weight="600" letter-spacing=".12em">BLOCK-DAG WITH GHOSTDAG ORDERING</text>
         <g stroke="rgba(255,122,0,.3)" stroke-width="1.5" fill="none">
@@ -203,15 +203,14 @@ kbd{font:600 12.5px JBM,monospace;background:rgba(255,255,255,.08);border:1px so
         <path d="M390 120 L460 120" stroke="var(--or)" stroke-width="2.5" stroke-dasharray="6">
           <animate attributeName="stroke-dashoffset" from="12" to="0" dur="1.5s" repeatCount="indefinite"/>
         </path>
-        <text x="425" y="108" text-anchor="middle" fill="var(--mu)" font-size="11" font-family="JBM,monospace">fold</text>
+        <text x="425" y="108" text-anchor="middle" fill="var(--mu)" font-size="11" font-family="JBM,monospace">verify</text>
         <path d="M580 55 L660 95 L660 175 L580 215 L500 175 L500 95 Z" fill="rgba(255,122,0,.08)" stroke="var(--or)" stroke-width="2.5"/>
         <path d="M580 75 L640 105 L640 165 L580 195 L520 165 L520 105 Z" fill="none" stroke="rgba(255,171,77,.3)" stroke-width="1.5">
           <animate attributeName="stroke-opacity" values=".2;.5;.2" dur="3s" repeatCount="indefinite"/>
         </path>
-        <text x="580" y="130" text-anchor="middle" fill="var(--tx)" font-size="17" font-weight="700">ONE PROOF</text>
-        <text x="580" y="152" text-anchor="middle" fill="var(--or2)" font-size="13" font-family="JBM,monospace">≤ 1.8 MB</text>
-        <text x="580" y="170" text-anchor="middle" fill="var(--mu)" font-size="12" font-family="JBM,monospace">WHIR recursive</text>
-        <text x="580" y="245" text-anchor="middle" fill="var(--mu)" font-size="14">A new node checks this proof and joins at the tip</text>
+        <text x="580" y="130" text-anchor="middle" fill="var(--tx)" font-size="17" font-weight="700">SNAPSHOT</text>
+        <text x="580" y="152" text-anchor="middle" fill="var(--or2)" font-size="13" font-family="JBM,monospace">32+ headers</text>
+        <text x="580" y="245" text-anchor="middle" fill="var(--mu)" font-size="14">The node checks the snapshot, then catches up</text>
         <circle cx="580" y="230" r="5" fill="var(--ok)"><animate attributeName="r" values="3;6;3" dur="2s" repeatCount="indefinite"/><animate attributeName="opacity" values="1;.4;1" dur="2s" repeatCount="indefinite"/></circle>
       </svg>
     </div>
@@ -243,7 +242,7 @@ kbd{font:600 12.5px JBM,monospace;background:rgba(255,255,255,.08);border:1px so
         <h3>Software</h3>
         <p><strong>OS:</strong> macOS (Apple Silicon), Windows (64-bit), Linux (x86-64 or ARM64).</p>
         <p style="margin-top:8px"><strong>Dependencies:</strong> None. The binary is self-contained and includes its own Tor client.</p>
-        <p style="margin-top:8px"><strong>Sync:</strong> A new node checks one recursive proof and joins at the tip — no history replay.</p>
+        <p style="margin-top:8px"><strong>Sync:</strong> A new node can verify a snapshot against mined block headers and fetch the blocks it still needs.</p>
       </div>
     </div>
   </div>
@@ -336,6 +335,7 @@ kbd{font:600 12.5px JBM,monospace;background:rgba(255,255,255,.08);border:1px so
               <a class="btn btn-p" href="https://github.com/casdevmonero/monerousd/releases/latest/download/MoneroUSD-Wallet-Linux-testnet-x86_64.AppImage">Linux (AppImage)</a>
               <a class="btn btn-g" href="https://github.com/casdevmonero/monerousd/releases" target="_blank" rel="noopener">All releases</a>
             </div>
+            <p><strong>Verify your download.</strong> Open the <a href="https://github.com/casdevmonero/monerousd/releases/latest">latest testnet release</a> and download your installer and <code>SHA256SUMS</code> from the Assets list on that tagged page. Before opening the installer, compare its SHA-256 hash with the entry for its exact filename.</p>
             <div class="warn-card">
               <p><strong>One-time step on a Mac.</strong> The app is not notarized by Apple yet, so macOS blocks it until you allow it once:</p>
               <ol class="qsteps">
@@ -347,7 +347,7 @@ kbd{font:600 12.5px JBM,monospace;background:rgba(255,255,255,.08);border:1px so
               <p style="margin-top:10px">Then open <strong>MoneroUSD Wallet</strong> from Applications.</p>
             </div>
             <div class="warn-card" style="margin-top:10px">
-              <p><strong>On Windows.</strong> The installer is not code-signed yet, so Windows may show <em>Windows protected your PC</em>. Click <strong>More info</strong>, then <strong>Run anyway</strong>, and follow the installer. Then open <strong>MoneroUSD Wallet</strong> from the Start menu. Prefer an MSI? It is on the <a href="https://github.com/casdevmonero/monerousd/releases/tag/testnet-v0.2.0" target="_blank" rel="noopener">release page</a>.</p>
+              <p><strong>On Windows.</strong> The installer is not code-signed yet, so Windows may show <em>Windows protected your PC</em>. Click <strong>More info</strong>, then <strong>Run anyway</strong>, and follow the installer. Then open <strong>MoneroUSD Wallet</strong> from the Start menu.</p>
             </div>
             <div class="warn-card" style="margin-top:10px">
               <p><strong>On Linux (x86-64).</strong> Debian or Ubuntu: install the .deb with the command below, then open <strong>MoneroUSD Wallet</strong> from your applications. Any other distribution: download the AppImage, make it runnable with <code>chmod +x ~/Downloads/MoneroUSD-Wallet-Linux-testnet-x86_64.AppImage</code> and open it.</p>
@@ -451,7 +451,7 @@ cargo build --release --bin usdmd-node
     <div class="card rv" style="margin-top:18px">
       <h3>Running a node</h3>
       <p><strong>Requirements:</strong> Any 64-bit machine (macOS Apple Silicon, Windows 64-bit, Linux x86-64/ARM64). 2 GB RAM, 1 GB disk. Any internet connection — the node reaches the network over Tor v3 onion services and requires no open ports or public IP address.</p>
-      <p style="margin-top:12px"><strong>What the node does:</strong> Every MoneroUSD node mines, verifies, proves and relays. There are no tiers — a validator is the same node with a SAT bond. A new node joins at the tip by checking one recursive proof of the entire chain (no block-by-block sync, no downloading history). Node state stays a constant size as the chain grows.</p>
+      <p style="margin-top:12px"><strong>What the node does:</strong> Every MoneroUSD node mines, verifies, proves and relays. There are no tiers — a validator is the same node with a SAT bond. To adopt a snapshot, a new node checks proof of work on sampled block headers and verifies that at least 32 later headers commit to the snapshot’s state. On a young chain it can catch up block by block.</p>
       <p style="margin-top:12px"><strong>Measured footprint:</strong> 0.9 GB memory, 290 MB disk; the macOS release binary is 45 MB (testnet-v0.2.0). The binary is self-contained and includes its own Tor client.</p>
       <p style="margin-top:12px"><strong>Building from source:</strong> Requires a recent stable Rust toolchain.</p>
       <div class="cmd"><span class="c"># Clone the repository</span>
@@ -469,7 +469,7 @@ MONEROUSD_NET=testnet MONEROUSD_RPC_PORT=27780 \
     <div class="card rv" style="margin-top:18px">
       <h3>Using the wallet</h3>
       <p>The wallet bundles a full node inside it. Download it, open it, and it connects to the testnet automatically — there is nothing else to set up. The wallet is built with Tauri (Rust core, web front end) and runs on macOS (Apple Silicon), Windows (64-bit) and Linux (x86-64).</p>
-      <p style="margin-top:12px"><strong>Download:</strong> <a href="https://github.com/casdevmonero/monerousd/releases/latest/download/MoneroUSD-Wallet-macOS-testnet.dmg">macOS wallet (testnet-v0.2.0)</a> — open it and drag the app into Applications; verify the SHA256 checksum from the <a href="https://github.com/casdevmonero/monerousd/releases/tag/testnet-v0.2.0" target="_blank" rel="noopener">release page</a>.</p>
+      <p style="margin-top:12px">On macOS, download the DMG and <code>SHA256SUMS</code> from the <a href="https://github.com/casdevmonero/monerousd/releases/latest">same release page</a>. In the download folder, run <code>shasum -a 256 MoneroUSD-Wallet-macOS-testnet.dmg</code> and compare the hash with the DMG entry in <code>SHA256SUMS</code>. Once the hashes match, open the DMG and drag the app into Applications.</p>
       <p style="margin-top:12px"><strong>macOS quarantine:</strong> The build is not yet notarized by Apple, so macOS blocks it until you allow it once. After dragging the app into Applications, open <strong>Terminal</strong> (press <kbd>⌘</kbd>&nbsp;<kbd>Space</kbd>, type <strong>Terminal</strong>, press <kbd>Return</kbd>), paste this command with <kbd>⌘</kbd>&nbsp;<kbd>V</kbd> and press <kbd>Return</kbd>:</p>
       <div class="cmd">xattr -dr com.apple.quarantine "/Applications/MoneroUSD Wallet.app"</div>
       <p style="margin-top:12px"><strong>Getting test coins:</strong> Open the wallet and tap <strong>Get free test USDm</strong> on the home screen; it lands with the next block.</p>

@@ -182,6 +182,7 @@ add_action('plugins_loaded', function () {
             }
             $shown[$order_id] = true;
             $view = $this->sync($order);
+            $can_pay = in_array($view['status'], array('open', 'accepted'), true);
             $link = (string) $order->get_meta('_musd_link');
             if (!preg_match(self::LINK, $link)) {
                 echo '<p>' . esc_html('MonerousD is not available for this order right now.') . '</p>';
@@ -196,8 +197,8 @@ add_action('plugins_loaded', function () {
             <section id="musd" style="max-width:28rem;border:1px solid #d2d2d7;border-radius:14px;padding:1.5rem;margin:1rem 0">
                 <h3 style="margin-top:0"><?php echo esc_html('Pay with MonerousD'); ?></h3>
                 <p><?php echo esc_html($promise); ?></p>
-                <p id="musd-pay"><a class="button alt" href="<?php echo esc_attr($link); ?>"><?php echo esc_html('Open my wallet and pay'); ?></a></p>
-                <p id="musd-copy" style="font-size:.85em;color:#6e6e73"><?php echo esc_html('Wallet on another device? Copy this into it:'); ?><br><code style="word-break:break-all"><?php echo esc_html($link); ?></code></p>
+                <p id="musd-pay"<?php echo $can_pay ? '' : ' hidden'; ?>><a class="button alt" href="<?php echo esc_attr($link); ?>"><?php echo esc_html('Open my wallet and pay'); ?></a></p>
+                <p id="musd-copy"<?php echo $can_pay ? '' : ' hidden'; ?> style="font-size:.85em;color:#6e6e73"><?php echo esc_html('Wallet on another device? Copy this into it:'); ?><br><code style="word-break:break-all"><?php echo esc_html($link); ?></code></p>
                 <p><?php echo esc_html('Status:'); ?> <strong id="musd-status"></strong></p>
                 <form id="musd-code" hidden>
                     <p style="font-size:.85em;color:#6e6e73"><?php echo esc_html('Received your order? Tap Confirm receipt in your wallet, or enter your release code here.'); ?></p>
