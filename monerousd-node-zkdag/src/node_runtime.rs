@@ -250,6 +250,10 @@ impl ProduceJob {
 /// recomputes the work from the new selected parent) and ground again — the grind is memoryless, so the stop costs nothing and the
 /// prove is kept. `None` past the try cap (fail-closed: no block this attempt). The lock is held only to read the duty and the tip,
 /// and for the rebind; a tip check every 64 hashes never blocks on it. SCALE: a constant per hash.
+/// Wall-clock ms at which this process last mined a block of its own (0: never). Read by the transport's wedge ladder
+/// (`arti_transport`): a node that is still producing is not cured by restarting, whatever its peers are doing.
+pub static LAST_OWN_BLOCK_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn grind_job<T: crate::transport::CellTransport>(
     rt: &std::sync::Mutex<NodeRuntime<T>>,
     miner: &crate::pow::PowMiner,
@@ -272,6 +276,10 @@ pub fn grind_job<T: crate::transport::CellTransport>(
                 let mut b = job.block.clone();
                 b.header = header;
                 b.pow_proof = pi;
+                LAST_OWN_BLOCK_MS.store(
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 return Some(b);
             }
             Err(_) => {

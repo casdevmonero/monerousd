@@ -108,6 +108,17 @@ async function nodePrices() {
 export async function learn() {
   const before = JSON.stringify([S.assets, S.routes, S.opsec, S.wallet, S.err, PRICE.why]);
   if (provider()) {
+    // CONNECTED THE MOMENT THE WALLET'S PROVIDER IS HERE (user 2026-11-22: "why is the connect wallet button so slow? theres
+    // a bad lag when connecting. The connect button should connect automatically on ionswap"). MEASURED cause: the page
+    // became connected only after `nativeAssets` answered, and the wallet answers it after reading every bridge coin's
+    // list and price and the SAT book from its node, one after another. The provider is installed only by the wallet's
+    // own frame or a linked session, so its presence IS the connection: the page draws connected now, and the coins'
+    // prices fill in when that answer arrives (the listeners draw again).
+    if (!S.wallet) {
+      S.wallet = true;
+      S.err = '';
+      for (const fn of listeners) { try { fn(); } catch (_) { /* a page that is gone */ } }
+    }
     try {
       const r = await ask('nativeAssets');
       if (r && Array.isArray(r.assets)) S.assets = r.assets;

@@ -158,7 +158,9 @@ window.addEventListener('hashchange', route);
 onLearned(async () => { if (S.wallet && !had) { had = true; who(); route(); } });
 window.addEventListener('monerousd#initialized', async () => { if (await meet()) route(); });
 
+// the page draws at once; the wallet is met in the background and the page draws again the moment it is connected (its
+// coin prices arrive after, never before the connection: see lib/native.js `learn`)
 (async function boot() {
-  await meet();
   route();
+  if (await meet()) route();
 })();

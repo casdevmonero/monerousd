@@ -4649,6 +4649,31 @@ async fn run_onion(
                         continue;
                     }
                 }
+                // ⛔⛔ A NODE THAT IS STILL PRODUCING IS NEVER RESTARTED FOR A DIAL WEDGE (user 2026-11-22: "complete the origin
+                // fix" · "why did the testnet go down when the origin went down?"). MEASURED 2026-11-20 04:35 (the live origin,
+                // ~/.monerousd-v2/node.err.log): every known peer offline, the own-onion check failed under a loaded machine, and
+                // the escalation below exited (86) the network's ONLY live node — a 6-minute outage, because a restart cannot bring
+                // an absent peer online and the boot alone takes minutes. A node that mined its own block within the last ten
+                // minutes is serving the chain: its transport may be degraded, its chain is not, so nothing is swapped or restarted.
+                // NO CHAIN HALTS: the lone producer keeps producing and serving. SCALE: one atomic read per would-be restart.
+                // AI RESISTANT: (b) code — a peer cannot make this node stop producing, so it cannot use this rule to keep a
+                // wedged transport alive on a node that is not producing either.
+                // cons: a node producing on a truly wedged client keeps it until it stops producing or is restarted by hand.
+                let produced_ms = crate::node_runtime::LAST_OWN_BLOCK_MS.load(std::sync::atomic::Ordering::Relaxed);
+                let still_producing = produced_ms > 0 && now_ms.saturating_sub(produced_ms) < 600_000;
+                // Neither the swap nor the restart: MEASURED the same day, the swap's onion-service relaunch failed ("local
+                // resource … already in use") and left the node undialable, which is what then failed the own-onion check.
+                if still_producing {
+                    ilog(&format!(
+                        "[arti] WEDGE VERDICT WITHHELD (producing): {streak} failed dials, {writers} live writers, but this node mined \
+                         its own block {}s ago — it is serving the chain, so its transport is neither swapped nor restarted (a restart \
+                         cannot bring absent peers online).",
+                        now_ms.saturating_sub(produced_ms) / 1000
+                    ));
+                    last_heal_ms = now_ms;
+                    heal_backoff_ms = heal_backoff_ms.saturating_mul(2).min(600_000);
+                    continue;
+                }
                 if heals_without_recovery >= PROCESS_RESTART_AT
                     && process_started.elapsed().as_secs() >= MIN_UPTIME_BEFORE_RESTART_SECS
                 {
