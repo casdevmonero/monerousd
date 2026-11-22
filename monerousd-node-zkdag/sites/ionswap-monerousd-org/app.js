@@ -14,7 +14,7 @@
 //
 // TWO-PARTY-REVIEWED: a front-end module, not a test. Its second party is the wallet that frames it; that crossing is
 // exercised with the real wallet and real nodes, never inside this file.
-import { S, learn, provider, ask, esc, walletGone } from './lib/native.js';
+import { S, learn, provider, ask, esc, walletGone, onLearned } from './lib/native.js';
 import { C, onChange, connect, continueWithWindow, disconnect, showBalances } from './lib/wallet-connect.js';
 
 const V = 'v=54'; // bump on every change so a cached page module is never mixed with a new one
@@ -132,12 +132,15 @@ async function startConnect() {
   drawPanel();
   const done = await connect();
   if (done) { panelOpen = false; drawPanel(); }
+  // ask the wallet again and draw the page from its answer (user 2026-11-20: "clicking connect wallet should manually connect
+  // it like web 3" — a page drawn while the wallet was still busy stayed on "Connect your wallet" after it answered)
+  if (await meet()) route(); else { who(); if (S.wallet) route(); }
 }
 document.addEventListener('click', async (ev) => {
   const t = ev.target instanceof Element ? ev.target : null;
   if (!t) return;
   if (t === panel || t.closest('[data-connect-close]')) { panelOpen = false; drawPanel(); return; }
-  if (t.closest('#connect-btn')) { if (S.wallet) { panelOpen = !panelOpen; drawPanel(); } else { startConnect(); } return; }
+  if (t.closest('#connect-btn')) { if (S.wallet && had) { panelOpen = !panelOpen; drawPanel(); } else { startConnect(); } return; }
   if (t.closest('[data-connect-go]') || t.closest('[data-connect]')) { startConnect(); return; }
   if (t.closest('[data-connect-window]')) { if (await continueWithWindow()) { panelOpen = false; drawPanel(); } return; }
   if (t.closest('[data-connect-balances]')) { t.closest('[data-connect-balances]').disabled = true; await showBalances(); panelOpen = false; drawPanel(); route(); return; }
@@ -150,6 +153,9 @@ onChange(async () => {
   drawPanel();
 });
 window.addEventListener('hashchange', route);
+// the wallet that was busy (a restart rebuilds its notes' proofs first) answers later: the background read that hears it
+// first draws the header and the page again, once
+onLearned(async () => { if (S.wallet && !had) { had = true; who(); route(); } });
 window.addEventListener('monerousd#initialized', async () => { if (await meet()) route(); });
 
 (async function boot() {

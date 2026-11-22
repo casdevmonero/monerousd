@@ -103,7 +103,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
 use usdm_decider::nf_sparse_air::NfAbsenceBatchCarrier;
@@ -138,7 +138,16 @@ struct Maintained {
     /// shift as blocks age out and the base absorbs them, so an offset silently renames which block it
     /// points at. The fold is COMMUTATIVE, so order is irrelevant and identity is the only thing that
     /// matters: fold each block exactly once, in whatever order it is served. Bounded by the span.
-    folded: BTreeSet<[u8; 32]>,
+    ///
+    /// ⭐ SHARED, NEVER COPIED PER NOTE (user 2026-11-22: "why does my wallet keep crashing automatically when i leave it
+    /// running? i need you to fix the root cause"). MEASURED (~/.monerousd-walletwatch, the installed 0.3.3 wallet against the
+    /// live origin): 6,100 owned notes (6,096 SAT mining rewards, one a block) each rooted their own carrier over a 12,189-block
+    /// span — 6,100 identical sets of 12,189 block ids — and the process went 90 MB → 8,830 MB in three minutes; the memory
+    /// guards then killed it. The fold depends only on the base and the blocks (`nf_unspent_step_new_acc(acc, pre, td)`), so
+    /// every carrier with the same base and the same blocks holds the SAME set and the SAME accumulator: they share one `Arc`
+    /// here, and `apply_page` folds each distinct set once. Memory: one span per distinct set (in practice one or two) plus a
+    /// small record per note, never notes × span. SAFE AT SCALE: a node's reward notes grow with the chain; this term no longer does.
+    folded: Arc<BTreeSet<[u8; 32]>>,
     /// A `step()` refused: some member of this set settled on chain. Fail-closed and STICKY — the carrier
     /// is never silently re-rooted around a settled member, because that is precisely how a batch would
     /// hide one member's double spend.
@@ -273,7 +282,7 @@ fn maintained_for(padded: Vec<[u8; 32]>) -> Maintained {
         base: (usdmd_node::spend_frontier::empty_leaf(), 0),
         based: false,
         acc: usdmd_node::spend_frontier::empty_leaf(),
-        folded: BTreeSet::new(),
+        folded: Arc::new(BTreeSet::new()),
         settled: false,
         caught_up: false,
         tips: Vec::new(),
@@ -554,6 +563,8 @@ fn apply_page(held: &mut BTreeMap<[u8; 32], Maintained>, page: &serde_json::Valu
         out
     };
     let mut advanced = false;
+    // one line per page, never one per note (6,100 notes printed 6,100 identical lines a page — MEASURED 2026-11-22)
+    let (mut rerooted, mut restepped) = (0usize, 0usize);
     for m in held.values_mut() {
         if m.settled {
             continue;
@@ -564,43 +575,97 @@ fn apply_page(held: &mut BTreeMap<[u8; 32], Maintained>, page: &serde_json::Valu
         // Re-root and fold the new span — the node still accepts the PREVIOUS base meanwhile, which is
         // what keeps a note spendable while its carrier is rebuilt.
         if !m.based || m.base != base {
-            eprintln!(
-                "[carrier] rooted at the node's certified base ({} block(s) already absorbed below the \
-                 chain's horizon boundary; {} block(s) of span to fold){}",
-                base.1,
-                span.len(),
-                if m.based { " — the base stepped, so the previous fold is re-rooted" } else { "" }
-            ); // DIGITAL-CASH-PRIVACY-REVIEWED: block counts only; no tag, amount, key or owner.
+            if m.based {
+                restepped += 1;
+            } else {
+                rerooted += 1;
+            }
             m.base = base;
             m.based = true;
-            m.folded.clear();
+            m.folded = Arc::new(BTreeSet::new());
             m.caught_up = false;
             m.tips.clear();
             m.stood_score = None;
             m.acc = base.0;
         }
-        for ((id, pre, _tags), (tag_limbs, td)) in span.iter().zip(folded_inputs.iter()) {
-            if m.folded.contains(id) {
-                continue; // already folded — identity, never position
+    }
+    if rerooted + restepped > 0 {
+        eprintln!(
+            "[carrier] {} note(s) rooted at the node's certified base ({} block(s) already absorbed below the chain's \
+             horizon boundary; {} block(s) of span to fold){}",
+            rerooted + restepped,
+            base.1,
+            span.len(),
+            if restepped > 0 { " — the base stepped, so the previous fold is re-rooted" } else { "" }
+        ); // DIGITAL-CASH-PRIVACY-REVIEWED: block counts only; no tag, amount, key or owner.
+    }
+    // ⭐ ONE FOLD PER DISTINCT SET, SHARED BY ITS NOTES (see `Maintained::folded`). Carriers whose sets are the same `Arc`
+    // (or all empty, at this base) folded exactly the same blocks, so they hold the same accumulator: the group's new blocks
+    // are folded ONCE, and each block's tags are looked up in the group's member map, so finding which note a block spends
+    // costs the block's tags, not notes × tags. Per note the rule is unchanged: a block holding one of a note's tags settles
+    // it (sticky, fail-closed); every other note steps the shared accumulator and shares the shared set.
+    {
+        let mut groups: std::collections::HashMap<usize, Vec<[u8; 32]>> = std::collections::HashMap::new();
+        for (nf, m) in held.iter() {
+            if !m.settled {
+                let key = if m.folded.is_empty() { 0 } else { Arc::as_ptr(&m.folded) as usize };
+                groups.entry(key).or_default().push(*nf);
             }
-            // the chain's own rule, verified: a block holding a member settles the note; otherwise the accumulator steps
-            if m.nf_limbs.iter().any(|l| tag_limbs.contains(l)) {
-                // ⛔ FAIL-CLOSED AND STICKY. A refused step means a member of this set settled in THIS
-                // block. Re-rooting around it is how a batch hides one member's double spend, so the
-                // carrier stops here and the note reports `Settled` rather than silently proving
-                // something else. DIGITAL-CASH-PRIVACY-REVIEWED: a branch name only.
-                eprintln!(
-                    "[carrier] a member of this note's settled set is spent on chain — refusing to prove \
-                     otherwise; this note reports SPENT"
-                );
-                m.settled = true;
-                m.caught_up = false;
-                break;
-            }
-            m.acc = usdm_decider::nf_sparse_air::nf_unspent_step_new_acc(m.acc, *pre, *td);
-            m.folded.insert(*id);
-            advanced = true;
         }
+        for members in groups.into_values() {
+            let first = &held[&members[0]];
+            let (mut acc, mut set) = (first.acc, (*first.folded).clone());
+            let mut by_limb: std::collections::HashMap<Digest4, Vec<[u8; 32]>> = std::collections::HashMap::new();
+            for nf in &members {
+                for l in &held[nf].nf_limbs {
+                    by_limb.entry(*l).or_default().push(*nf);
+                }
+            }
+            let mut spent: BTreeSet<[u8; 32]> = BTreeSet::new();
+            let mut grew = false;
+            for ((id, pre, _tags), (tag_limbs, td)) in span.iter().zip(folded_inputs.iter()) {
+                if set.contains(id) {
+                    continue; // already folded — identity, never position
+                }
+                // the chain's own rule, verified: a block holding a member settles that note; the accumulator steps
+                // for every note this block does not settle (a settled note stops, as before, and is never re-rooted)
+                for l in tag_limbs {
+                    if let Some(hit) = by_limb.get(l) {
+                        for nf in hit {
+                            spent.insert(*nf);
+                        }
+                    }
+                }
+                acc = usdm_decider::nf_sparse_air::nf_unspent_step_new_acc(acc, *pre, *td);
+                set.insert(*id);
+                grew = true;
+            }
+            if grew {
+                advanced = true;
+            }
+            if !spent.is_empty() {
+                // DIGITAL-CASH-PRIVACY-REVIEWED: a count only — never a tag, amount, key or owner.
+                eprintln!(
+                    "[carrier] {} note(s) have a member of their settled set spent on chain — refusing to prove otherwise; \
+                     they report SPENT",
+                    spent.len()
+                );
+            }
+            let shared = Arc::new(set);
+            for nf in &members {
+                let m = held.get_mut(nf).expect("a member of its own group");
+                if spent.contains(nf) {
+                    m.settled = true;
+                    m.caught_up = false;
+                } else {
+                    m.acc = acc;
+                    m.folded = Arc::clone(&shared);
+                }
+            }
+        }
+    }
+    let mut stood = (0usize, 0usize);
+    for m in held.values_mut() {
         // Readiness is decided against the A_tip served WITH this span, so the comparison is at one
         // instant rather than racing the next block.
         //
@@ -610,11 +675,7 @@ fn apply_page(held: &mut BTreeMap<[u8; 32], Maintained>, page: &serde_json::Valu
         if !m.settled && !m.folded.is_empty() {
             let at_tip = a_tip.is_some_and(|t| t == m.acc);
             if at_tip && !m.caught_up {
-                // DIGITAL-CASH-PRIVACY-REVIEWED: a block COUNT only — never a tag, amount, key or owner.
-                eprintln!(
-                    "[carrier] standing on the chain tip after {} folded block(s) — this note can be spent",
-                    m.folded.len()
-                );
+                stood = (stood.0 + 1, m.folded.len());
             }
             m.caught_up = at_tip;
             if at_tip {
@@ -623,6 +684,10 @@ fn apply_page(held: &mut BTreeMap<[u8; 32], Maintained>, page: &serde_json::Valu
                 m.stood_score = tip_blue_score;
             }
         }
+    }
+    if stood.0 > 0 {
+        // DIGITAL-CASH-PRIVACY-REVIEWED: counts only — never a tag, amount, key or owner.
+        eprintln!("[carrier] {} note(s) standing on the chain tip after {} folded block(s) — they can be spent", stood.0, stood.1);
     }
     advanced
 }
@@ -855,6 +920,13 @@ mod tests {
         let ms = t.elapsed().as_millis();
         assert!(ms < 5_000, "⛔ a thousand watched notes took {ms} ms to follow four blocks — the follower is proving again");
         assert!(held.values().all(|m| m.acc == a_tip && authority_of(m) == Authority::Ready), "every note stands on the proving carrier's tip");
+        // ⭐ THE ROOT-CAUSE PIN (2026-11-22, the wallet killed at 6,228 / 8,830 MB): notes folded from the same base share
+        // ONE folded set. On the per-note code each carrier owned its own copy.
+        let first = &held.values().next().expect("a held note").folded;
+        assert!(
+            held.values().all(|m| Arc::ptr_eq(&m.folded, first)),
+            "⛔ the notes hold separate copies of one folded set — the per-note copy is back"
+        );
         // TAMPER: a block that spends note 7's nullifier
         let spent = set(7)[2];
         let mut tags = blocks[0].2.clone();
@@ -1003,7 +1075,7 @@ mod tests {
         assert_eq!(held[&nf].acc, tip_ab, "its verified accumulator is the proving carrier's over {{A, B}}");
         assert_eq!(held[&nf].tips, vec![b.0], "it carries the tips of the page it now stands on");
         assert_eq!(held[&nf].stood_score, Some(3 * q + 9), "and records that page's public score");
-        assert_eq!(held[&nf].folded, [a.0, b.0].into_iter().collect::<BTreeSet<_>>(), "exactly {{A, B}} folded");
+        assert_eq!(*held[&nf].folded, [a.0, b.0].into_iter().collect::<BTreeSet<_>>(), "exactly {{A, B}} folded");
 
         // TAMPER: a delta that claims {A, B, C} but serves only B.
         let mut held = BTreeMap::new();

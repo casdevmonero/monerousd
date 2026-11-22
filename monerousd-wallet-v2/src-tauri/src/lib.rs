@@ -8148,6 +8148,39 @@ fn start_embedded_site_host() {
 /// fallback that could quietly reintroduce one.
 ///
 /// Idempotent: if :27752 already answers, this returns without spawning a second one.
+/// The site host on the sovereign port, if it is OUR `usdmd-node serve-sites` running an executable other than `bin` (the
+/// node this wallet bundles), is stopped; true once the port is free. Anything else listening is left alone (false).
+/// macOS and Linux read the listener with `lsof`; elsewhere this answers false and the old rule stands.
+fn stale_site_host_stopped(bin: &std::path::Path) -> bool {
+    let port = sovereign_port().to_string();
+    let Ok(out) = std::process::Command::new("lsof").args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"]).output() else { return false };
+    let pids: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    if pids.len() != 1 {
+        return false;
+    }
+    let pid = &pids[0];
+    let cmd = std::process::Command::new("ps").args(["-p", pid, "-o", "command="]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    if !(cmd.contains("usdmd-node") && cmd.contains("serve-sites")) {
+        return false; // not our site host: never touched
+    }
+    // the executable the process actually runs (`txt`), as the system names it now: a replaced app reads from the Trash
+    let txt = std::process::Command::new("lsof").args(["-p", pid, "-a", "-d", "txt", "-Fn"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let running = txt.lines().find_map(|l| l.strip_prefix('n')).unwrap_or("").to_string();
+    let ours = std::fs::canonicalize(bin).map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    if running.is_empty() || ours.is_empty() || running == ours {
+        return false; // the current build (or unreadable): keep it
+    }
+    eprintln!("[autostart] the site host on :{port} (pid {pid}) runs {running}, not this wallet's {ours}: stopping it");
+    let _ = std::process::Command::new("kill").arg(pid).status();
+    for _ in 0..50 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if std::net::TcpListener::bind(("127.0.0.1", sovereign_port())).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
 fn ensure_sovereign_sites(bin: &std::path::Path, data: &std::path::Path) -> Result<bool, String> {
     // ⛔⛔⛔ A 400ms CONNECT TIMEOUT DECIDED WHETHER TO SPAWN A SECOND HOST. SAME CLASS AS THE 700ms
     // NODE PROBE, SAME OUTCOME: under load the running host does not answer in time, and the wallet
@@ -8161,7 +8194,18 @@ fn ensure_sovereign_sites(bin: &std::path::Path, data: &std::path::Path) -> Resu
     // BINDING IS AUTHORITATIVE AND INSTANT. If the port is already bound, a host is there — no timeout,
     // no race, no guess. This removes the fork as a POSSIBILITY rather than making it less likely.
     if std::net::TcpListener::bind(("127.0.0.1", sovereign_port())).is_err() {
-        return Ok(false); // bind FAILED ⇒ something already listens ⇒ never start a second one
+        // ⛔ A STALE HOST FROM THE BUILD AN UPDATE REPLACED (user 2026-11-20: "the wallet doesnt show the created tokens logo
+        // from the chain automatically like its supposed to"). MEASURED: after 0.3.3 installed, :27752 was still served
+        // by the 0.3.1-era `serve-sites`, its executable in the Trash (lsof txt: ~/.Trash/MoneroUSD Wallet…), so every
+        // route the update added (the token's on-chain logo by tag) answered from the old code. The listener is read
+        // from the system; ONLY our own `usdmd-node serve-sites` whose executable is not this wallet's bundled node is
+        // stopped, then the port is re-checked by binding: a current host, or anything else on the port, is never touched.
+        if !stale_site_host_stopped(bin) {
+            return Ok(false); // bind FAILED ⇒ a current host already listens ⇒ never start a second one
+        }
+        if std::net::TcpListener::bind(("127.0.0.1", sovereign_port())).is_err() {
+            return Ok(false);
+        }
     }
     // THE FAUCET WAS NEVER BROKEN — ITS BACKEND DIED ON STARTUP, EVERY TIME.
     //

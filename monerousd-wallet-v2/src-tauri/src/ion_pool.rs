@@ -382,8 +382,8 @@ pub(crate) fn order_full_blocking(
                 .ok_or_else(|| {
                     // one order spends ONE note of each asset it brings: a balance held in several notes is combined first
                     let base = match asset {
-                        it::IonAsset::Usdm => "no single USDm note in this wallet covers that amount and the network fee (an order spends one note; to use more, first send the amount to your own address, which arrives as one note) — nothing was spent",
-                        it::IonAsset::Token => "no single note of this token in this wallet covers that amount (an order spends one note; to use more, first send the amount to your own address, which arrives as one note) — nothing was spent",
+                        it::IonAsset::Usdm => "no single USDm note in this wallet covers that amount and the network fee (an order spends one note of each asset, and notes do not combine yet: add the largest note now and the rest in further orders) — nothing was spent",
+                        it::IonAsset::Token => "no single note of this token in this wallet covers that amount (an order spends one note of each asset, and notes do not combine yet: use the largest note now and the rest in further orders) — nothing was spent",
                         it::IonAsset::Share => "no single share note of this pool covers that amount (remove one share note at a time) — nothing was spent",
                         it::IonAsset::Locked(_) => "no single note of this pool's shares locked until that date covers that amount (one locked share note at a time) — nothing was spent",
                     };

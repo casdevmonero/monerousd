@@ -108,6 +108,10 @@ async function listView(root) {
   q.addEventListener('input', () => { clearTimeout(typing); typing = setTimeout(() => { query = q.value.trim(); load(true); }, 250); });
   more.addEventListener('click', () => load(false));
   load(true);
+  // THE LIST STAYS CURRENT (user 2026-11-20: "I created a pool and it still didnt show up in real time, i had to leave
+  // ionswap and come back"): read again every 20 s while the page is open and in view, unless a search is being typed
+  const again = () => { if (!root.isConnected) return; if (!document.hidden && q.value.trim() === query && shown <= PAGE) load(true); setTimeout(again, NEXT_READ_MS); };
+  setTimeout(again, NEXT_READ_MS);
   positionsCard(root.querySelector('#plMinePos'));
   openCard(root.querySelector('#plOpen'));
   if (!S.wallet) root.querySelector('#plCoin').innerHTML = connectNote('to see the coin pools');
@@ -165,8 +169,16 @@ async function openCard(box, alone) {
     '<p class="muted">Pair a token you hold with USDm. Your first deposit sets its price; from then on every user on the chain sees the pool, trades on it and can add liquidity beside you. Your wallet reads what you hold on this computer: no one else learns it.</p>' +
     '<div id="plMine" class="list"><div class="note">Reading your wallet…</div></div>';
   const list = box.querySelector('#plMine');
+  // never "Reading your wallet…" for ever: a wallet that just restarted rebuilds its notes' proofs before it answers, so
+  // past 30 s the page says so and asks again (user 2026-11-20: "ionswap is stuck in reading your wallet")
+  const busy = setTimeout(() => {
+    if (!box.isConnected || !/Reading your wallet/.test(list.textContent)) return;
+    list.innerHTML = '<div class="note warn">Your wallet is busy (after a restart it rebuilds its notes first). This reads again on its own.</div>';
+    setTimeout(() => { if (box.isConnected) openCard(box, alone); }, 15000);
+  }, 30000);
   try {
     const all = await dex.holdings();
+    clearTimeout(busy);
     const usdm = all.find((a) => a.tag === dex.USDM);
     const held = all.filter((a) => a.kind !== 'nft' && a.kind !== 'share' && a.kind !== 'coin' && a.tag !== dex.USDM && Number(a.atomic) > 0);
     await Promise.all(held.map(async (a) => {
@@ -186,7 +198,10 @@ async function openCard(box, alone) {
       '<p class="muted small">You pair it with USDm: you hold ' + esc(money(pl.big(usdm ? usdm.atomic : 0))) + '.</p>';
     if (waiting && alone) setTimeout(() => { if (box.isConnected) openCard(box, alone); }, NEXT_READ_MS);
   } catch (e) {
-    list.innerHTML = privateNote(e, 'balances');
+    clearTimeout(busy);
+    list.innerHTML = privateNote(e, 'balances') + '<button type="button" class="btn" data-pl-again>Try again</button>';
+    const again = list.querySelector('[data-pl-again]');
+    if (again) again.addEventListener('click', () => openCard(box, alone));
   }
 }
 
@@ -206,7 +221,11 @@ function facts(p, mine) {
 // own note), so beside what the wallet holds the page reads the LARGEST single note of each asset and says what fits
 // in one order BEFORE the wallet proves anything. (A wallet that does not say the largest note is read as holding one.)
 const largestNote = (mine) => ({ t: pl.big(mine.token_note_max ?? mine.token), u: pl.big(mine.usdm_note_max ?? mine.usdm) });
-const splitNote = (most) => 'Your wallet holds this in several notes, and one order spends one note: the most you can use in one order now is ' + most + '. To use more, first send the amount to your own address (it arrives as one note).';
+// HONEST ABOUT THE LIMIT (user 2026-11-20: "why does this happen?"). MEASURED: a pool order spends ONE note of each asset
+// (src/ion_pool_tx.rs IonOrderTx.legs), and a send never joins notes (each input is its own single-input spend, so a send to
+// yourself arrives as several notes, not one) — the old advice here was false. Multi-note orders are the next build
+// (docs/IONSWAP-ANY-PAIR-POOLS-DESIGN-20261119.md §2c).
+const splitNote = (most) => 'One pool order spends one note of each asset, and your wallet holds this in several notes: the most one order can use now is ' + most + '. Add that now and the rest in further orders, one note each. Orders that combine several notes are being built.';
 // what a USDm leg needs in its one note: the amount and the network fee
 const usdmFits = (mine, u) => u + pl.NETWORK_FEE <= largestNote(mine).u;
 const usdmMost = (mine) => { const m = largestNote(mine).u - pl.NETWORK_FEE; return money(m > 0n ? m : 0n); };
