@@ -275,6 +275,105 @@ pub(crate) fn order_blocking(kind: u8, token_hex: String, x: u64, y: u64, shares
     order_hop_blocking(kind, token_hex, x, y, shares, min_out, [0u8; 32], 0)
 }
 
+/// ⭐ ADD ANY AMOUNT (user 2026-11-22: "fix the 25 dollar limit issue so we can add any amount to the pools"). MEASURED cause:
+/// a pool order spends ONE note of each asset (`IonOrderTx.legs`), and notes never join (a send's inputs are each their own
+/// single-input spend), so an addition larger than the wallet's largest USDm note was refused. Here the wallet adds it in
+/// PARTS, one USDm note each, every part at the deposit's own ratio (x : y): it sends a part, waits for that part's token
+/// change to come back (the change note lands with the block that carries the order), and sends the next. The chain's
+/// batch rule makes the parts one deposit in effect: a pool opened by the first part takes every later part at its own
+/// ratio, refunding to the provider any side a part brings in excess (`ion_pool::step`, additions). One approval covers
+/// every part (the IPC door approves the call; the parts are this call's own work).
+/// SCALE: parts = the USDm notes the amount spans (a wallet's own notes); each waits at most one landing of its change.
+/// AI RESISTANT: (b) code — each part is an ordinary order the chain checks in full; nothing here widens what one proves.
+/// cons: a deposit spanning n notes takes about n blocks to complete; if the price moves between parts, a later part is
+/// added at the pool's price then and its excess side comes back as a note.
+pub(crate) fn add_any_blocking(token_hex: String, x: u64, y: u64) -> Result<serde_json::Value, String> {
+    let token = token_of(&token_hex)?;
+    if x == 0 || y == 0 {
+        return Err("adding liquidity brings both assets — nothing was sent".into());
+    }
+    let fee = wr::PROTOCOL_FEE_ATOMIC;
+    let (tok_tag, usdm_tag) = (it::ion_tag(&token, it::IonAsset::Token), it::ion_tag(&token, it::IonAsset::Usdm));
+    // (largest spendable note, sum of spendable notes) of one asset, read from this wallet's scan now
+    let held = |tag: [u64; 3]| -> (u64, u128) {
+        let s = locked(&SCAN);
+        let Some(st) = s.as_ref() else { return (0, 0) };
+        let proven: HashSet<[u8; 32]> = PROVEN_SPENT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let notes: Vec<u64> = st
+            .owned
+            .iter()
+            .filter(|n| n.asset == tag && spendable_now(&st.spent, &st.pending_change, &proven, n.amount, n.seed, &n.nf))
+            .map(|n| n.amount)
+            .collect();
+        (notes.iter().copied().max().unwrap_or(0), notes.iter().map(|a| u128::from(*a)).sum())
+    };
+    land_in_flight_change_once();
+    let (u_max, u_sum) = held(usdm_tag);
+    let (t_max, t_sum) = held(tok_tag);
+    if u_max >= y.saturating_add(fee) && t_max >= x {
+        return order_blocking(it::ION_ADD, token_hex, x, y, 0, 0); // one note of each covers it: one order
+    }
+    // every part pays its own network fee from its USDm note
+    let usdm_usable: u128 = {
+        let s = locked(&SCAN);
+        let st = s.as_ref().ok_or("the wallet has not scanned yet")?;
+        let proven: HashSet<[u8; 32]> = PROVEN_SPENT.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        st.owned
+            .iter()
+            .filter(|n| n.asset == usdm_tag && spendable_now(&st.spent, &st.pending_change, &proven, n.amount, n.seed, &n.nf))
+            .map(|n| u128::from(n.amount.saturating_sub(fee)))
+            .sum()
+    };
+    if usdm_usable < u128::from(y) {
+        return Err(format!(
+            "this wallet's USDm spendable now ({}) does not cover that amount with a network fee for each note it spans — nothing was sent",
+            u_sum
+        ));
+    }
+    if t_sum < u128::from(x) {
+        return Err("this wallet does not hold that many of the token spendable now — nothing was sent".into());
+    }
+    let mut orders: Vec<serde_json::Value> = Vec::new();
+    let (mut left_x, mut left_y) = (x, y);
+    while left_y > 0 && left_x > 0 {
+        // wait (bounded) for a USDm note above the fee and a token note: the previous part's token change lands with its block
+        let t0 = std::time::Instant::now();
+        let (u, t) = loop {
+            land_in_flight_change_once();
+            let (u, _) = held(usdm_tag);
+            let (t, _) = held(tok_tag);
+            if u > fee && t > 0 {
+                break (u, t);
+            }
+            if t0.elapsed() > std::time::Duration::from_secs(600) {
+                return Ok(serde_json::json!({
+                    "status": "PARTIAL",
+                    "parts_sent": orders.len(),
+                    "orders": orders,
+                    "left_token_atomic": left_x.to_string(),
+                    "left_usdm_atomic": left_y.to_string(),
+                    "detail": "the change of the last part has not landed within 10 minutes; what was sent is added, and the rest can be added again",
+                }));
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        };
+        // this part: as much USDm as one note allows, and the tokens at the deposit's ratio (the last part takes what is left)
+        let mut yi = left_y.min(u - fee);
+        let ratio = |a: u64| -> u64 { u64::try_from((u128::from(a) * u128::from(x)).div_ceil(u128::from(y))).unwrap_or(u64::MAX) };
+        let mut xi = if yi == left_y { left_x } else { ratio(yi).min(left_x) };
+        if xi > t {
+            // the token note limits this part: take what it holds, and the USDm at the same ratio
+            xi = t;
+            yi = u64::try_from(u128::from(xi) * u128::from(y) / u128::from(x)).unwrap_or(0).min(left_y).max(1);
+        }
+        let r = order_blocking(it::ION_ADD, token_hex.clone(), xi, yi, 0, 0)?;
+        orders.push(r);
+        left_x = left_x.saturating_sub(xi);
+        left_y = left_y.saturating_sub(yi);
+    }
+    Ok(serde_json::json!({ "status": "OK", "parts_sent": orders.len(), "orders": orders }))
+}
+
 /// ⭐ ONE TOKEN FOR ANOTHER, IN ONE ORDER (the swap): a sale of `x` of `from` whose USDm the chain itself spends on `to` in
 /// `to`'s pool (`ion_pool_tx::IonOrderCore::hop`). Two floors, both this wallet's: `min_usdm` is the least USDm the
 /// sale accepts (below it the tokens come back whole and nothing else happens) and `min_out` the least of `to` the buy

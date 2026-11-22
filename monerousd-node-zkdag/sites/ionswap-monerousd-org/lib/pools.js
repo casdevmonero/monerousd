@@ -75,7 +75,9 @@ export async function pool(token) {
 /** The pool orders the wallet sent since it was opened, newest first, each with what it has been paid so far (read
  *  from the wallet's own notes, so the wallet answers only when its user lets this site see balances). */
 export const orders = () => ask('ionOrders', {}, READ);
-export const add = (token, tokenAtomic, usdmAtomic) => ask('ionAdd', { token, tokenAtomic: String(tokenAtomic), usdmAtomic: String(usdmAtomic) }, SLOW);
+// an addition spanning several notes is sent in parts, each waiting for the last part's change to land (a block or two each)
+const PARTS = 1200000;
+export const add = (token, tokenAtomic, usdmAtomic) => ask('ionAdd', { token, tokenAtomic: String(tokenAtomic), usdmAtomic: String(usdmAtomic) }, PARTS);
 export const remove = (token, shares) => ask('ionRemove', { token, shares: String(shares) }, SLOW);
 // ── LIQUIDITY LOCKS (spec §14; user 2026-11-12). A lock is the provider's own choice: its shares come back locked until a
 // Monday it picks, and nobody, the provider included, can take that liquidity out before that day. The chain enforces it

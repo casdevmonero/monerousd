@@ -27622,6 +27622,10 @@ fn ion_units(text: &str) -> Result<u64, String> {
     text.trim().parse::<u64>().map_err(|_| "an amount does not read as whole atomic units — nothing was sent".to_string())
 }
 fn ion_order_blocking(kind: u8, token: String, x: String, y: String, shares: String, min_out: String) -> Result<serde_json::Value, String> {
+    // an addition of any amount: in parts when it spans more than one note (`ion_pool::add_any_blocking`)
+    if kind == usdmd_node::ion_pool_tx::ION_ADD {
+        return ion_pool::add_any_blocking(token, ion_units(&x)?, ion_units(&y)?);
+    }
     ion_pool::order_blocking(kind, token, ion_units(&x)?, ion_units(&y)?, ion_units(&shares)?, ion_units(&min_out)?)
 }
 fn ion_remove_blocking(token: String, shares: String) -> Result<serde_json::Value, String> {

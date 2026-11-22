@@ -234,6 +234,13 @@ const usdmWhy = (mine, u) => (u + pl.NETWORK_FEE > pl.big(mine.usdm)
   ? 'This needs ' + money(u) + ' and the network fee of about $0.001, and your wallet holds ' + money(pl.big(mine.usdm)) + '.'
   : splitNote(usdmMost(mine)));
 
+// ADD ANY AMOUNT (user 2026-11-22: "fix the 25 dollar limit issue so we can add any amount to the pools"): an addition that
+// spans more than one note is sent by the wallet in parts, one note each, at the deposit's ratio (ion_pool::add_any_blocking);
+// the page only says so, and the person approves once.
+const spans = (mine, t, u) => t > largestNote(mine).t || !usdmFits(mine, u);
+const partsLine = ' <b>It spans more than one note in your wallet, so your wallet adds it in parts (one note each, all at this ratio) over a few blocks. You approve once.</b>';
+const fitsAll = (mine, u) => u + pl.NETWORK_FEE <= pl.big(mine.usdm);
+
 function said(box, kind, text) { box.innerHTML = '<div class="note ' + kind + '">' + text + '</div>'; }
 const ACCEPTED = 'Order accepted. A block carries it and the next one pays it: what you receive arrives in your wallet on its own, usually within a minute.';
 
@@ -289,11 +296,10 @@ function addForm(box, p, mine) {
       if (t == null || u == null || t <= 0n || u <= 0n) return 'Enter both amounts.';
       if (t > haveT) return 'Your wallet holds ' + units(haveT) + ' ' + pl.label(p) + '.';
       if (u > haveU) return 'Your wallet holds ' + money(haveU) + '.';
-      if (t > largestNote(mine).t) return splitNote(units(largestNote(mine).t) + ' ' + pl.label(p));
-      if (!usdmFits(mine, u)) return usdmWhy(mine, u);
+      if (!fitsAll(mine, u)) return usdmWhy(mine, u);
       const each = Number(u) / Number(t);
       return {
-        line: 'This opens the pool at ' + esc(dex.price(each)) + ' for one ' + sym + '. You hold all of it but ' + pl.LOCKED_SHARES + ' share units, a dust amount the pool keeps for good so that no later deposit can be rounded away. <b>You can remove your liquidity whenever you want.</b> While it is in, its mix of ' + sym + ' and USDm follows the price: if the price moves, you get back more of one and less of the other.',
+        line: (spans(mine, t, u) ? partsLine.slice(1) + ' ' : '') + 'This opens the pool at ' + esc(dex.price(each)) + ' for one ' + sym + '. You hold all of it but ' + pl.LOCKED_SHARES + ' share units, a dust amount the pool keeps for good so that no later deposit can be rounded away. <b>You can remove your liquidity whenever you want.</b> While it is in, its mix of ' + sym + ' and USDm follows the price: if the price moves, you get back more of one and less of the other.',
         confirm: 'add ' + units(t) + ' ' + pl.label(p) + ' and ' + money(u),
         go: () => pl.add(p.token, t, u),
       };
@@ -307,11 +313,11 @@ function addForm(box, p, mine) {
     const t = pl.matchingTokens(p, u);
     if (u > haveU) return 'Your wallet holds ' + money(haveU) + '.';
     if (t > haveT) return 'This needs ' + units(t) + ' ' + pl.label(p) + ' beside it, and your wallet holds ' + units(haveT) + '.';
-    if (!usdmFits(mine, u)) return usdmWhy(mine, u);
-    if (t > largestNote(mine).t) return 'This needs ' + units(t) + ' ' + pl.label(p) + ' beside it. ' + splitNote(units(largestNote(mine).t) + ' ' + pl.label(p));
+    if (!fitsAll(mine, u)) return usdmWhy(mine, u);
     const s = pl.sharesFor(p, u);
+    const parted = spans(mine, t, u);
     return {
-      line: 'You add ' + esc(money(u)) + ' and about ' + esc(units(t)) + ' ' + sym + '. You will hold about ' + s.part.toFixed(s.part < 1 ? 4 : 2) + ' % of this pool and earn that part of every fee its orders leave. <b>You can remove it whenever you want.</b> While it is in, its mix of ' + sym + ' and USDm follows the price: if the price moves, you get back more of one and less of the other. What does not fit the pool\'s ratio comes straight back to you.',
+      line: (parted ? partsLine.slice(1) + ' ' : '') + 'You add ' + esc(money(u)) + ' and about ' + esc(units(t)) + ' ' + sym + '. You will hold about ' + s.part.toFixed(s.part < 1 ? 4 : 2) + ' % of this pool and earn that part of every fee its orders leave. <b>You can remove it whenever you want.</b> While it is in, its mix of ' + sym + ' and USDm follows the price: if the price moves, you get back more of one and less of the other. What does not fit the pool\'s ratio comes straight back to you.',
       confirm: 'add ' + money(u) + ' and ' + units(t) + ' ' + pl.label(p),
       go: () => pl.add(p.token, t, u),
     };
