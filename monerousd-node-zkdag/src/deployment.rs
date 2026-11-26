@@ -61,7 +61,24 @@ pub struct Deployment {
 
 /// The deployments this release knows — EMPTY at genesis (every launch rule is active at height 1). A release adds one here
 /// with a start in the future; it never signals for anything outside its own table.
-pub const DEPLOYMENTS: &[Deployment] = &[];
+pub const DEPLOYMENTS: &[Deployment] = &[SOLSTICE_1_0];
+
+/// ⭐⭐ SH5b (docs/SOLSTICE-UPGRADE-SH5-DEEP-AUDIT-20261125.md REFINED; user 2026-11-25: "SH5 is very important and must be a part
+/// of the soltice 1.0 upgrade") — SOLSTICE 1.0 as this release KNOWS it: the same entry the Solstice release carries (bit 0, start 0,
+/// no timeout), so this release counts its bicameral lock-in exactly as every node does — but this release does NOT implement it
+/// ([`NOT_IMPLEMENTED`]): it is the BRIDGE release — it signals it, and from the height it is in force this node stops producing and
+/// folding and says why ([`DeploymentLedger::halted_at`]), and the Solstice release carries its state across (SH5c).
+/// DORMANT until the Solstice release is ready (`start` = `u64::MAX`: nothing signals and nothing counts, so no height H can arrive
+/// before a release exists to run after it — a handoff with nobody to hand to would stop the testnet). The bridge release that
+/// schedules the handoff sets `start` to its first window; the Solstice release carries the same entry.
+pub const SOLSTICE_1_0: Deployment = Deployment { name: SOLSTICE_1_0_NAME, bit: 0, start: u64::MAX, timeout: u64::MAX, emergency: false };
+/// The deployment's name in the ledger (the Solstice release's own constant names it the same).
+pub const SOLSTICE_1_0_NAME: &str = "solstice-1.0";
+/// The deployments of [`DEPLOYMENTS`] this release is the BRIDGE to (it does not implement them): it SIGNALS them — this release
+/// is the one that says "ready to hand off" (Bitcoin's shape: the release miners run signals the change) — counts their lock-in,
+/// and stops at the height they take effect (`halted_at`), where the release that implements them starts from this node's state.
+/// Without the signal nobody could signal before the height (the implementing release runs only from it), and it would never come.
+pub const NOT_IMPLEMENTED: &[&str] = &[SOLSTICE_1_0_NAME];
 
 /// The table this release compiles.
 #[must_use]
@@ -224,6 +241,20 @@ impl DeploymentLedger {
     #[must_use]
     pub fn is_active(&self, name: &str) -> bool {
         matches!(self.state(name), DeployState::Active(_))
+    }
+
+    /// ⭐⭐ SH5 — is `name` in force at blue score `h`? Active from window `w` means in force from height `w × window_len` (the first
+    /// height of that window): a block is judged by the rules of ITS height. One function of the folded, certified ledger.
+    #[must_use]
+    pub fn active_at(&self, name: &str, h: u64, window_len: u64) -> bool {
+        matches!(self.state(name), DeployState::Active(w) if h >= w.saturating_mul(window_len.max(1)))
+    }
+
+    /// ⭐⭐ SH5b — the deployment this release does NOT implement that is in force at height `h`, if any: from there this node
+    /// stops producing and folding (its rules no longer judge the chain) and says which upgrade it needs.
+    #[must_use]
+    pub fn halted_at(&self, h: u64, window_len: u64) -> Option<&'static str> {
+        NOT_IMPLEMENTED.iter().copied().find(|n| self.active_at(n, h, window_len))
     }
     /// The header version a producer lays at blue score `score`: the BIP9 top bits plus the bit of every deployment in this
     /// release's table that is Started (or LockedIn) — a release signals only for what it implements. With nothing to signal
@@ -501,4 +532,18 @@ mod tests {
         assert_eq!(nf_normal, crate::deployment_signal_tx::signal_nf(&v, 1 << 9, 5), "a normal signal's id does not depend on its bits");
         assert!(FAST_WINDOW_TICKS * crate::dag::MESH_TARGET_SPACING_MS >= EMERGENCY_WINDOW_MS && (FAST_WINDOW_TICKS - 1) * crate::dag::MESH_TARGET_SPACING_MS < EMERGENCY_WINDOW_MS, "⛔ the emergency window is not the first whole tick count covering one hour of chain time");
     }
+    /// ⭐⭐ SH5b PIN — THE BRIDGE RELEASE SIGNALS SOLSTICE 1.0 AND STOPS FROM ITS HEIGHT: with the deployment
+    /// Started this release's header version carries bit 0; once Active from window 3 (window 100), halted_at names it at
+    /// height 300 and above and nothing below.
+    #[test]
+    fn sh5b_the_bridge_release_signals_the_upgrade_and_stops_the_node_from_its_height() {
+        let mut l = DeploymentLedger::default();
+        l.states.insert(SOLSTICE_1_0_NAME.to_string(), DeployState::Started);
+        assert_eq!(l.version_for(50), 1, "⛔ SH5b: a DORMANT handoff (start u64::MAX) signalled before its release exists");
+        l.states.insert(SOLSTICE_1_0_NAME.to_string(), DeployState::Active(3));
+        assert_eq!(l.halted_at(299, 100), None, "⛔ SH5b: the node stopped before the upgrade's height");
+        assert_eq!(l.halted_at(300, 100), Some(SOLSTICE_1_0_NAME), "⛔ SH5b: the node did not stop at the upgrade's height");
+        assert!(l.active_at(SOLSTICE_1_0_NAME, 450, 100) && !l.active_at(SOLSTICE_1_0_NAME, 250, 100), "⛔ SH5: in force by height, not by state alone");
+    }
+
 }

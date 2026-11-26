@@ -822,21 +822,10 @@ pub(crate) mod tests {
             if i == j || i >= self.parties.len() || j >= self.parties.len() {
                 return;
             }
-            let bundle = {
-                // The frontier is read first and the node borrowed mutably second: `build_sync_bundle`
-                // now ADVANCES this node's whole-chain certificate to the position it is about to
-                // serve, so serving is a mutation.
-                let fr = {
-                    let src = self.parties[j].node();
-                    crate::sync::FrontierSnapshot {
-                        root: *src.note_frontier_root().as_bytes(),
-                        height: src.note_frontier_count(),
-                        peaks_hex: src.spend_frontier_peaks_hex(),
-                    }
-                };
-                let src = self.parties[j].node_mut();
-                src.build_sync_bundle(vec![1u8; 4096], fr)
-            };
+            // ⛔ A FIXTURE NEVER FALLS BEHIND THE DOOR (census S-DRAFT-ADOPT, 2026-11-26): the jump takes the bundle the source node
+            // SERVES (`serve_join_bundle`, checked by the joiner's own door before it is served), never a draft beside the serve
+            // path (the door refuses a draft `AnchorArray`); a source that cannot serve yet offers no jump.
+            let bundle = self.parties[j].node().serve_join_bundle().and_then(|w| crate::sync::SyncBundle::from_wire(&w));
             if let Some(b) = bundle {
                 let _ = self.parties[i].node_mut().instant_sync(b);
             }

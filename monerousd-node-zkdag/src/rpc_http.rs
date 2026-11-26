@@ -253,6 +253,11 @@ pub(crate) fn route<T: CellTransport>(
     } else {
         body
     };
+    // ⭐ A-F114: the spender's absence wrappers for an object this call submits (`canon_chain::scope_spender_wrappers`),
+    // for this call only; none before the upgrade
+    let _spender_wrappers = crate::canon_chain::scope_spender_wrappers(
+        json_str_field(body, "canon_absence_hex").filter(|_| crate::params::canon_live()).and_then(|h| hex_decode(&h)),
+    );
     match (method, path) {
         // CORS preflight — a framed launchpad app (browser build) POSTs application/json here, which the browser
         // preflights. Answer OPTIONS 200 (write_response already carries the Access-Control-* headers).
@@ -6547,6 +6552,42 @@ transaction, so NOTHING was burned or seated. Retry.\"}"
                 None => (200, err_json("ONION_NOT_UP_YET")),
             }
         }
+        ("POST", "/canon/records") | ("GET", "/canon/records") => {
+            // ⭐ A-F114 2c — THE CANONICAL TAG CHAIN'S RECENT RECORDS, for a wallet's absence carrier: each record's chain
+            // index, its block's blue score (the coordinate a wallet's scan counts), its end value, its tag lane and its output
+            // leaves, oldest first, from `from`, at most 64 a page.
+            // DIGITAL-CASH-PRIVACY-REVIEWED: a CONSTANT broadcast — the tag lanes every block already carries on the wire
+            // and the chain values every node derives from them, identical for every caller; nothing is keyed by a
+            // nullifier, a note or a key, and the reply does not vary with who asks.
+            // SCALE: ≤ 64 records × ~16 KB a page; the window itself is canon_chain::CANON_RECENT_RECORDS records.
+            let from = json_num_field(body, "from").unwrap_or(0);
+            let want = json_num_field(body, "count").unwrap_or(64).clamp(1, 64) as usize;
+            let g = rt.lock().unwrap_or_else(|e| e.into_inner());
+            let n = g.node();
+            let recs = n.canon_recent.range(from, want);
+            let oldest = n.canon_recent.oldest().map_or(-1i128, i128::from);
+            let next = n.canon_index;
+            let genesis = hex_encode(&crate::canon_chain::digest_bytes(&crate::canon_chain::genesis()));
+            drop(g);
+            let mut items = Vec::with_capacity(recs.len());
+            for (i, c, t, l, score) in recs {
+                let tags: Vec<u8> = t.iter().flat_map(|x| x.iter().copied()).collect();
+                let leaves: Vec<u8> = l.iter().flat_map(|d| crate::canon_chain::digest_bytes(d)).collect();
+                items.push(format!(
+                    "{{\"i\":{i},\"score\":{score},\"end\":\"{}\",\"tags\":\"{}\",\"leaves\":\"{}\"}}",
+                    hex_encode(&crate::canon_chain::digest_bytes(&c)),
+                    hex_encode(&tags),
+                    hex_encode(&leaves)
+                ));
+            }
+            (
+                200,
+                format!(
+                    "{{\"status\":\"OK\",\"genesis\":\"{genesis}\",\"oldest\":{oldest},\"next\":{next},\"records\":[{}]}}",
+                    items.join(",")
+                ),
+            )
+        }
         ("POST", "/get_nf_fold_inputs") | ("GET", "/get_nf_fold_inputs") => {
             // ⭐⭐⭐ THE CERTIFIED BASE **AND THE SPAN FROM IT TO THE TIP** — the two things a spender needs
             // to build the absence carrier that is the SOLE spend authority.
@@ -7873,6 +7914,11 @@ transaction, so NOTHING was burned or seated. Retry.\"}"
             // [next batch, 24 h]. Absent or zero = the next payout batch (the "fast, less private" switch).
             let pay_after = json_num_field(body, "pay_after").unwrap_or(0) as u64;
             let mut rt = rt.lock().unwrap_or_else(|e| e.into_inner());
+            // ⭐ A-F114: every call (the first and each poll) may carry the spender's fresh wrappers; the node keeps the
+            // freshest for the claim it publishes later (`Node::canon_held_wrappers`)
+            if let Some(w) = crate::canon_chain::spender_wrappers() {
+                rt.node_mut().canon_hold_wrappers(usdm_nullifier, w);
+            }
             let answer = |redeemed: bool, published: bool, outcome: &str, gathering: bool, gathered: usize| -> String {
                 format!(
                     "{{\"status\":\"OK\",\"redeemed\":{redeemed},\"published\":{published},\"outcome\":\"{outcome}\",\"gathering\":{gathering},\"attestations_gathered\":{gathered}}}"

@@ -471,6 +471,22 @@ pub enum WireMsg {
     /// owner; the count rides in clear as every pooled transaction's own inventory already shows it (`TxInv`), and the
     /// holder is the node the payment was pushed to, never its origin.
     BundleInv(Vec<u8>),
+    /// ⭐ A-F114 — A SPENDER'S ABSENCE WRAPPERS FOR A REQUEST RELAYED TO CUSTODY (from the network upgrade,
+    /// `params::CANON_LIVE`; never sent before it): `postcard((legs: Vec<(nullifier, leaf commit)>, wrappers))`, the wrappers
+    /// being `postcard(Vec<CanonAbsence>)`, one per leg. A pot buy or a unit close is checked on the spender's node and then
+    /// published by a custodian on another node (DELAYED PUBLICATION, RELAYED), and under the constant chain only the spender
+    /// can prove its note unspent, so the proof travels to the publisher. A node keeps it only when every wrapper verifies
+    /// against its own window (a valid wrapper for a nullifier exists only from that note's owner, so a peer cannot replace a
+    /// real one with junk), and relays it once. Appended after every earlier variant, so each keeps its tag.
+    /// DIGITAL-CASH-PRIVACY-REVIEWED: the nullifiers and cross-binds are the request's own public fields; the wrappers reveal
+    /// nothing a spend's own evidence does not.
+    CanonWrappers(Vec<u8>),
+    /// ⭐ A-F114 — ONE custodian's signature over a payout's release (`release_confirm_tx::ReleaseSig`), gathered until the
+    /// paying vault's threshold has signed, then framed as `Class::ReleaseConfirm`. Sent only under the network upgrade.
+    /// Appended after every earlier variant, so each keeps its tag.
+    /// DIGITAL-CASH-PRIVACY-REVIEWED: the burns' nullifiers and the payout txid, which the release object itself publishes
+    /// once it rides a block; a custodian of the paying vault already holds that pair in its own payout record.
+    ReleaseSig(Vec<u8>),
 }
 
 /// ⭐ §14 — the bundles one [`WireMsg::BundleInv`] names at most (one cell: `1 + 64 × 33 = 2,113` payload bytes).

@@ -160,8 +160,44 @@ pub(crate) fn child_init_weight(b: &mut Builder, coords: &[Ext], sbits: usize, a
 }
 
 /// Emit the verification of one SSA child proof. `gate` is [`ssa_gate_program`]; `bytes` the child proof (or `None`).
+/// The child's public part is INLINED (its addresses, multiplicities and constant values are this program's constants).
 pub fn emit_ssa_child(b: &mut Builder, child: &ChildShape, gate: &GateProgram, bytes: Option<&[u8]>, whir: &mut dyn WhirSsa) -> Result<Deferred, String> {
-    let n = child.nvars;
+    let pubs: Vec<Addr> = child.public.iter().map(|&(_, v, _)| match v { PubVal::Const(c) => b.konst(c), PubVal::At(a) => a }).collect();
+    let bus: Vec<BusTerm> = child.public.iter().map(|&(addr, _, m)| BusTerm::Inline(addr, m)).collect();
+    emit_child_core(b, child.nvars, &pubs, &bus, gate, bytes, whir)
+}
+
+/// ⭐ A-F114 — one entry of a child's public part LOADED (the universal merge program): its address and multiplicity as
+/// values, its value an address (a statement lane of the parent, or a loaded constant). The parent binds the loaded list
+/// to the child's program by a digest it carries up to the root (`absence_ssa`'s universal program).
+#[derive(Clone, Copy, Debug)]
+pub struct LoadedPub {
+    pub addr: Ext,
+    pub m: Ext,
+    pub val: Addr,
+}
+
+/// Emit the verification of one SSA child proof whose public part is LOADED, so one program verifies children of
+/// different programs with one circuit. Every entry contributes its bus term (an entry of multiplicity zero contributes
+/// zero), so the circuit is the same whatever the list holds.
+pub fn emit_ssa_child_loaded(b: &mut Builder, nvars: usize, public: &[LoadedPub], gate: &GateProgram, bytes: Option<&[u8]>, whir: &mut dyn WhirSsa) -> Result<Deferred, String> {
+    let pubs: Vec<Addr> = public.iter().map(|p| p.val).collect();
+    let bus: Vec<BusTerm> = public.iter().map(|p| BusTerm::Loaded(p.addr, p.m)).collect();
+    emit_child_core(b, nvars, &pubs, &bus, gate, bytes, whir)
+}
+
+/// One public entry's bus term: INLINED (address and multiplicity become this program's constants, made at the very point
+/// the inlined door always made them, so an inlined program is unchanged op for op; a zero multiplicity contributes
+/// nothing) or LOADED (values the program reads).
+#[derive(Clone, Copy, Debug)]
+enum BusTerm {
+    Inline(u32, u64),
+    Loaded(Ext, Ext),
+}
+
+/// The child door's body: `pubs` the public values in the child's own order, `bus` each one's term.
+fn emit_child_core(b: &mut Builder, nvars: usize, pubs: &[Addr], bus: &[BusTerm], gate: &GateProgram, bytes: Option<&[u8]>, whir: &mut dyn WhirSsa) -> Result<Deferred, String> {
+    let n = nvars;
     let (stacked, cfg) = door_whir_config((n, NCOMMIT), PARAMS).ok_or("no door admits the child's shape")?;
     let per = usdm_decider::pow_pq_air::P2_CONSTRAINT_DEGREE + 1 + 2;
     let lgk = SLOT_BITS + n;
@@ -178,8 +214,7 @@ pub fn emit_ssa_child(b: &mut Builder, child: &ChildShape, gate: &GateProgram, b
     b.phase = "child: statement".into();
     let mut ch = Chal::new();
     // the statement: every public value, in order
-    let pubs: Vec<Addr> = child.public.iter().map(|&(_, v, _)| match v { PubVal::Const(c) => b.konst(c), PubVal::At(a) => a }).collect();
-    ch.observe_all(b, &pubs);
+    ch.observe_all(b, pubs);
     let root_words: [Fa4; RATE] = bundle.as_ref().map_or([Fa4::ZERO; RATE], |bb| {
         let cap: &[[Fa4; RATE]] = bb.commitment.as_ref();
         cap[0]
@@ -244,16 +279,28 @@ pub fn emit_ssa_child(b: &mut Builder, child: &ChildShape, gate: &GateProgram, b
     // the balance: P₀ + Q₀·Σ_public m/(ρ − (addr + β·v)) = 0, Q₀ ≠ 0
     let _ = inv_checked(b, q0);
     let mut spub = Ext::ZERO;
-    for (&(addr, _, m), &va) in child.public.iter().zip(&pubs) {
-        if m == 0 {
-            continue;
+    for (term, &va) in bus.iter().zip(pubs) {
+        match *term {
+            BusTerm::Inline(addr, m) => {
+                if m == 0 {
+                    continue;
+                }
+                let ka = b.konst_ext(-Ea4::from(Fa4::from_u64(u64::from(addr))));
+                let bv = b.mul(beta, Ext([va, crate::ssa::ZERO, crate::ssa::ZERO, crate::ssa::ZERO]));
+                let ra = b.add(rho, ka);
+                let q = b.sub(ra, bv);
+                let inv = inv_checked(b, q);
+                spub = b.mul_k_add(inv, Ea4::from(Fa4::from_u64(m)), spub);
+            }
+            BusTerm::Loaded(addr, mk) => {
+                let ka = b.sub(Ext::ZERO, addr);
+                let bv = b.mul(beta, Ext([va, crate::ssa::ZERO, crate::ssa::ZERO, crate::ssa::ZERO]));
+                let ra = b.add(rho, ka);
+                let q = b.sub(ra, bv);
+                let inv = inv_checked(b, q);
+                spub = b.mul_add(inv, mk, spub);
+            }
         }
-        let ka = b.konst_ext(-Ea4::from(Fa4::from_u64(u64::from(addr))));
-        let bv = b.mul(beta, Ext([va, crate::ssa::ZERO, crate::ssa::ZERO, crate::ssa::ZERO]));
-        let ra = b.add(rho, ka);
-        let q = b.sub(ra, bv);
-        let inv = inv_checked(b, q);
-        spub = b.mul_k_add(inv, Ea4::from(Fa4::from_u64(m)), spub);
     }
     let bal = b.mul_add(q0, spub, p0);
     b.assert_eq(bal, Ext::ZERO);

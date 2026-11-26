@@ -180,7 +180,7 @@ impl Node {
         if tags.is_empty() {
             self.da_tags_mem.remove(&seq);
         } else {
-            self.da_tags_mem.insert(seq, tags);
+            self.da_tags_mem.insert(seq, super::da::canonical_tag_order(tags));
         }
     }
 

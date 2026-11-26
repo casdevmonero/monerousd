@@ -7,7 +7,9 @@ use super::Node;
 
 /// Process-local by design: re-created by every boot (`Node::boot` re-installs the verifiers), or a cache / work buffer
 /// whose loss costs time, never state. (field, reason)
-pub(crate) const VOLATILE: [(&str, &str); 47] = [
+pub(crate) const VOLATILE: [(&str, &str); 49] = [
+    ("floor_final", "the no-reorg floor: recomputed from the resumed selected chain (monotone from there)"),
+    ("work_final", "FINALITY BY WORK: the final block, recomputed from the resumed selected chain (monotone from there)"),
     // IonSwap pools (lane goods 2026-11-12; the restart census read "ion_step_writes: before 8 B → after 7 B" on lane goods6
     // b6dde8a5): the pool leaves THIS fold step wrote, so a second pool's settlement of the same step is brought forward over
     // them (`IonSettleTx::brought_forward`). Reset at the start of every fold step (`objects_decide_at_fold`) and read only
@@ -134,6 +136,10 @@ pub(crate) const VOLATILE: [(&str, &str); 47] = [
 /// field, or a field the manifest rules `ChainDerived`, is refused by the completeness pin (`served_fold_count` sat here
 /// as "diagnostic" while `/membership_roots` bounds its walk by it, 2026-10-27).
 pub(crate) const NODE_LOCAL: &[(&str, &str)] = &[
+    // A-F118 (lane speed5r, 2026-11-22): the record index through which THIS node's canonical ring FILE is current — written
+    // by its own saver thread after a write succeeded, lowered by a rewind (its doc, `Node::canon_saved_top`); a function of
+    // when this node saved, never of the chain (MEASURED replica census main bb4b7d46: 186 vs 180 on two replayers)
+    ("canon_saved_top", "this node's own disk saver's cursor: how far its ring file is written, by its own saver thread"),
     // process-local by design (each is also VOLATILE across a restart, with the same reason)
     ("mempool", "pending transactions are per-node until a block carries them (Bitcoin's shape)"),
     ("oli_serve_cache", "a serve cache, rebuilt on demand"),
@@ -230,7 +236,7 @@ pub(crate) const BY_STATEMENT: &[(&str, &str)] = &[(
 /// DB-402 R2: the fields compared through a stand-in (below) instead of their own `{:?}` — the derived census skips their
 /// digest (`node_field_census(&STOOD_IN)`), so a huge or order-unstable rendering is never computed for nothing. The
 /// completeness pin requires `restart_census_stand_ins()` to name exactly these.
-pub(crate) const STOOD_IN: [&str; 21] = [
+pub(crate) const STOOD_IN: [&str; 22] = [
     "relay",
     "peg",
     "directory",
@@ -252,6 +258,9 @@ pub(crate) const STOOD_IN: [&str; 21] = [
     "respend_reach",
     "respend_journal",
     "objects_journal_floor",
+    // A-F118: the switch's window by its JUDGED records (`CanonRecent::judge_floor`, the newest CANON_RECENT_RECORDS by index);
+    // the serve margin below them is held by a node that replayed and not by a joiner, by design (U2), and no verdict reads it
+    "canon_recent",
     // the texts list (`restart_census_stand_in_texts`) names da_mem LAST; the completeness pin compares the two as one
     // ordered list (f2b4a72 added it at the front here — RED on main since, g2-finality-harness-2-20261022.log:3001)
     "da_mem",
@@ -461,6 +470,10 @@ impl Node {
                 format!("{kept:?}")
             })),
             ("objects_journal_floor", d(format!("{:?}", self.objects_journal_floor.max(self.rewind_window_floor())))),
+            ("canon_recent", d(format!(
+                "{:?}",
+                self.canon_recent.range(self.canon_recent.judge_floor(), crate::canon_chain::CANON_RECENT_RECORDS)
+            ))),
             ("da_mem", d({
                 let kept: std::collections::BTreeMap<&u64, &(Vec<Vec<u8>>, Vec<u8>, bool, crate::cover::CoverKey)> = self
                     .da_mem

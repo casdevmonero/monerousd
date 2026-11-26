@@ -24,6 +24,8 @@ pub fn apply_chain_membership_bond(
     v: &dyn crate::pqauth::PqVerifier,
     // ⛔ DB-258b — the carrying block's header-bound nullifier lane (`nullifier_proof.padded_tags`).
     lane: &[[u8; 32]],
+    // A-F114: the carrying block's chain tick, against which an expiring seat request is judged
+    tick: u64,
 ) -> MembershipApply {
     let Some((class, payload)) = crate::chain_object::unframe(blob) else {
         return MembershipApply::NotMembershipBond;
@@ -54,6 +56,9 @@ pub fn apply_chain_membership_bond(
     // ⛔⛔ DB-369: AND ONLY FOR THE FIRST `FREE_FOUNDING_SEATS` MEMBERS. Unbounded, a costless seat flood grew every node's
     // validator set and every deposit's sealed width (MEASURED: 1,321 B per seat per deposit). One rule, one spelling
     // (`Node::free_seat_open`), read from chain state at the fold, identical on every node.
+    if crate::params::canon_live() && seat_nonce_expiry_tick(&header.nonce) < tick {
+        return MembershipApply::Refused("an expired seat request: its node signs a fresh one");
+    }
     if !node.free_seat_open() {
         return MembershipApply::Refused(
             "a free seat needs a zero reserve and an open founding slot; post collateral to join",

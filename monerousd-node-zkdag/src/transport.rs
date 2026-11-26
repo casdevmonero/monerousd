@@ -1310,6 +1310,8 @@ impl<T: CellTransport> CellChannel<T> {
             WireMsg::PegAttestReq(_)
             | WireMsg::TheftRepaySig(_)
             | WireMsg::PotBuy(_)
+            | WireMsg::CanonWrappers(_)
+            | WireMsg::ReleaseSig(_)
             | WireMsg::PotFillSig(_)
             | WireMsg::UnitClose(_)
             | WireMsg::UnitCloseSig(_)

@@ -132,10 +132,21 @@ fn evidence_fields(tx: &PqTx) -> Option<SpendEvidence> {
     }
     let filing_d = crate::node::Node::tx_filing_d(tx)?;
     crate::note_transition::clock_hours(tx.clock_ms)?;
-    let member = crate::member_transition::read_tuple(&tx.member_tuple)?;
-    if !crate::member_transition::cross_binds(&member, &tuple) {
-        return None; // a member leg that speaks for another spend
-    }
+    // ⭐ A-F114 (B′): under the constant chain the spend carries NO member leg (its wrapper is its membership, judged by
+    // `Node::member_carrier_verdict` and the fold's `canon_tag_spent`); the evidence names no anchor (a zero sentinel the
+    // fold's anchor judge skips for this form, `Node::member_anchors_at_fold`)
+    let member = if crate::canon_chain::canon_live() {
+        if !tx.member_tuple.is_empty() || !tx.member_carrier.is_empty() {
+            return None; // one encoding: a member leg beside the wrapper is not a send of this form
+        }
+        usdm_decider::member_path_gate::MemberTuple { leaf_commit: [0; 8], binder: [0; 8], anchor: [0; 8], outs: [0; 8] }
+    } else {
+        let m = crate::member_transition::read_tuple(&tx.member_tuple)?;
+        if !crate::member_transition::cross_binds(&m, &tuple) {
+            return None; // a member leg that speaks for another spend
+        }
+        m
+    };
     if !tx.nullifiers.iter().all(|t| crate::spend_frontier::cm_bytes_to_root(t.as_bytes()).is_some()) {
         return None;
     }
@@ -186,7 +197,31 @@ pub fn tree_statement_commit(tx: &PqTx) -> [u8; 32] {
     let clues = postcard::to_allocvec(&tx.note_clues).unwrap_or_default();
     h.update(&(clues.len() as u64).to_le_bytes());
     h.update(&clues);
+    // ⭐ A-F114 (B′): under the constant chain the wrapper's END is statement data (the canon leaf's `c_end`), so the id
+    // names one payment at one end; the wrapper's bytes are the leaf's carrier and never travel in tree form
+    if crate::canon_chain::canon_live() {
+        let ends: Vec<crate::spend_frontier::Digest4> =
+            tx.nullifier_absence.first().map(crate::nf_sparse::canon_wrappers).unwrap_or_default().iter().map(|w| w.end).collect();
+        h.update(&(ends.len() as u64).to_le_bytes());
+        for e in &ends {
+            h.update(&crate::canon_chain::digest_bytes(e));
+        }
+    }
     *h.finalize().as_bytes()
+}
+
+/// ⭐ A-F114 (B′) — a tree-form body's absence witnesses: each wrapper's END kept, its proof bytes dropped (the wrapper is
+/// the canon leaf's middle carrier, verified in circuit by the holder; a peer needs only the end its statement names).
+fn canon_tree_strip(ws: &[crate::nf_sparse::NfAbsenceWitness]) -> Vec<crate::nf_sparse::NfAbsenceWitness> {
+    ws.iter()
+        .map(|w| {
+            let ends: Vec<crate::nf_sparse::CanonAbsence> = crate::nf_sparse::canon_wrappers(w)
+                .into_iter()
+                .map(|c| crate::nf_sparse::CanonAbsence { proof: Vec::new(), end: c.end })
+                .collect();
+            crate::nf_sparse::NfAbsenceWitness { proof: postcard::to_allocvec(&ends).unwrap_or_default(), ..w.clone() }
+        })
+        .collect()
 }
 
 /// The statement of a send, as the tree takes it (`agg_root::PaymentStatement`): the arguments of the three carrier
@@ -203,9 +238,25 @@ fn statement_of(tx: &PqTx, e: &SpendEvidence) -> Option<crate::agg_root::Payment
         t1: root(&e.tuple.tag1)?,
         fee: usdm_decider::whir_rec_block::PROTOCOL_FEE_ATOMIC,
         hours: crate::note_transition::clock_hours(tx.clock_ms)?,
-        member: crate::member_transition::read_tuple(&tx.member_tuple)?,
+        member: if crate::canon_chain::canon_live() {
+            usdm_decider::member_path_gate::MemberTuple { leaf_commit: [0; 8], binder: [0; 8], anchor: [0; 8], outs: [0; 8] }
+        } else {
+            crate::member_transition::read_tuple(&tx.member_tuple)?
+        },
         tags: tx.nullifiers.iter().map(|t| root(t.as_bytes())).collect::<Option<_>>()?,
+        absence: if crate::canon_chain::canon_live() { Some(canon_absence_statement(tx)?) } else { None },
     })
+}
+
+/// ⭐ A-F114 (B′) — a send's wrapper statement as the tree's canon leaf takes it: `[nf tag lanes, binder = nf, lc, end]`
+/// (`absence_u::verify_spend`'s `spend_io`, exactly what the node's own door states in `canon_absence_refusal`), from the
+/// spend's own input (`canon_chain::canon_spend_input`) and its ONE wrapper's end. `None` without exactly one wrapper.
+fn canon_absence_statement(tx: &PqTx) -> Option<[crate::spend_frontier::Digest4; 4]> {
+    let (nf, lc) = crate::canon_chain::canon_spend_input(tx)?;
+    let ws = tx.nullifier_absence.first().map(crate::nf_sparse::canon_wrappers).unwrap_or_default();
+    let [w] = ws.as_slice() else { return None };
+    let binder = crate::spend_frontier::cm_bytes_to_root(&nf)?;
+    Some([crate::canon_chain::of_lanes(&crate::canon_chain::tag_lanes(&nf)), binder, lc, w.end])
 }
 
 /// ⭐ MILESTONE 2 — THE EVIDENCE OF ONE TREE-FORM SEND and the statement its block's root must prove. NO proof runs
@@ -220,6 +271,9 @@ pub fn tree_evidence_of(tx: &PqTx) -> Option<(SpendEvidence, crate::agg_root::Pa
         || !tx.member_carrier.is_empty()
         || !tx.spend_or_decoy.is_empty()
         || !tx.membership_carrier.is_empty()
+        // ⭐ A-F114 (B′): a tree-form body carries its wrapper's END only; wrapper bytes beside it are a carrier after all
+        || (crate::canon_chain::canon_live()
+            && tx.nullifier_absence.first().map(crate::nf_sparse::canon_wrappers).unwrap_or_default().iter().any(|w| !w.proof.is_empty()))
     {
         return None;
     }
@@ -241,6 +295,9 @@ pub fn tree_form_of(tx: &PqTx, stamp_bits: u32) -> Option<(PqTx, crate::agg_root
     let mut tree = tx.clone();
     tree.member_carrier = Vec::new();
     tree.spend_or_decoy = Vec::new();
+    if crate::canon_chain::canon_live() {
+        tree.nullifier_absence = canon_tree_strip(&tx.nullifier_absence);
+    }
     tree.blob = crate::agg_root::TREE_TAG.to_vec();
     tree.blob.extend_from_slice(&tree_statement_commit(&tree));
     tree.id = PqTx::content_id(&tree.blob);
@@ -267,6 +324,9 @@ pub fn tree_form_matches(full: &PqTx, tree: &PqTx, stamp_bits: u32) -> Option<cr
     let mut expected = full.clone();
     expected.member_carrier = Vec::new();
     expected.spend_or_decoy = Vec::new();
+    if crate::canon_chain::canon_live() {
+        expected.nullifier_absence = canon_tree_strip(&full.nullifier_absence);
+    }
     expected.blob = crate::agg_root::TREE_TAG.to_vec();
     expected.blob.extend_from_slice(&tree_statement_commit(&expected));
     expected.id = PqTx::content_id(&expected.blob);
@@ -286,9 +346,22 @@ fn proofs_evidence(tx: &PqTx) -> Option<SpendEvidence> {
         return None;
     }
     // 2. the member leg: the input is a leaf under the anchor this transaction names, cross-bound above
-    let member = crate::member_transition::read_tuple(&tx.member_tuple)?;
-    if tx.member_carrier.is_empty() || !usdm_decider::member_path_gate::verify_member_path_carrier(&tx.member_carrier, &member) {
-        return None;
+    // ⭐ A-F114 (B′): under the constant chain, the spend's one absence wrapper instead (pure: the proof alone, at the
+    // admitted shape, for the spend's own `(nf, lc)`; its END is judged against the window by the pool and the fold)
+    if crate::canon_chain::canon_live() {
+        let (nf, lc) = crate::canon_chain::canon_spend_input(tx)?;
+        let ws = tx.nullifier_absence.first().map(crate::nf_sparse::canon_wrappers).unwrap_or_default();
+        let [w] = ws.as_slice() else { return None };
+        let binder = crate::spend_frontier::cm_bytes_to_root(&nf)?;
+        let cl = crate::canon_chain::to_lanes;
+        if !usdm_agg::absence_u::verify_spend(&w.proof, crate::canon_chain::SPEND_SHAPE, &crate::canon_chain::tag_lanes(&nf), &cl(&binder), &cl(&lc), &cl(&w.end)) {
+            return None;
+        }
+    } else {
+        let member = crate::member_transition::read_tuple(&tx.member_tuple)?;
+        if tx.member_carrier.is_empty() || !usdm_decider::member_path_gate::verify_member_path_carrier(&tx.member_carrier, &member) {
+            return None;
+        }
     }
     // 3. the cover arm: every carried tag is a real nullifier of the spender's or a correctly derived decoy
     let tags: Vec<Digest4> = tx.nullifiers.iter().map(|t| crate::spend_frontier::cm_bytes_to_root(t.as_bytes())).collect::<Option<_>>()?;

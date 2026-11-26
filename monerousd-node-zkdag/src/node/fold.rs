@@ -5,6 +5,16 @@
 #![allow(clippy::all)]
 use super::*;
 
+/// ⛔ FOLD OVERHAUL — one fold step's undo data for the spine (BORROWED: Bitcoin Core's per-block undo record): the note spine,
+/// the membership accumulator, the anchor spine and the published tip transition as they stood at the cursor when the step
+/// began. Held in a local of the step for its lifetime only; never stored, never served.
+pub(super) struct StepBase {
+    frontier: crate::spend_frontier::PoseidonSpendFrontier,
+    acc: crate::spend_frontier::Digest4,
+    rh: crate::spend_frontier::PoseidonSpendFrontier,
+    tip: (crate::spend_frontier::Digest4, crate::spend_frontier::Digest4),
+}
+
 impl Node {
     /// Fold a block's leaves pairwise to its root — the same walk [`Self::da_note_copath_in_block`] takes
     /// while recording siblings, so a copath from that call always refolds to this value.
@@ -532,19 +542,74 @@ impl Node {
         //   trusted, so a forged row still reads provisional.
         // SCALE: one hash of one record's real notes per folded provisional row; none on a bound row; nothing grows.
         // cons: one notes-root hash per provisional row at its fold (the fetch door pays the same hash).
-        if self.da_mem.get(&seq).is_some_and(|row| !row.2) {
+        // ⛔ A-F118 (lane speed5r, 2026-11-22) — AND EVERY OTHER PROVISIONAL ROW, not only the one this step folds. A joiner never
+        // folds the records below its anchor, so the rows it paged in for them stayed provisional for ever while every replayer
+        // held them bound — MEASURED (replica census, main bb4b7d46): `da_mem` DIFFERS at ordinals 50, 51, 53, "chain-bound
+        // true" on both replayers and "false" on the joiner, the same bytes. The same header-root check (the header, authenticated
+        // at graft, binds `output_notes_root`); a row whose header this node does not hold is left as it is.
+        // SCALE: the held rows are bounded by the record retention (`da_entry_census_named`); a bound row costs one flag read.
+        let provisional: Vec<u64> = self.da_mem.iter().filter(|(_, row)| !row.2).map(|(s, _)| *s).collect();
+        for s in provisional {
             let root = self
-                .block_for_record_addr(seq)
+                .block_for_record_addr(s)
                 .and_then(|b| self.relay.dag().get(&b).map(|n| n.header.output_notes_root))
                 .filter(|r| *r != Hash32::hash(&[]));
-            if let (Some(root), Some(reals)) = (root, self.da_record_reals(seq)) {
+            if let (Some(root), Some(reals)) = (root, self.da_record_reals(s)) {
                 if crate::block::da_notes_root_of(&reals.concat()) == root {
-                    self.da_mark_chain_bound(seq);
+                    self.da_mark_chain_bound(s);
+                    continue;
+                }
+            }
+            // ⛔ A-F118 — UNDER THE SWITCH THE CANONICAL WINDOW AUTHENTICATES THE ROW WHERE ITS HEADER CANNOT. The fold strips a
+            // losing row's outputs, so a stripped row no longer hashes to its header's root, and a joiner paged in the stripped
+            // form (MEASURED replica census main 56be6497: ordinals 50, 51, 53 still provisional on the joiner after the sweep).
+            // The canonical chain commits every record's output leaves (`canon_chain::record_step`, chain-checked on the window's
+            // pull), so a row whose leaves are a window record's is the chain's bytes.
+            if crate::canon_chain::canon_live() {
+                if let Some(ul) = self.da_block_leaves(s).filter(|l| !l.is_empty()) {
+                    if self.canon_recent.holds_leaves(&ul) {
+                        self.da_mark_chain_bound(s);
+                    }
                 }
             }
         }
         // DIGITAL-CASH-PRIVACY-REVIEWED: a record address and its ordinal — chain-public coordinates only.
         eprintln!("[record-fold] seq={seq} ordinal={append_ordinal}");
+        // ⭐ A-F114 phase 2 — THE CANONICAL TAG CHAIN, stepped HERE, in canonical record order, over the block's ADMITTED tags
+        // (recorded on its window entry by the fold step) and its output leaves, so every node holds the same `canon_c` after
+        // record k. A record whose admitted tags or leaves are not held is counted and named (`canon_missing`, must stay 0).
+        // SCALE: ~8 chain steps (33 permutations each) for a 256-tag block; one digest and a bounded ring of ends.
+        // Off until the network upgrade (`CANON_LIVE`): no window entry, no chain step, no sidecar on today's chain.
+        if let Some(b) = self.block_for_record_addr(seq).filter(|_| crate::canon_chain::canon_live()) {
+            // the ADMITTED tags the fold step recorded (never the raw lane: a loser's tag must not enter the chain), absorbed at
+            // the block's FIRST record only: a block whose notes overflow into further sub-records carries its tags once, and
+            // each later sub-record carries its own leaves with no tags (absorbing the same tags again was wasted carrier work)
+            let first = self.record_addr_for_block(&b) == Some(seq);
+            let tags = if first {
+                self.relay.dag().get(&b).and_then(|n| n.chain_tags.clone())
+            } else {
+                Some(std::sync::Arc::new(Vec::new()))
+            };
+            // the record's output leaves (the spend tree's, regenerated from the record: one definition, `da_block_leaves`)
+            match (tags, self.da_block_leaves(seq)) {
+                (Some(t), Some(leaves)) => {
+                    // ⭐ A-F114 — ONE RECORD SHAPE: the block's tags and this DA record's leaves laid as records of the
+                    // chain's one shape (`canon_chain::record_units`), each stepped and held in the window in order, so a
+                    // carrier proves every record with one family.
+                    let score = self.relay.dag().get(&b).map_or(0, |n| n.blue_score);
+                    for (ut, ul) in crate::canon_chain::record_units(&t, &leaves) {
+                        self.canon_c = crate::canon_chain::record_step(&self.canon_c, &ut, &ul, self.canon_index);
+                        self.canon_recent.push(self.canon_index, self.canon_c, std::sync::Arc::new(ut), std::sync::Arc::new(ul), score);
+                        self.canon_index += 1;
+                    }
+                }
+                _ => {
+                    self.canon_missing = self.canon_missing.saturating_add(1);
+                    // DIGITAL-CASH-PRIVACY-REVIEWED: a record address and a count only.
+                    eprintln!("[canon] ⛔ A-F114: record {seq}'s tags or output leaves are not held here ({} so far)", self.canon_missing);
+                }
+            }
+        }
         // ⛔ A PER-FOLD BYTE DROP WAS TRIED HERE AND IS REMOVED — MEASURED BREAKING THE SEAL, not
         // reasoned away: with `drop_record_bytes_if_unreferenced(seq)` at this line, the very first
         // span could never seal — `[ladder] ⛔ span 0 CANNOT seal: no root derivable at ordinal 1 —
@@ -613,6 +678,20 @@ impl Node {
     }
 
     pub(super) fn fold_canonical_records_inner(&mut self) -> usize {
+        // ⭐⭐⭐ FINALITY BY WORK: every fold pass moves the final block with the chain, before any wait below can return (a waiting fold
+        // never holds finality: NOTHING HALTS)
+        self.sync_finality_floor_into_dag();
+        // ⭐ A-F114 UPGRADE (U2) — every verdict under the constant chain reads the judged window, so a joiner whose window is
+        // still being pulled does not fold past its anchor. Bounded by the pull (any peer answers; `canon_fill_ask` names the
+        // next run every tick), and the pull's end DOES the work: the fold moves on the next pass. S-WAIT: a wait on peers'
+        // answers on the join path whose expiry asks again, never one that drops a block.
+        if self.canon_fill.is_some() {
+            self.note_fold_wait_on(None, "A-F114 U2: the canonical window is being pulled (a fresh adopt)");
+            return 0;
+        }
+        if let Some(step) = self.canon_resume_rewind.take() {
+            self.resume_refold_from(step);
+        }
         self.retire_pruned_anchor();
         let Some(tip) = self.selected_tip() else {
             return 0;
@@ -625,7 +704,12 @@ impl Node {
         // pass folds under it can be rewound. MEASURED why (2026-11-15, real nodes): with the depth rule alone every node
         // rewound its fold 35 to 38 times in 40 minutes.
         // CHAIN-OBJECT: what is folded is the chain's blocks in canonical order; the rule decides only how far this pass goes.
-        let final_seen = self.user_final_block();
+        // ⛔⛔ FINALITY NEVER LEADS THE FOLD (lane livewedge, 2026-11-25): under finality by work the final block is capped at the fold
+        // cursor (`refresh_work_final`), so a fold root set BY that block is circular: the fold stops at the final block and the final
+        // block cannot pass the fold. MEASURED (netsim replica census, lane e9a7b9f5, final floor 8 steps = the delay below): both
+        // replaying nodes stood with 52 blocks unfolded, the mesh never quiet, 213 fields NOT-QUIET. The fold settles by its own depth
+        // rule alone; finality follows it. This also closes census_wait's "fold root chosen by finality" site (A-F95's class).
+        let final_seen: Option<BlockId> = None;
         let depth_rule = self.relay.dag().fold_depth_at(&tip);
         let Some((root, by_finality)) =
             self.relay.dag().fold_root_by_finality(&tip, final_seen, crate::params::FINALITY_SEAT_ACTIVATION_DELAY, depth_rule)
@@ -1074,23 +1158,33 @@ impl Node {
         // of continuing to write a private spine: fail-closed onto the existing certified re-anchor
         // (`mark_spine_stale` + the stale tick-ask + the adopt's spine arm), never onto chain progress.
         //
-        // The one lawful departure from strict equality is UPWARD, and it is C2's, not this gate's: a
-        // pass that stopped mid-batch (missing record bytes at the `want_record_at_id` return below)
-        // leaves materialised records ABOVE the cursor while `fold_chain_tip` — and so the base —
-        // stays at the previous chain block, so the next pass legitimately starts with
-        // count > (next_ord-1)*width. C2's slot accounting then verifies EVERY such record in its
-        // exact slot (state 1 advances; state 2 — materialised out of place — stales), and equality is
-        // re-established at every batch boundary. Staling that resume here would halt every mid-batch
-        // retry the fold_schedule_fuzz pins keep green. What can never stand is a spine SHORT of its
-        // own base (the cursor claims positions the leaves cannot back — the C4 resume check's in-run
-        // twin) or a torn spine (a count off the fixed cover shape: no record can legally produce it).
-        // The print carries leaf/position counts only — figures /get_info already serves; never a
-        // note, amount, key or owner.
-        // cons: none — two u64 reads and two compares per pass; nothing stored, no growth on any axis.
+        // ⛔⛔⛔ FOLD OVERHAUL (lane livewedge, 2026-11-26; docs/FOLD-OVERHAUL-DEEP-AUDIT-20261126.md F-2) — EQUALITY IS STRICT.
+        // A fold step is ATOMIC (the batch loop below: ready, then apply; a stop rolls the step back), so at every pass
+        // boundary the spine is EXACTLY the cursor's prefix. There is no lawful departure any more: the "upward" one this gate
+        // used to admit was a half-applied chain block left between passes, read back next pass through three caches (row,
+        // leaf start, spine) — the shape that wedged the live testnet (F-3). A spine LONGER than the base is a half step an
+        // older build persisted, or a crash inside a pass: it is undone ONCE by the one disconnect the fold has
+        // (`rewind_fold_to_common` to the cursor, which fails closed to the certified re-anchor with nothing evicted when the
+        // cursor's prefix is not derivable), and the next pass applies the step whole. A spine SHORT of its base, or torn off
+        // the fixed cover shape, still stops serving and waits for the certified re-anchor, as before.
+        // BORROWED: Bitcoin Core's ConnectBlock/DisconnectBlock (the chain state is always at a block boundary).
+        // The prints carry leaf/position counts only — figures /get_info already serves; never a note, amount, key or owner.
+        // cons: none — two u64 reads and two compares per pass; a legacy half step costs one rewind, once.
         {
             let width = crate::cover::BLOCK_FIXED_NOTE_COUNT as u64;
             let base_leaves = next_ord.saturating_sub(1).saturating_mul(width);
             let have = self.spend_frontier.count();
+            if have > base_leaves && have % width == 0 {
+                let back_to = self.fold_chain_tip.or_else(|| self.relay.dag().genesis());
+                eprintln!(
+                    "[fold-step] the spine holds {have} leaves past its cursor's {base_leaves}: a half-applied step (an older \
+                     build or an interrupted pass) is undone to the cursor and the step re-applies whole"
+                );
+                if let Some(cursor) = back_to {
+                    self.rewind_fold_to_common(cursor);
+                }
+                return folded;
+            }
             if have < base_leaves || have % width != 0 {
                 eprintln!(
                     "[fold-leaf-law] ⛔ the spine holds {have} leaves but the fold base at position {} \
@@ -1135,45 +1229,59 @@ impl Node {
                     return folded;
                 }
             };
+            // ⛔⛔⛔ FOLD OVERHAUL (lane livewedge, 2026-11-26; docs/FOLD-OVERHAUL-DEEP-AUDIT-20261126.md) — ONE CHAIN BLOCK IS ONE
+            // ATOMIC STEP. BORROWED: Bitcoin Core's ConnectBlock (a block's transactions apply whole or the block is not connected)
+            // and Kaspa (a chain block's mergeset is applied as one acceptance step). (1) READY, THEN APPLY: every wait that
+            // depends only on what this node holds — each member's record bytes, a shell's committed sets, the SH5b halt, a sealed
+            // credit set's key — is judged for the WHOLE batch before any member moves (`fold_step_ready`, which asks for every
+            // missing piece at once); a blocked step applies nothing. (2) A STOPPED STEP LEAVES NO TRACE: a stop found while
+            // applying (band room, the anchor ring, the respend verdict, the spine position — waits that depend on an earlier
+            // member's effect) rolls back whatever this step applied (`stop_step`: the fork rewind to the cursor, whose journals
+            // undo every step effect, F-4). So the spine is the cursor's prefix at every pass boundary (the strict gate above),
+            // and no cache ever has to be read back to finish a half step — the class that wedged the live testnet (F-1..F-3).
+            // What protects it (AI RESISTANT b): the chain's own fold rule over blocks this node holds; no peer's row decides a
+            // position (state 3 below drops a bare row; a step applies only its own derivation).
+            // SCALE: the ready check is O(K) map reads for one chain block's mergeset (bounded by the DAG's K); a rollback restores
+            // one ring entry and pops the journals of at most K steps. Constant in the bonded set, the users and height.
+            // LONG-TERM: nothing accumulates and nothing can disagree between passes; a year of reorgs, restarts and joins leaves
+            // the spine at the cursor's prefix or the node stale and re-anchoring, never a half step.
+            if !self.fold_step_ready(&batch) {
+                return self.stop_step(folded, 0, None);
+            }
+            let mut step_folded = 0usize;
+            let mut step_base = Some(self.step_base_at_cursor());
             for b in &batch {
                 let seq = Self::da_record_id_for_block(b, 0);
-                // ⭐ C2 — SLOT ACCOUNTING. The member's derived position is `next_ord`, and exactly one
-                // of three states holds:
-                //
-                //   1. VERIFIED IN ITS SLOT — its row equals the derived position, its leafstart is
-                //      exactly (ordinal-1)*BLOCK_FIXED_NOTE_COUNT, and the frontier holds its leaves
-                //      (count >= ordinal*BLOCK_FIXED_NOTE_COUNT). It occupies its slot in the
-                //      linearisation: skip WITH `next_ord` advanced — the old skip did not advance, so
-                //      a mid-batch retry re-derived every later position from the cursor row alone and
-                //      numbered the rest of the chain one apart (the measured `[fold-order] ordinal 5
-                //      would append at leaf 1280 but its ordinal places it at 1024` shape).
-                //   2. MATERIALISED OUT OF PLACE — its leaves are in the frontier but its position
-                //      disagrees with the derived order. NOT refold-able: the append check would refuse
-                //      forever, and forcing it through would be a spine rewind (the rejected
-                //      stuck-state rewind in disguise). That is a spine-root split by definition —
-                //      fail closed (`spine_stale`; the certified re-anchor lane resolves it), never an
-                //      evict.
-                //   3. A ROW-ONLY CLAIM or NO ROW — nothing of it is in the frontier. It folds at the
-                //      derived position; a disagreeing bare row is dropped by the position-mismatch arm
-                //      inside `fold_record_into_spine`, and an AGREEING bare row (a peer's page filed
-                //      the slot this pass now derives) is dropped here first so the fold takes the
-                //      appending path with its position check, instead of the row-trusting path that
-                //      appends nothing.
+                // ⭐ C2 — SLOT ACCOUNTING, under atomic steps. The member's derived position is `next_ord`; the spine holds
+                // exactly the leaves below it (the cursor's prefix plus this step's members already applied), so no member of
+                // this step has leaves in it yet. Two states remain:
+                //   A. MATERIALISED OUT OF PLACE — its leaves are in the spine at another position, BELOW the commit point: a
+                //      committed record the DAG's order now places elsewhere, a spine-root split by definition. Fail closed
+                //      (`spine_stale`; the certified re-anchor resolves it).
+                //   B. A ROW-ONLY CLAIM or NO ROW — the normal case. It folds at the derived position; a disagreeing bare row is
+                //      dropped by the position-mismatch arm inside `fold_record_into_spine`, and an AGREEING bare row (a peer's
+                //      page filed the slot this pass derives) is dropped here first so the fold takes the appending path with its
+                //      position check.
+                // (The old state 1, "verified in its slot", re-read a half step's leftovers through the row, leaf-start and spine
+                // caches; under atomic steps it cannot occur, and it was the path the live wedge went through.)
                 let width = crate::cover::BLOCK_FIXED_NOTE_COUNT as u64;
                 let derived = next_ord;
                 let row = self.da_ord_mem.get(&seq).copied();
                 let leafstart = self.da_leafstart_mem.get(&seq).copied();
-                if row == Some(derived)
-                    && leafstart == Some(derived.saturating_sub(1).saturating_mul(width))
-                    && self.spend_frontier.count() >= derived.saturating_mul(width)
-                {
-                    next_ord = derived.saturating_add(1);
-                    continue; // state 1: verified in its slot
-                }
                 if let Some(ls) = leafstart {
-                    if self.spend_frontier.count() >= ls.saturating_add(width) {
-                        // state 2: materialised out of place — a spine-root split only the certified
-                        // fork choice can resolve.
+                    // ONE SOURCE OF TRUTH: a leaf start is a cache of "where this record's leaves begin"; the spine position's own
+                    // ordinal row decides. Only when the ordinal at `ls` maps back to THIS record (`da_ord_rev_mem`), below the
+                    // commit point, is the record really committed elsewhere (state A). Any other leaf start is a cache an
+                    // eviction could not reach (its reverse row was overwritten) and it is dropped, never acted on.
+                    let at_ord = ls / width + 1;
+                    let committed_here = self.spend_frontier.count() >= ls.saturating_add(width)
+                        && ls < derived.saturating_sub(1).saturating_mul(width)
+                        && self.da_ord_rev_mem.get(&at_ord) == Some(&seq);
+                    if !committed_here {
+                        self.da_leafstart_mem.remove(&seq);
+                    }
+                    if committed_here {
+                        // state A: committed out of place — a spine-root split only the certified fork choice can resolve.
                         // Positions and block ids only — public chain coordinates, never a note, amount, key or owner.
                         eprintln!(
                             "[fold-slot] block {} derived ordinal {derived}, row {row:?}, leaf start {ls}, spine {} leaves, rows held {}, leaf starts held {}",
@@ -1183,10 +1291,10 @@ impl Node {
                             self.da_leafstart_mem.len(),
                         );
                         self.mark_spine_stale(
-                            "a materialised record's leaves disagree with its DAG-derived position — \
-                             refolding it locally would need the rejected spine rewind",
+                            "a committed record's leaves stand where the DAG-derived order does not place it — a spine \
+                             split only the certified re-anchor resolves",
                         );
-                        return folded;
+                        return self.stop_step(folded, step_folded, step_base.take());
                     }
                 }
                 if row == Some(derived) {
@@ -1246,8 +1354,7 @@ impl Node {
                         }
                     }
                     self.note_fold_wait_on(Some(*b), "the block's record (its note payload) is not held here — wanted on the by-id record lane");
-                    self.drain_folded_unfolded_blocks();
-                    return folded;
+                    return self.stop_step(folded, step_folded, step_base.take());
                 }
                 let dag_ordinal = next_ord;
                 // ⛔⛔⛔ DB-358 — first spender of a nullifier in canonical order counts: a losing item's outputs leave
@@ -1266,42 +1373,8 @@ impl Node {
                 //   heal (`apply_healed_shell_body_in_order`) and the DB-224 wire pins (a wire block keeps its sets).
                 // cons: a shell with a non-empty set holds this node's fold until its body arrives — the record wait's shape
                 //   (a record-less block already waits); no growth axis.
-                if let Some((bond_root, credit_root, evidence_root)) =
-                    self.relay.dag().get(b).map(|n| (n.header.bond_set_root, n.header.credit_set_root, n.header.tag_evidence_root))
-                {
-                    let empty = crate::block::da_sidecar_root_of(&[]);
+                if let Some((lacks_bond, lacks_credit, lacks_wide, lacks_evidence)) = self.shell_sets_lacking(b) {
                     let held = self.unfolded_blocks.iter().find(|x| x.id() == *b);
-                    // §POLES: roots commit to REAL content; strip constant-shape cover before hashing.
-                    let lacks = |root: Hash32, set: fn(&Block) -> &Vec<u8>| {
-                        root != empty
-                            && held
-                                .map(|x| {
-                                    let s = set(x);
-                                    let real = &s[..crate::block::sidecar_real_len(s)];
-                                    crate::block::da_sidecar_root_of(real)
-                                })
-                                != Some(root)
-                    };
-                    // §22: the credit root binds the SEALED bytes whole (no key needed to tell a shell from a body).
-                    let lacks_credit = credit_root != empty
-                        && held.map(|x| crate::block::credit_set_root_of(&x.credit_set)) != Some(credit_root);
-                    // §22b: a held body whose sealed set names wide bytes it does not hold is INCOMPLETE — the fold waits on it,
-                    // never a partial set applied (the DB-220 class). ⛔ READ 2026-11-17 (J12, docs/JOIN-FINALITY-DEEP-AUDIT-20261117.md):
-                    // it is NOT healed like a shell — the want lane counts a whole body as held (`shell_predicate`) and
-                    // `fill_shell_body_preverified` keeps the held slot — so the wait ends only by the outgrown verdict's certified
-                    // re-anchor, whose carry ships every body with its sidecar (`FoldCarry::sidecars`; the census S-CARRY-SIDECAR
-                    // refuses a carry that does not). Every ingest door checks the carriage, so a carry is the one way such a body
-                    // enters; J12 closed the one that did.
-                    let lacks_wide = held.is_some_and(|x| {
-                        self.credit_key_of(x)
-                            .is_some_and(|k| crate::block::credit_set_wide_missing(&x.credit_set, Some(&k), &x.wide_objects))
-                    });
-                    let lacks_bond = lacks(bond_root, |x| &x.bond_set);
-                    // ⛔ PRIVATE SHARDING §2.2: every verdict at this step reads the block's own evidence, so a node that does not hold it cannot reach the
-                    // verdict every other node reaches. ROOT-LAYER: the one place a block enters the fold. MEASURED 2026-11-06: a joined node folded a
-                    // member block it held without evidence, kept an output its two peers revoked as a double spend, and split the record spine 96 steps
-                    // later. MUST-STAY-GREEN: `scratchpad/net/join.py`, `restart.py`; an unheld body waits, and the certified bundle covers it.
-                    let lacks_evidence = evidence_root != empty && held.map(|x| crate::block::da_sidecar_root_of(&x.tag_evidence)) != Some(evidence_root);
                     if lacks_bond || lacks_credit || lacks_wide || lacks_evidence {
                         // DIGITAL-CASH-PRIVACY-REVIEWED: a fixed string and three booleans — no id, tag, cm, amount, key or owner.
                         eprintln!(
@@ -1313,8 +1386,7 @@ impl Node {
                         // the DB-4 hold, not only the id: the body by id first, then the certified bundle that covers it
                         self.hold_for_unapplied_shell(*b);
                         self.note_fold_wait_on(Some(*b), "the block is a SHELL here (no body) — wanted on the shell-body lane");
-                        self.drain_folded_unfolded_blocks();
-                        return folded;
+                        return self.stop_step(folded, step_folded, step_base.take());
                     }
                 }
                 // ⛔⛔⛔ DB-396 — A BAND THAT CANNOT HOLD THIS STEP MAKES THE FOLD WAIT; THE DOOR NEVER DROPS ONE. MEASURED on the
@@ -1335,6 +1407,28 @@ impl Node {
                 if self.band_autoprove_for_test && !self.band_door.can_note(dag_ordinal) {
                     let _ = self.band_catch_up_for_test();
                 }
+                // ⭐⭐ SH5b (docs/SOLSTICE-UPGRADE-SH5-DEEP-AUDIT-20261125.md) — FROM THE HEIGHT AN UPGRADE THIS RELEASE DOES NOT IMPLEMENT
+                // IS IN FORCE, THIS NODE FOLDS NOTHING: its rules no longer judge those blocks. It says which upgrade it needs; the
+                // chain goes on with the nodes that upgraded (a node that chose not to is the only one that stops).
+                // S-WAIT-REVIEWED: an intentional stop of an un-upgraded node, not a wait on a peer — the operator's upgrade ends it.
+                let fold_h = self.relay.dag().get(b).map_or(0, |n| n.blue_score);
+                if let Some(up) = self.peg.deployments().halted_at(fold_h, self.params().reward_epoch_blocks) {
+                    static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                    if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        // DIGITAL-CASH-PRIVACY-REVIEWED: a public deployment name and a public height.
+                        eprintln!("[upgrade] ⛔ {up} is in force from height {fold_h}: this release does not implement it — update to keep validating (folding and producing stop here)");
+                    }
+                    self.note_fold_wait_on(Some(*b), "an upgrade this release does not implement is in force (SH5b): update the node");
+                    return self.stop_step(folded, step_folded, step_base.take());
+                }
+                // ⛔⛔ LIVE-FOLD W5b (lane livefold, 2026-11-25) — THE WAIT DRAINS BEFORE IT JUDGES. The drain ran only after a fold step
+                // or a peer's band offer, and this wait comes BEFORE the step: a door restored full (MEASURED on the live origin after
+                // the W5 deploy, main 6a6263f4: 64 awaiting steps from the snapshot, no offer arriving) never drained, so the fold
+                // waited on a drain that only its own progress could start — a deadlock. Under the fixed root the drain applies every
+                // noted step at once (W5); with proofs it applies what has arrived, as before. S-WAIT: the wait's own check does the work.
+                if !self.band_door.can_note(dag_ordinal) {
+                    self.band_drain();
+                }
                 if !self.band_door.can_note(dag_ordinal) {
                     // DIGITAL-CASH-PRIVACY-REVIEWED: a step count — no id, tag, cm, amount, key or owner.
                     eprintln!(
@@ -1343,8 +1437,7 @@ impl Node {
                         self.band_door.lag()
                     );
                     self.note_fold_wait_on(Some(*b), "the band lags the fold by its whole cap (DB-396)");
-                    self.drain_folded_unfolded_blocks();
-                    return folded;
+                    return self.stop_step(folded, step_folded, step_base.take());
                 }
                 // ⭐⭐⭐ DB-223 Q7: the stated spends' input ANCHORS, judged against the canonical ring BEFORE anything moves
                 // (Q1). An incomplete ring that cannot answer WAITS, the P5 shape; a refused spend spends nothing (below).
@@ -1359,8 +1452,7 @@ impl Node {
                         );
                         let why = "DB-223: a stated spend's input lies outside an incomplete ring (fresh adopt or restart)";
                         self.note_fold_wait_on(Some(*b), why);
-                        self.drain_folded_unfolded_blocks();
-                        return folded;
+                        return self.stop_step(folded, step_folded, step_base.take());
                     }
                 };
                 self.fold_strip_unjustified_notes(b, seq);
@@ -1374,8 +1466,7 @@ impl Node {
                 });
                 let Some((losers, lost_objects)) = self.respend_decide_at_fold(b, seq, dag_ordinal, just.as_ref()) else {
                     self.note_fold_wait_on(Some(*b), "the respend verdict is undecidable at this fold point (the fold-point spent set is blind)"); // the wedge counter names it, exactly as a missing record does
-                    self.drain_folded_unfolded_blocks();
-                    return folded;
+                    return self.stop_step(folded, step_folded, step_base.take());
                 };
                 // ⭐ DB-274 P4 (§8.11): a credit's WEIGHT is judged HERE, in the step's canonical pre-state (after the
                 // respend decision, BEFORE the bond class moves). Unattested credits leave the row now; attested ones
@@ -1385,11 +1476,16 @@ impl Node {
                 // "applies nothing". With it, a receiver that could not read the set at graft applies the graft-class objects
                 // now (idempotent doors: Replay / AlreadySeated / same-cm), so every node's ledger is a function of the chain
                 // in fold order, whoever produced the block.
+                // ⛔ A-F114 UPGRADE (U3, MEASURED 2026-11-22: `af114_red_…_pays_once_on_both_parties`, the parties' chains at
+                // records 21 and 22) — THE CANONICAL CHAIN REWINDS WITH THE FOLD. Its state before this step (index, end, record
+                // counters) is kept per fold step, so a fold reorg restores it exactly (`canon_rewind_from`) and a step refused
+                // after its objects moved a counter puts the counter back (below). Before, a node that folded its own block
+                // first and then re-folded the DAG's order stepped the orphan's records on top of the re-folded ones.
+                let canon_snap = self.canon_snapshot();
                 if let Some(body) = self.unfolded_blocks.iter().find(|x| x.id() == *b) {
                     if crate::block::credit_set_present(&body.credit_set) && self.credit_key_of(body).is_none() {
                         self.note_fold_wait_on(Some(*b), "the block's sealed credit set has no key here yet — wanted on the record lane");
-                        self.drain_folded_unfolded_blocks();
-                        return folded;
+                        return self.stop_step(folded, step_folded, step_base.take());
                     }
                     let (ids, lane) = (body.tx_ids.clone(), body.nullifier_proof.padded_tags.clone());
                     if let Some(objects) = self.opened_credit_objects(body) {
@@ -1467,6 +1563,24 @@ impl Node {
                     _ => std::collections::HashSet::new(), // no body held: the step is noted UNKNOWN below
                 };
                 self.band_note_fold_step(b, dag_ordinal, &losers, &unadmitted);
+                // ⛔⛔ A-F114 — THE CHAIN ABSORBS EXACTLY THE ADMITTED TAGS (the lane minus its losers and its unadmitted tags,
+                // the set the band notes on the line above), never the whole lane. Found 2026-11-22 reviewing 2c: absorbing a
+                // LOSER's nullifier would put it in the chain for ever, so no later carrier could prove it absent and the note
+                // whose spend lost would be burned (funds loss). Recorded on the window entry here, right before the record
+                // takes its position, where the record fold reads it; a body not held leaves it unrecorded and the record fold
+                // counts it (`canon_missing`), never a guess.
+                if let Some(body) = self.unfolded_blocks.iter().find(|x| x.id() == *b).filter(|_| crate::canon_chain::canon_live()) {
+                    let lost: std::collections::HashSet<[u8; 32]> = losers.iter().copied().collect();
+                    let admitted: Vec<[u8; 32]> =
+                        body.nullifier_proof.padded_tags.iter().filter(|t| !lost.contains(*t) && !unadmitted.contains(*t)).copied().collect();
+                    self.relay.dag_mut().set_chain_tags(b, std::sync::Arc::new(admitted));
+                } else if crate::canon_chain::canon_live()
+                    && self.relay.dag().get(b).is_some_and(|n| n.header.nullifier_tags_root == crate::block::nullifier_tags_root_of(&[]))
+                {
+                    // A-F114 U2: an idle shell (its header commits the empty lane) admits nothing, and says so; a shell with a lane
+                    // never reaches here (it waits for its body above)
+                    self.relay.dag_mut().set_chain_tags(b, std::sync::Arc::new(Vec::new()));
+                }
                 // ⭐ DB-274 P2 (§8.7): the bond class moves HERE, in canonical order, before the record takes its
                 // position (a release writes into it). A refused fold below unwinds it.
                 let bond_stepped = self.bond_step_at_fold(b, seq, dag_ordinal, &sat_seats, &seat_swaps);
@@ -1502,6 +1616,7 @@ impl Node {
                     }
                     self.dir_unwind_open_step(); // audit F15: and the paid directory entries this step applied leave with it
                     self.band_door.unwind_fold_step(dag_ordinal); // a refused fold leaves no band step behind
+                    self.canon_restore(canon_snap); // A-F114 U3: and no canonical record or counter step
                     // held but refused its spine position (`[fold-order]`): the wedge counter names it like every wait
                     self.note_fold_wait_on(Some(*b), "the held record could not take its spine position (fold order)");
                     // bytes not held: want THIS record and every other real record the segment still needs,
@@ -1513,10 +1628,11 @@ impl Node {
                             self.want_held_block_record(s);
                         }
                     }
-                    self.drain_folded_unfolded_blocks();
-                    return folded;
+                    return self.stop_step(folded, step_folded, step_base.take());
                 }
                 folded += 1;
+                step_folded += 1;
+                self.canon_note_step(dag_ordinal, canon_snap); // A-F114 U3: the state before this step, for a rewind
                 // ⭐ DB-274 (dir_set): the directory moves HERE, in canonical order, now that the step has folded.
                 self.dir_step_at_fold(&dir_set, dag_ordinal);
                 // ⭐ DB-274 P4 (§8.11 item 6): the attested credits' reconcile (the staged-copy unstage), now that the
@@ -1655,6 +1771,23 @@ impl Node {
         None
     }
 
+    /// ⛔ FOLD OVERHAUL F-6: how many selected-chain steps the fold cursor stands behind the tip, when that is past the fold
+    /// depth plus twice `UNFOLDED_BODY_REACH_LEVELS` with blocks unfolded (`None` otherwise). A pure function of the DAG and the
+    /// cursor: no counter an expiry can reset. Read by `wedge_reason`.
+    #[must_use]
+    pub fn fold_lag_outgrown(&self) -> Option<u64> {
+        if self.unfolded_blocks.is_empty() {
+            return None;
+        }
+        let dag = self.relay.dag();
+        let tip = dag.selected_tip()?;
+        let tip_len = dag.get(&tip)?.selected_chain_len;
+        let cursor_len = self.fold_chain_tip.and_then(|c| dag.get(&c)).map_or(0, |n| n.selected_chain_len);
+        let lag = tip_len.saturating_sub(cursor_len);
+        let bound = dag.fold_depth_at(&tip).saturating_add(2 * crate::node::UNFOLDED_BODY_REACH_LEVELS);
+        (lag > bound).then_some(lag)
+    }
+
     /// Consecutive fold passes that held unfolded blocks and folded nothing.
     #[must_use]
     pub fn fold_no_progress_passes(&self) -> u64 {
@@ -1689,7 +1822,159 @@ impl Node {
     /// The selected chain moved below the fold root: `common` is the highest chain block whose record is
     /// already in the spine (the fork point). Everything folded after it leaves the spine and re-folds in
     /// the new canonical order from there — never from genesis.
+    /// ⭐ A-F139 (lane selfheal, 2026-11-25) — A RESUME RE-FOLDS LOCALLY: the canonical chain was resumed at the state before
+    /// fold step `step` (`restore_canon_ring`), so the fold rewinds to the block whose record is at ordinal `step − 1` and
+    /// re-folds the steps after it from this node's own blocks, by the one rewind rule a fork uses (`rewind_fold_to_common`:
+    /// it derives the prefix first and fails closed to the certified re-anchor, nothing evicted, when it cannot).
+    /// What protects it (AI RESISTANT b): the chain's own fold rule over blocks this node holds and checked; no peer's word.
+    /// SCALE: at most `REWIND_RETAIN` fold steps re-folded, once per boot; constant in the bonded set, the users and height.
+    fn resume_refold_from(&mut self, step: u64) {
+        if step > self.da_ord_top {
+            return; // the checkpoint itself stands before `step`: nothing to re-fold
+        }
+        let common = step
+            .checked_sub(1)
+            .and_then(|o| self.da_ord_rev_mem.get(&o).copied())
+            .and_then(|seq| self.block_for_record_addr(seq));
+        match common {
+            Some(b) => {
+                // DIGITAL-CASH-PRIVACY-REVIEWED: the chain's own fold ordinals only.
+                eprintln!("[resume] A-F139: re-folding from step {step} to {} from this node's own blocks", self.da_ord_top);
+                self.rewind_fold_to_common(b);
+            }
+            None => self.mark_spine_stale("A-F139: the fold step a resume re-folds from names no record this node holds — the certified re-anchor settles it"),
+        }
+    }
+
     pub(super) fn rewind_fold_to_common(&mut self, common: crate::block::BlockId) {
+        self.rewind_fold_inner(common, None);
+    }
+
+    /// ⛔ FOLD OVERHAUL — THE STEP'S UNDO DATA (BORROWED: Bitcoin Core's per-block undo record, written before a block connects).
+    /// The spine, the membership accumulator, the anchor spine and the tip transition as they stood at the cursor, captured
+    /// when a step begins, so rolling a stopped step back never has to RE-DERIVE them: the fork path's derivations (the
+    /// frontier ring, the per-ordinal accumulator maps) can fail on a fresh joiner and would send it to the certified
+    /// re-anchor for a step it simply has to retry. Four values, cloned once a step (a frontier is its peaks, ≤ 64 digests);
+    /// dropped when the step commits or rolls back.
+    fn step_base_at_cursor(&self) -> StepBase {
+        StepBase {
+            frontier: self.spend_frontier.clone(),
+            acc: self.served_membership_acc,
+            rh: self.root_history.clone(),
+            tip: (self.membership_tip_prev, self.membership_tip_root),
+        }
+    }
+
+    /// ⛔ FOLD OVERHAUL — A STOPPED STEP LEAVES NO TRACE (docs/FOLD-OVERHAUL-DEEP-AUDIT-20261126.md, DECIDED 2). Called at every
+    /// stop inside a step's batch: when at least one member of THIS step already applied, the step is disconnected back to the
+    /// cursor by the fork rewind's journals (bond, directory, peg objects, band door, respend, ordinals, rings, epoch anchors:
+    /// F-4) with the step's own undo data for the spine (`base`), so the spine is the cursor's prefix again and the next pass
+    /// applies the step whole. The rollback runs BEFORE the folded blocks are drained, so the members it un-folds keep their
+    /// bodies in the unfolded set. Returns what this pass committed (`folded` less the rolled-back members).
+    /// SCALE: at most one step's members (≤ the DAG's K) are journaled back; constant in the bonded set, the users and height.
+    /// AI RESISTANT: (b) code — a hostile peer can make a step wait (it already could), never leave it half applied.
+    fn stop_step(&mut self, folded: usize, step_folded: usize, base: Option<StepBase>) -> usize {
+        if step_folded > 0 {
+            if let Some(cursor) = self.fold_chain_tip.or_else(|| self.relay.dag().genesis()) {
+                // DIGITAL-CASH-PRIVACY-REVIEWED: a member count — no id, tag, cm, amount, key or owner.
+                eprintln!(
+                    "[fold-step] a step stopped after {step_folded} of its member(s) applied: rolled back to the cursor, it re-applies whole"
+                );
+                self.rewind_fold_inner(cursor, base);
+            }
+        }
+        self.drain_folded_unfolded_blocks();
+        folded.saturating_sub(step_folded)
+    }
+
+    /// ⛔ FOLD OVERHAUL — READY, THEN APPLY (DECIDED 1). Every wait a step's members can meet that depends only on what this node
+    /// HOLDS is judged for the whole step before any member moves: each member's record bytes (an idle block's empty record is a
+    /// function of its header, genesis has none), a shell's committed sets (`shell_sets_lacking`), the SH5b halt, a sealed credit
+    /// set's key. A blocked step asks for every missing piece at once, names its first blocker, and applies nothing. Waits that
+    /// depend on an earlier member's effect (band room, the anchor ring, the respend verdict) stay apply-time stops and roll back
+    /// (`stop_step`).
+    /// S-WAIT: each wait here is the same bounded wait the loop had (the by-id record lane, the shell-body lane and W1's
+    /// withhold, the operator's upgrade); the check only moves it before the step.
+    /// SCALE: one pass over ONE chain block's mergeset (≤ the DAG's K members, a consensus constant); constant in the bonded set,
+    /// the users and height.
+    pub(super) fn fold_step_ready(&mut self, step: &[crate::block::BlockId]) -> bool {
+        let genesis_seq = self.relay.dag().genesis().map(|g| Self::da_record_id_for_block(&g, 0));
+        let mut first: Option<(crate::block::BlockId, &'static str)> = None;
+        let mut asks: Vec<u64> = Vec::new();
+        let mut bodies: Vec<crate::block::BlockId> = Vec::new();
+        for b in step {
+            let seq = Self::da_record_id_for_block(b, 0);
+            let idle = self.relay.dag().get(b).is_some_and(|n| n.header.output_notes_root == Hash32::hash(&[]));
+            if !self.da_holds(seq) && !idle && genesis_seq != Some(seq) {
+                asks.push(seq);
+                first.get_or_insert((*b, "the block's record (its note payload) is not held here — wanted on the by-id record lane"));
+                continue;
+            }
+            if self.shell_sets_lacking(b).is_some_and(|(bond, credit, wide, evidence)| bond || credit || wide || evidence) {
+                bodies.push(*b);
+                first.get_or_insert((*b, "the block is a SHELL here (no body) — wanted on the shell-body lane"));
+                continue;
+            }
+            let fold_h = self.relay.dag().get(b).map_or(0, |n| n.blue_score);
+            if self.peg.deployments().halted_at(fold_h, self.params().reward_epoch_blocks).is_some() {
+                first.get_or_insert((*b, "an upgrade this release does not implement is in force (SH5b): update the node"));
+                continue;
+            }
+            if let Some(body) = self.unfolded_blocks.iter().find(|x| x.id() == *b) {
+                if crate::block::credit_set_present(&body.credit_set) && self.credit_key_of(body).is_none() {
+                    first.get_or_insert((*b, "the block's sealed credit set has no key here yet — wanted on the record lane"));
+                }
+            }
+        }
+        let Some((blocker, why)) = first else {
+            return true;
+        };
+        asks.into_iter().for_each(|s| self.want_held_block_record(s));
+        bodies.into_iter().for_each(|s| self.hold_for_unapplied_shell(s));
+        self.note_fold_wait_on(Some(blocker), why);
+        false
+    }
+
+    /// DB-274 P5 / §22 / PRIVATE SHARDING §2.2 / A-F114 U2 — what block `b`'s header commits that this node does not hold:
+    /// `(bond set, credit set, wide bytes, evidence or tag lane)`, each `true` when lacking. `None` when the block is not in
+    /// the DAG. ONE rule for the fold's ready check and its apply loop (code quality is soundness: one source of truth).
+    /// ROOT-LAYER: the fold is where these sets are applied; a shell folded without them splits this node's validator set,
+    /// peg ledger and canonical chain from every node that held the body (the measured reasons are on the loop's call site).
+    pub(super) fn shell_sets_lacking(&self, b: &crate::block::BlockId) -> Option<(bool, bool, bool, bool)> {
+        let n = self.relay.dag().get(b)?;
+        let (bond_root, credit_root, evidence_root, tags_root) =
+            (n.header.bond_set_root, n.header.credit_set_root, n.header.tag_evidence_root, n.header.nullifier_tags_root);
+        let empty = crate::block::da_sidecar_root_of(&[]);
+        let held = self.unfolded_blocks.iter().find(|x| x.id() == *b);
+        // §POLES: roots commit to REAL content; strip constant-shape cover before hashing.
+        let lacks = |root: Hash32, set: fn(&Block) -> &Vec<u8>| {
+            root != empty
+                && held
+                    .map(|x| {
+                        let s = set(x);
+                        let real = &s[..crate::block::sidecar_real_len(s)];
+                        crate::block::da_sidecar_root_of(real)
+                    })
+                    != Some(root)
+        };
+        // §22: the credit root binds the SEALED bytes whole (no key needed to tell a shell from a body).
+        let lacks_credit = credit_root != empty && held.map(|x| crate::block::credit_set_root_of(&x.credit_set)) != Some(credit_root);
+        // §22b: a held body whose sealed set names wide bytes it does not hold is INCOMPLETE — never a partial set applied (the
+        // DB-220 class; J12, docs/JOIN-FINALITY-DEEP-AUDIT-20261117.md: it ends by the certified re-anchor's carry, which ships
+        // every body with its sidecar, census S-CARRY-SIDECAR).
+        let lacks_wide = held.is_some_and(|x| {
+            self.credit_key_of(x).is_some_and(|k| crate::block::credit_set_wide_missing(&x.credit_set, Some(&k), &x.wide_objects))
+        });
+        let lacks_bond = lacks(bond_root, |x| &x.bond_set);
+        // PRIVATE SHARDING §2.2: every verdict at this step reads the block's own evidence (MEASURED 2026-11-06: a joined node
+        // folded a member without it, kept an output its peers revoked, and split the spine 96 steps later).
+        let lacks_evidence = evidence_root != empty && held.map(|x| crate::block::da_sidecar_root_of(&x.tag_evidence)) != Some(evidence_root);
+        // A-F114 U2: under the constant chain a block's ADMITTED tags step the canonical chain and only its body names them.
+        let lacks_tags = crate::canon_chain::canon_live() && held.is_none() && tags_root != crate::block::nullifier_tags_root_of(&[]);
+        Some((lacks_bond, lacks_credit, lacks_wide, lacks_evidence || lacks_tags))
+    }
+
+    fn rewind_fold_inner(&mut self, common: crate::block::BlockId, base: Option<StepBase>) {
         // Genesis is the floor: it may carry a record (a persisted node files one at ordinal 0) or none
         // (an in-memory node). Everything above the common block's record — or everything, when the
         // common block is a record-less genesis — leaves the spine.
@@ -1726,7 +2011,12 @@ impl Node {
         // ⛔ G2a: the anchor spine rewinds WITH the frontier — `root_history` through the fork point (one anchor per kept
         // record), from the same ring entry / re-fold base. Until G2a every fold reorg re-appended the re-folded records'
         // anchors on top of the evicted ones (pin-g2a-red.log: 14 anchors over 12 folded records).
-        let (prefix, acc_at_fork, rh_prefix) = if first_evict == 0 {
+        // ⛔ FOLD OVERHAUL: a step rollback hands its own undo data (`StepBase`, captured when the step began at this very
+        // cursor), so nothing is re-derived and no derivation can fail; a fork rewind (`base` None) derives as before.
+        let given = base.as_ref().map(|b| (b.frontier.clone(), b.acc, b.rh.clone()));
+        let (prefix, acc_at_fork, rh_prefix) = if let Some(g) = given {
+            g
+        } else if first_evict == 0 {
             (
                 crate::spend_frontier::PoseidonSpendFrontier::new(),
                 Self::MEMBERSHIP_GENESIS_ACC,
@@ -1770,17 +2060,34 @@ impl Node {
         // anything is evicted, failing closed like its siblings. Genesis files a record but never folds one, so
         // k ≤ 0 is the initial (zero) transition.
         let zero = usdm_decider::poseidon2_compress::zero_digest();
-        let tip_transition = if first_evict <= 1 {
+        let tip_transition = if let Some(b) = base.as_ref() {
+            b.tip
+        } else if first_evict <= 1 {
             (zero, zero)
         } else {
             let k = first_evict - 1;
+            // ⛔ RESUME-SAFE (lane livewedge, 2026-11-26) — THE TIP TRANSITION FROM THIS NODE'S OWN STATE. MEASURED (live 27780, boot
+            // 02:06 on ef2c3f42, log line 92283): the resume's re-fold (A-F139) rewound to the fold cursor and this derivation
+            // failed — "the membership tip transition at the fork point is not derivable here" — so the spine was marked stale at
+            // boot and the fold waited for a certified bundle no reachable peer could serve (its one peer an old build on another
+            // branch): a wait whose only exit is a peer (NOTHING HALTS). The per-ordinal accumulator map (`da_macc_fwd_mem`) dies
+            // with the process, and an open roots-run span closes the root door from its origin up. Both values are still this
+            // node's own: the accumulator after step k − 1 is kept in the persisted frontier ring (`spine_recent_frontiers`, v43,
+            // one entry per fold step), and the block root at k is the fold of the record this node holds
+            // (`da_block_root_at_ordinal_derive`, its own record bytes — the headers-first door guards roots SERVED by a peer in
+            // an open span, never ones this node derives from its own records). Only when neither is held does it fail closed to
+            // the certified re-anchor, as before.
+            // What protects it (AI RESISTANT b): values this node folded itself; no peer's word. SCALE: one ring scan (≤
+            // REWIND_RETAIN entries) and one 256-leaf fold.
+            let ring_acc = |o: u64| self.spine_recent_frontiers.iter().find(|(s, ..)| *s == o).and_then(|(_, _, a, _)| *a);
             let prev = match self.da_membership_acc_at_ordinal(k - 1) {
                 Some(a) => Some(a),
                 None if self.da_macc_first.is_some_and(|(o, _)| o == k) => self.da_macc_first.map(|(_, a)| a),
                 None if k == 1 => Some(Self::MEMBERSHIP_GENESIS_ACC),
-                None => self.derive_membership_acc_through(k - 1),
+                None => ring_acc(k - 1).or_else(|| self.derive_membership_acc_through(k - 1)),
             };
-            match (prev, self.da_block_root_at_ordinal(k)) {
+            let root = self.da_block_root_at_ordinal(k).or_else(|| self.da_block_root_at_ordinal_derive(k));
+            match (prev, root) {
                 (Some(p), Some(r)) => (p, r),
                 _ => {
                     self.mark_spine_stale(
@@ -2480,6 +2787,16 @@ impl Node {
     /// amount, key, owner or count — and emphatically not a which-item answer: it is asked of no tag.
     #[must_use]
     pub fn nf_copath_source_state(&self) -> (bool, bool) {
+        // ⭐ A-F117 — UNDER THE CONSTANT CHAIN the node holds no spent set (U1), so the tree's answer was `(false, false)` on
+        // EVERY node, the seed included: get_info told an operator that no node could judge a spend, and the netsim join
+        // check (`view_current`) could never pass under the switch (MEASURED main 9399276f, launch sim: `view false/false`
+        // on all six nodes, every joiner "did NOT follow"). The switch's own answer to the same question: the judged window
+        // is present (no window pull in progress) and agrees with this node's chain (every folded record stepped it, and its
+        // newest record is the chain's index). DIGITAL-CASH-PRIVACY-REVIEWED: two booleans over chain shape only.
+        if crate::canon_chain::canon_live() {
+            let present = self.canon_fill.is_none();
+            return (present, present && self.canon_missing == 0 && self.canon_recent.next_index() == self.canon_index);
+        }
         match self.sparse_work.as_ref() {
             Some(t) => (true, t.root_bytes() == self.sparse_acc.root_bytes()),
             None => (false, false),
@@ -3590,6 +3907,8 @@ impl Node {
             let returned = self.respend_tag_journal.remove(b).unwrap_or_default();
             let restored = tags_after_restore(&self.da_load_tags(at_seq), &returned, &idx);
             self.da_tags_replace(at_seq, restored);
+            // ⛔ A-F118: and then by the graft rule over the restored payload (`Node::refile_row_by_filing`)
+            let _ = self.refile_row_by_filing(at_seq);
             for (_, note) in &earlier_revoked {
                 if note.len() >= 32 {
                     let mut cm = [0u8; 32];
@@ -3646,6 +3965,9 @@ impl Node {
             let idx: Vec<usize> = revoked.iter().map(|(i, _)| *i).collect();
             let (kept, left) = tags_after_strip(&self.da_load_tags(seq), &idx);
             self.da_tags_replace(seq, kept);
+            // ⛔ A-F118: the stripped row's cover slots follow the graft rule over the regenerated payload, so every node
+            // (a replayer here, a joiner that adopts the stripped page) holds one function of the chain-bound filing
+            let _ = self.refile_row_by_filing(seq);
             if !left.is_empty() {
                 self.respend_tag_journal.insert(*b, left);
             }
@@ -3699,6 +4021,7 @@ impl Node {
             },
         };
         self.join_note_fold_step(b, ordinal, admitted.as_deref());
+        self.band_door.set_fixed_root(crate::canon_chain::canon_live()); // A-F114 U1
         if !self.band_door.note_fold_step(ordinal, b.0, admitted) {
             // DIGITAL-CASH-PRIVACY-REVIEWED: two counters of fold steps — no tag, cm, amount, key or owner.
             eprintln!(
@@ -4052,6 +4375,9 @@ impl Node {
         // DB-454 — the lease has lapsed `pointer_lease_lapses` times (0 = still within the owner's lease). Only the backup
         // taker for this lapse count proves the open pointer step, so a lapse makes ONE node prove it, not every holder.
         let pointer_lease_expired = pointer_lease_lapses > 0;
+        if self.band_door.fixed_root() {
+            return Err("the band is fixed-root under the constant chain: no step is proven"); // A-F114 U1
+        }
         let pointer = self.band_door.pointer().ok_or("the door has no pointer")?;
         // a door STALE past a lag-cap gap still holds every awaiting step BEFORE the gap (nothing at or past it is
         // noted), and those stay valid to prove: the band advances up to the gap, and only a certified re-adopt crosses
@@ -4210,7 +4536,11 @@ impl Node {
     pub(super) fn band_drain(&mut self) {
         let ring_len = self.anchor_ring_len();
         let refused_before = self.band_door.copies_refused;
-        let applied = self.band_door.drain(self.sparse_work.as_mut(), ring_len);
+        // ⭐ A-F114 U1 — under the constant chain the band runs fixed-root and advances no view (none is held)
+        let fixed = crate::canon_chain::canon_live();
+        self.band_door.set_fixed_root(fixed);
+        let held = if fixed { None } else { self.sparse_work.as_mut() };
+        let applied = self.band_door.drain(held, ring_len);
         self.join_sync_band();
         self.band_steps_applied = self.band_steps_applied.saturating_add(applied.len() as u64);
         if !applied.is_empty() {

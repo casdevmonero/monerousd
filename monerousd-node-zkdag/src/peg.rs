@@ -172,8 +172,12 @@ pub struct PegLedger {
     reserve_hwm_commit: crate::spend_frontier::Digest4,
     // Positions CLOSED by the liquidation door — the per-position replay set (§9.6 Q4's set, kept DISTINCT from
     // `spent_burns` so a liquidation key can never be mistaken for a real USDm burn by
-    // [`PegLedger::is_burned`]/`authorize_reserve_release`). Hashes, not values. Same shape + same growth class as
-    // the existing `released` set.
+    // [`PegLedger::is_burned`]/`authorize_reserve_release`). Hashes, not values.
+    // O1-FOOTPRINT-REVIEWED: EMPTY from the network upgrade on (read 2026-11-22, lane speed5): every writer inserts only behind
+    // `!crate::params::canon_live()` — a liquidation close (checked against the PSM's state, `liquidation_close_id_now`), a
+    // theft booking (the theft counter and the already-slashed offenders, `book_theft_chained`), a theft repayment (the state
+    // its `repay_id` names, `repay_theft_confidential`) and the bundle adopt (`adopt_one_time_ids`); the fold's undo journal
+    // only puts back what one step took. Kept as a field so a ledger encoded before the upgrade still decodes.
     #[serde(default)]
     liquidated: HashSet<[u8; 32]>,
     // ⭐ LIQUIDATION SPEC §10 — each PSM's STABILITY POOL as committed words `(T, P, S)` and its public epoch. Absent ⇒ the
@@ -4196,7 +4200,11 @@ impl PegLedger {
                     self.released.insert(*id);
                 }
                 _ => {
-                    self.liquidated.insert(*id);
+                    // A-F114: from the network upgrade no writer keeps a liquidation, theft or repayment id (each is refused by
+                    // the state it must name), so an adopted ring installs none either
+                    if !crate::params::canon_live() {
+                        self.liquidated.insert(*id);
+                    }
                 }
             }
         }
@@ -6844,6 +6852,42 @@ impl PegLedger {
     /// CHAIN-OBJECT: the signatures are the `Class::PegOut` object's own, carried by the block; this reads who signed it
     /// against the chain-derived bonded set and moves nothing.
     #[must_use]
+    /// ⭐ A-F114 — A PAYOUT'S RELEASE, applied at the fold (`Class::ReleaseConfirm`, from the network upgrade): the paying
+    /// vault's threshold over [`crate::release_confirm_tx::release_statement`] (the cost's rule, [`Self::burn_signed`]), then
+    /// EVERY named burn must be OWED (`spent_burns` holds it and no release has claimed it), or nothing moves; then each leaves
+    /// the owed book, so `spent_burns` holds only unpaid releases. The undo journal diffs the sets, so a rewind puts them
+    /// back. `ConfidentialRedeemed` when applied.
+    /// CHAIN-OBJECT: the `Class::ReleaseConfirm` object the block carries.
+    pub fn release_confirm(
+        &mut self,
+        ledger: u32,
+        released: &[[u8; 32]],
+        swept: &[[u8; 32]],
+        msg: &[u8],
+        quorum: &dyn BondQuorum,
+        verifier: &dyn PqVerifier,
+        attestors: &[MintAttestor],
+    ) -> PegOutcome {
+        if !Self::burn_signed(ledger_vault(ledger), quorum, verifier, msg, attestors) {
+            return PegOutcome::InsufficientThreshold;
+        }
+        if (released.is_empty() && swept.is_empty())
+            || released.iter().any(|nf| !self.release_pending(nf))
+            || swept.iter().any(|d| !self.confidential_deposit_ids.contains(d))
+        {
+            return PegOutcome::Replay; // a burn it names is not owed, or a deposit is not minted: replayed, or never here
+        }
+        for nf in released {
+            self.spent_burns.remove(nf);
+            self.released.remove(nf);
+        }
+        // A-F114: a swept deposit leaves the minted book (it holds a deposit only from its mint to its sweep)
+        for d in swept {
+            self.confidential_deposit_ids.remove(d);
+        }
+        PegOutcome::ConfidentialRedeemed
+    }
+
     pub fn burn_signed(vault: u32, quorum: &dyn BondQuorum, verifier: &dyn PqVerifier, msg: &[u8], attestors: &[MintAttestor]) -> bool {
         if vault >= quorum.vault_count() {
             return false;
@@ -7248,6 +7292,27 @@ impl PegLedger {
     /// tally and for every bonded signer, so a signer and the door can never sign/check different bytes. `None` when the
     /// PSM is unregistered or has no admissible rule (nothing to liquidate).
     #[must_use]
+    /// ⭐ A-F114 — THE ONE CLOSE ID of a liquidation of PSM `asset_id` NOW: `blake3("USDMD-LIQ-CLOSE-ID-v1" ‖ asset ‖ the
+    /// current mark's epoch ‖ the PSM's current reserve and minted commitments)`, and that mark epoch. The trigger builds a
+    /// close with it (`Node::due_liquidation`) and the door checks a close against it (`liquidate`), both from the network
+    /// upgrade, so a close is valid only for the PSM's state as the chain holds it. A replay (the state moved, so its id and
+    /// its legs no longer match) and a reused id over the advanced state are both refused by state, with no set of closed ids
+    /// held (`liquidated` grew with every close). A partial close followed by a second close at one mark stays possible:
+    /// the second has the second state's id.
+    #[must_use]
+    pub fn liquidation_close_id_now(&self, asset_id: u32) -> Option<([u8; 32], u64)> {
+        let (reserve, minted, _) = self.psm_commits(asset_id)?;
+        let mark_epoch = self.price_mark_for(asset_id)?.epoch_id;
+        let mut id = blake3::Hasher::new();
+        id.update(b"USDMD-LIQ-CLOSE-ID-v1");
+        id.update(&asset_id.to_le_bytes());
+        id.update(&mark_epoch.to_le_bytes());
+        for x in reserve.iter().chain(minted.iter()) {
+            id.update(&x.to_le_bytes());
+        }
+        Some((*id.finalize().as_bytes(), mark_epoch))
+    }
+
     pub fn liquidation_attest_msg(&self, h: &crate::liquidation_tx::LiquidationHeader) -> Option<Vec<u8>> {
         let (reserve, minted, _) = self.psm_commits(h.asset_id)?;
         let rule = self.liquidation_rule(h.asset_id)?;
@@ -7398,7 +7463,12 @@ impl PegLedger {
         //   3. SO IT STAYS, and it is the cheap check on purpose: it runs before the threshold verify and before
         //      the WHIR verify, so a flood of replays costs a hash and a set lookup, never a proof.
         let key = liquidation_key(h.epoch_id, h.asset_id, &h.position_id);
-        if self.liquidated.contains(&key) {
+        if crate::params::canon_live() {
+            // A-F114: the close must be THE close of the PSM's state as the chain holds it now (no set is read)
+            if self.liquidation_close_id_now(h.asset_id) != Some((h.position_id, h.epoch_id)) {
+                return PegOutcome::Replay;
+            }
+        } else if self.liquidated.contains(&key) {
             return PegOutcome::Replay;
         }
         // (3) Q2(a) — the >=2/3 bonded ML-DSA threshold over the v2 message, which binds the state the legs were proven
@@ -7438,7 +7508,9 @@ impl PegLedger {
         } else {
             self.set_pool_words(h.asset_id, moved);
         }
-        self.liquidated.insert(key);
+        if !crate::params::canon_live() {
+            self.liquidated.insert(key); // A-F114: from the upgrade the close id is checked against state instead
+        }
         self.applied_ids.push((key, 3));
         PegOutcome::Liquidated
     }
@@ -9220,6 +9292,67 @@ mod tests {
         assert_eq!(untouched.dsol_tokens().parts(), after.dsol_tokens().parts(), "⛔ a refused undo changed the registry");
     }
 
+    /// ⛔⛔ A-F114 — A PAYOUT'S RELEASE TAKES OWED BURNS OUT OF THE OWED BOOK, ON BOTH PARTIES ALIKE, AND ONLY ONCE
+    /// (`Class::ReleaseConfirm`, `PegLedger::release_confirm`). Twenty-four custodians in two vaults (16 + 8); both parties
+    /// hold the same two owed burns (each folded the burn from the same chain). CALIBRATION: six of vault 1's eight sign the
+    /// release, and each party folds it: both burns leave `spent_burns` on both, and both books agree. REFUSED: under two
+    /// thirds of the vault, or another vault's quorum (FORGE); a release naming a burn that is not owed (it would have
+    /// released a burn that never happened); the same release folded again (REPLAY): its burns are no longer owed.
+    #[test]
+    fn a_f114_a_payout_release_takes_owed_burns_out_of_the_owed_book_on_both_parties_and_only_once() {
+        let (custodians, _vs_a, mut a) = vault_fixture(24);
+        let (vs, mut b) = vault_party(&custodians);
+        let (v0, v1) = (vault_members(&custodians, &vs, 0), vault_members(&custodians, &vs, 1));
+        let ledger = vault_ledger(1, NATIVE_PEG_ASSET_ID);
+        let (b1, b2, never) = ([0x11u8; 32], [0x22u8; 32], [0x33u8; 32]);
+        for p in [&mut a, &mut b] {
+            assert!(p.force_spent_burn_for_audit(b1) && p.force_spent_burn_for_audit(b2), "PRECONDITION: both burns are owed");
+        }
+        let txid = [0x71u8; 32];
+        let burns = vec![b1, b2];
+        let msg = crate::release_confirm_tx::release_statement(ledger, &txid, &burns, &[]);
+        let own6 = sign_all(&v1[..6], &msg);
+        // FORGE
+        assert_eq!(b.release_confirm(ledger, &burns, &[], &msg, &vs, &MlDsaVerifier, &sign_all(&v1[..5], &msg)), PegOutcome::InsufficientThreshold, "⛔ FORGE: under two thirds of the vault released burns");
+        assert_eq!(b.release_confirm(ledger, &burns, &[], &msg, &vs, &MlDsaVerifier, &sign_all(&v0[..11], &msg)), PegOutcome::InsufficientThreshold, "⛔ FORGE: another vault's quorum released vault 1's burns");
+        // a burn that is not owed: nothing moves, on either burn
+        let mixed = vec![b1, never];
+        let mmsg = crate::release_confirm_tx::release_statement(ledger, &txid, &mixed, &[]);
+        assert_eq!(b.release_confirm(ledger, &mixed, &[], &mmsg, &vs, &MlDsaVerifier, &sign_all(&v1[..6], &mmsg)), PegOutcome::Replay, "⛔ a release named a burn that is not owed");
+        assert!(b.release_pending(&b1), "⛔ a refused release moved an owed burn");
+        // CALIBRATION, on both parties from the same bytes
+        let before = (a.spent_burn_count_for_audit(), b.spent_burn_count_for_audit());
+        for p in [&mut a, &mut b] {
+            assert_eq!(p.release_confirm(ledger, &burns, &[], &msg, &vs, &MlDsaVerifier, &own6), PegOutcome::ConfidentialRedeemed, "CALIBRATION: two thirds of the vault release its own payout's burns");
+            assert!(!p.release_pending(&b1) && !p.release_pending(&b2), "⛔ a folded release left a burn owed");
+        }
+        assert_eq!(a.spent_burn_count_for_audit(), b.spent_burn_count_for_audit(), "⛔ two parties disagree on the owed book after one release");
+        assert_eq!(a.spent_burn_count_for_audit(), before.0 - 2, "the owed book shrank by exactly the two burns paid");
+        // REPLAY on both
+        for p in [&mut a, &mut b] {
+            assert_eq!(p.release_confirm(ledger, &burns, &[], &msg, &vs, &MlDsaVerifier, &own6), PegOutcome::Replay, "⛔ REPLAY: one payout released its burns twice");
+        }
+        // A SWEEP: a minted deposit leaves the minted book on both parties, and only once; an unminted one is refused
+        let (dep, unminted) = ([0x44u8; 32], [0x55u8; 32]);
+        for p in [&mut a, &mut b] {
+            p.adopt_one_time_ids(&[(dep, 0)]);
+            assert!(p.deposit_minted(&dep), "PRECONDITION: the deposit is minted");
+        }
+        let sweep_tx = [0x72u8; 32];
+        let smsg = crate::release_confirm_tx::release_statement(ledger, &sweep_tx, &[], &[dep]);
+        let sown6 = sign_all(&v1[..6], &smsg);
+        let bad = crate::release_confirm_tx::release_statement(ledger, &sweep_tx, &[], &[unminted]);
+        assert_eq!(b.release_confirm(ledger, &[], &[unminted], &bad, &vs, &MlDsaVerifier, &sign_all(&v1[..6], &bad)), PegOutcome::Replay, "⛔ a sweep named a deposit that was never minted");
+        for p in [&mut a, &mut b] {
+            assert_eq!(p.release_confirm(ledger, &[], &[dep], &smsg, &vs, &MlDsaVerifier, &sown6), PegOutcome::ConfidentialRedeemed, "CALIBRATION: two thirds of the vault confirm its own sweep");
+            assert!(!p.deposit_minted(&dep), "⛔ a swept deposit stayed in the minted book");
+        }
+        assert_eq!(a.confidential_deposit_id_count_for_audit(), b.confidential_deposit_id_count_for_audit(), "⛔ two parties disagree on the minted book after one sweep");
+        for p in [&mut a, &mut b] {
+            assert_eq!(p.release_confirm(ledger, &[], &[dep], &smsg, &vs, &MlDsaVerifier, &sown6), PegOutcome::Replay, "⛔ REPLAY: one sweep closed its deposit twice");
+        }
+    }
+
     /// ⛔⛔ SAFE AT SCALE — A VAULT'S RESERVE FALLS BY A FOREIGN FEE ONLY BY PROOF AND ITS OWN QUORUM (`Class::ReserveCost`).
     /// Twenty-four custodians, two vaults (16 + 8); vault 1 holds a reserve of 30,000,000. The custodian's ledger A
     /// proves; the peer's ledger B — its own validator set and ledger — judges and applies.
@@ -10336,14 +10469,39 @@ impl PegLedger {
     /// booked for the ladder ONCE per theft (`key`: `theft_tx::theft_loss_key`, recorded in the one-time set). `false` when the
     /// loss was already booked or would pass its u64 bound (the slash itself stands either way).
     pub fn book_theft(&mut self, slashed: u128, loss_sats: u64, key: &[u8; 32]) -> bool {
+        self.book_theft_chained(slashed, loss_sats, key, false, false)
+    }
+
+    /// [`Self::book_theft`], told whether this theft CLOSED an open decoy (`close_decoy_by_theft`). ⭐ A-F114: from the network
+    /// upgrade a decoy theft's loss is booked once by the DECOY BOOK itself (the first theft closes the decoy, so a second
+    /// certificate for it closes nothing and books nothing), and its key is not added to `liquidated`. A theft that closed no
+    /// decoy (a reserve-move statement) keeps the key set: OWED, its own chained state.
+    /// `skip_loss`: the slashed SAT still enters the pot (conservation), and no loss is booked (a second certificate for a
+    /// decoy already closed, under the upgrade).
+    pub fn book_theft_chained(&mut self, slashed: u128, loss_sats: u64, key: &[u8; 32], closed_decoy: bool, skip_loss: bool) -> bool {
         self.repayment_sat_pot = u64::try_from(u128::from(self.repayment_sat_pot).saturating_add(slashed)).unwrap_or(u64::MAX);
-        if self.liquidated.contains(key) {
+        if skip_loss {
+            return false;
+        }
+        // ⭐ A-F114 (user 2026-11-22: "no node action should cause any growth on any axis of node operation"): from the network
+        // upgrade EVERY theft is booked without a kept key. A decoy theft is booked once by the decoy book (`closed_decoy`). Any
+        // theft certificate binds the theft counter (`Node::theft_statement_seq`, stepped by every theft applied), so the same
+        // certificate never applies twice; a second certificate for one theft names offenders the first already slashed, so it
+        // slashes nothing and is refused before any loss is booked (`theft_tx` apply: `burned == 0`). What is left needs a
+        // slashed key to bond AGAIN once its slashed mark is pruned (every row it held settled) and ≥2/3 of the bonded weight to
+        // sign a theft their own nodes do not derive: the re-slashed new bond enters the repayment pot first. A key set never
+        // stood against a dishonest two-thirds (they can sign a fresh theft naming any offenders); it is not kept.
+        let _ = closed_decoy; // before the upgrade only a decoy theft was chained; the key path below is the old chain's
+        let chained = crate::params::canon_live();
+        if !chained && self.liquidated.contains(key) {
             return false;
         }
         match self.theft_loss_open_sats.checked_add(loss_sats) {
             Some(v) => {
                 self.theft_loss_open_sats = v;
-                self.liquidated.insert(*key);
+                if !chained {
+                    self.liquidated.insert(*key);
+                }
                 true
             }
             None => false,
@@ -10476,7 +10634,12 @@ impl PegLedger {
         attestors: &[MintAttestor],
     ) -> PegOutcome {
         let key = h.repay_id;
-        if self.liquidated.contains(&key) {
+        // ⭐ A-F114 (user 2026-11-22: "no node action should cause any growth on any axis of node operation"): from the
+        // network upgrade a repayment is refused as a replay by the STATE it must name — `repay_id` must equal
+        // `theft_repay_id()` (checked in `verify_theft_repayment_legs`), a hash of the reserve and minted commitments, the pool
+        // words and the open loss, which this repayment moves (`loss_sats > 0` lowers the open loss, the seize leg moves the
+        // reserve to a fresh commitment) — so no id is kept for it.
+        if !crate::params::canon_live() && self.liquidated.contains(&key) {
             return PegOutcome::Replay;
         }
         let msg = self.theft_repay_attest_msg(h);
@@ -10515,7 +10678,9 @@ impl PegLedger {
             self.haircut_remainder_atomic = haircut;
             self.haircut_events = self.haircut_events.saturating_add(1);
         }
-        self.liquidated.insert(key);
+        if !crate::params::canon_live() {
+            self.liquidated.insert(key); // A-F114: from the upgrade the state it moved refuses a second repayment instead
+        }
         self.applied_ids.push((key, ONE_TIME_THEFT_REPAY));
         PegOutcome::TheftRepaid
     }
@@ -10680,8 +10845,10 @@ impl PegLedger {
         carrying_tick: u64,
         quorum: &dyn BondQuorum,
         verifier: &dyn PqVerifier,
+        // A-F114: the decoy batch counter the statement must bind (`DecoyBatchTx::statement`), `None` before the upgrade
+        seq: Option<u64>,
     ) -> Result<(), &'static str> {
-        let msg = crate::decoy_tx::DecoyBatchTx::statement(&t.payout_txid, &t.decoys, t.fee_usdm);
+        let msg = crate::decoy_tx::DecoyBatchTx::statement(&t.payout_txid, &t.decoys, t.fee_usdm, seq);
         if !threshold_ok(quorum, verifier, &msg, &t.attestors_list()) {
             return Err("no ≥2/3 of the bonded weight signs this decoy batch");
         }
@@ -10723,7 +10890,8 @@ impl PegLedger {
     /// §BR-8: a theft certificate naming an unreturned decoy (`decoy_tx::decoy_theft_statement`) closes its obligation — the
     /// slash and the §BR-3 17.5 repayment take its place. Only a certificate that names the decoy's OWN validator among its
     /// offenders closes it (a certificate slashing someone else leaves the obligation open on its holder).
-    pub fn close_decoy_by_theft(&mut self, statement: &[u8], offenders: &[[u8; 32]]) {
+    /// `true` when it closed an open decoy (`book_theft_chained` books a decoy theft's loss by that).
+    pub fn close_decoy_by_theft(&mut self, statement: &[u8], offenders: &[[u8; 32]]) -> bool {
         let hit = self
             .open_decoys
             .iter()
@@ -10731,7 +10899,9 @@ impl PegLedger {
             .map(|(k, _)| *k);
         if let Some(k) = hit {
             self.open_decoys.remove(&k);
+            return true;
         }
+        false
     }
 }
 
@@ -10811,6 +10981,31 @@ mod theft_split_tests {
             }
         }
         assert!(theft_split(u64::MAX, u128::MAX, None, 0, 0).is_none(), "a loss past the u64 bound is refused, never wrapped");
+    }
+
+    /// ⭐ A-F114 (user 2026-11-22: "make sure you fix liquidated as well. no node action should cause any growth on any axis of
+    /// node operation") — under the switch no theft booking and no adopted one-time ring leaves an id in `liquidated`: the
+    /// theft counter, the already-slashed offenders and the state a repayment names refuse a second use instead. Two ledgers
+    /// apply the same chain (the producer's and a peer's) and must AGREE on the repayment words, with neither keeping an id.
+    #[test]
+    fn af114_under_the_switch_no_theft_or_adopted_id_grows_the_liquidated_set_on_either_party() {
+        if !crate::params::canon_live() {
+            return; // the old chain keeps its key set (this pin is the switch's)
+        }
+        let (mut a, mut b) = (PegLedger::new(15_000), PegLedger::new(15_000));
+        for i in 0..200u64 {
+            let key = *blake3::hash(&i.to_le_bytes()).as_bytes();
+            for p in [&mut a, &mut b] {
+                assert!(p.book_theft(10, 1_000, &key), "a theft's loss books");
+                p.adopt_one_time_ids(&[(key, ONE_TIME_LIQUIDATION), (key, ONE_TIME_THEFT_REPAY)]);
+            }
+        }
+        for (who, p) in [("A", &a), ("B", &b)] {
+            assert!(p.liquidated.is_empty(), "⛔ {who}: under the switch a theft or an adopted id left {} id(s) in `liquidated`", p.liquidated.len());
+        }
+        assert_eq!(a.theft_repay_words(), b.theft_repay_words(), "⛔ the two parties' repayment words differ");
+        assert_eq!(a.theft_repay_words()[0], 2_000, "every slash moved its SAT into the repayment pot");
+        assert_eq!(a.theft_repay_words()[1], 200_000, "every booking moved the open loss");
     }
 }
 

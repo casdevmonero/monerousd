@@ -11,6 +11,10 @@
 //! * [`isa`]  the verifier row: column map, instruction set, native executor.
 //! * [`vm`]   its constraint, its proof on the chained committed door, and the program claim.
 
+pub mod absence_u; // A-F114: the universal merge program (one claim at any depth, child constants bound)
+pub mod sorted_span; // PERFECT-CHAIN B1: a span's sorted tag tree and its low-leaf absence (docs/PERFECT-CHAIN-PLAN-20261122.md §7)
+pub mod absence_ssa; // A-F114 2a: the sound absence carrier (hash-chain leaf, merge verified in circuit)
+pub mod prod_perm_ssa; // A-F114 2b: the production Poseidon2 as multiply-adds (the chain's compress in circuit)
 pub mod door_ssa; // the SSA row: a carrier's committed / chained door as a program
 pub mod fold_claims; // the SSA row: many program claims folded into one by a sumcheck in circuit
 pub mod gate_eval;

@@ -431,9 +431,10 @@ impl Node {
     /// `FinalityTracker::finalized_height` can never disagree. The DAG treats a floor it does not hold as
     /// no floor at all, so this is safe to call unconditionally — see [`Dag::selected_tip`].
     pub(super) fn sync_finality_floor_into_dag(&mut self) {
-        // SPEED L7: the floor follows the higher of the chain's finality and this node's observed one (`user_final_block`);
-        // honest floors lie on one chain by quorum overlap, and with the lever off the two are the same block.
-        let floor = self.user_final_block();
+        // ⭐⭐⭐ FINALITY BY WORK: the floor is the work-final block, refreshed here from the selected chain (no vote moves it)
+        self.refresh_work_final();
+        // ⭐⭐⭐ figure 2: the fork choice floors at the DEEP final block, never the fast one users read
+        let floor = self.floor_final_block();
         // Votes arrive far more often than finality ADVANCES (a stride-aligned checkpoint every few
         // blocks, versus one vote per validator per second), so read the installed floor first and take
         // the `&mut` borrow only when it actually changed.
@@ -1757,6 +1758,8 @@ impl Node {
                 // §BR: and the chain's §BR words (fee pools, miner quarter, bonders' index, set-aside, stake snapshot and
                 // paid-out total, deployments, attestations), so a jumper pays and refuses exactly what every peer does.
                 self.peg.adopt_certified_br(&state.peg_br);
+                // ⭐ A-F114 U2: and the canonical chain the state stands on, its window pulled before the fold passes the anchor
+                self.adopt_certified_canon(state.canon);
                 // IonSwap pools: the ledger just took a contract-state root (and a pool count) this node's own fold did
                 // not produce. Its pools cache describes the chain it stood on BEFORE the jump: a leaf it holds may
                 // have moved since, and the refill's rule "a leaf held is the newer word" would keep the stale one for

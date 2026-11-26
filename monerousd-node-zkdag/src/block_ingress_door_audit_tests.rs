@@ -363,6 +363,7 @@ fn empty_nullifier_snapshot() -> NullifierSnapshot {
         peg_br: Default::default(),
         nf_fold_base_words: Default::default(),
         nf_fold_span: Vec::new(),
+        canon: Default::default(),
         peg_price_marks: Vec::new(),
         bond_heights: Vec::new(),
         bond_locked_notes: Vec::new(),

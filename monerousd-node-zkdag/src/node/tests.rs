@@ -18,6 +18,19 @@ use crate::mempool::PqTx;
 /// blocks parked before the re-anchor were re-served 256 times, each `AlreadyBuffered`, and the next block parked.
 /// A page that grafts nothing is no progress: the loop ends there.
 pub(crate) fn page_above_anchor(joiner: &mut Node, server: &Node) {
+    // ⛔ A FIXTURE NEVER FALLS BEHIND THE CODE (2026-11-26): under the constant chain an adopter folds NOTHING until it has pulled its
+    // canonical window from a peer, run by run, each record checked link by link back from the vouched end (A-F114 U2; the runtime's
+    // `canon_fill_ask` lane, node_runtime.rs). This in-process follow lane did the block paging and not the pull, so every fixture
+    // joiner sat with its fold returning 0 ("the canonical window is being pulled") and the joining pins of
+    // canonical_record_fold_tests read a joiner that never folded (db265: 16 blocks the origin numbered, None on the joiner).
+    // The pull is the runtime's own: the joiner's ask, the server's serve, the joiner's take, until the joiner asks for nothing.
+    for _ in 0..256 {
+        let Some(req) = joiner.canon_fill_ask() else { break };
+        let ans = server.canon_page_serve(&req);
+        if ans.len() <= 8 || !joiner.canon_page_take(&ans[8..]) {
+            break; // the server holds no such run, or the page was refused: the joiner keeps asking as the runtime would
+        }
+    }
     let ts = server.dag().get(&server.selected_tip().expect("tip")).expect("header").header.timestamp + 500;
     let dropped = joiner.relay_drop_orphans_the_dag_cannot_attach();
     let tip = joiner.selected_tip().expect("the adopted tip");
@@ -2119,4 +2132,31 @@ fn af109_a_young_chains_falling_difficulty_does_not_read_degraded() {
     // the same shape over a FULL window is still judged by the hash arm (A-F108 holds)
     let full: Vec<crate::dag::DaaSample> = (0..16u64).map(|i| ((15 - i) * 1_364, 1_000u128 + 2_500 * i as u128 / 15, 100 - i)).collect();
     assert!(Node::view_quality_of(&full, target, 16).degraded, "a full window whose hash fell is still degraded");
+}
+
+/// ⭐⭐⭐ FINALITY BY WORK PIN (docs/LIVE-FINALITY-AND-FOLD-WEDGE-DEEP-AUDIT-20261125.md, user 2026-11-25: "replace it with something
+/// faster and better that doesnt rely on votes") — FINALITY MOVES WITH THE CHAIN, NO VOTER, NEVER ABOVE THE FOLD: a lone node with no
+/// bonded voter producing and folding 60 blocks reports a finalized height that (1) is above 0 once the chain is FINAL_DEPTH steps
+/// long, (2) never falls, (3) is never above the fold cursor, and (4) is the floor of its fork choice. RED before: the vote tally read 0
+/// for ever on a chain whose voters could not form 2/3 (the live testnet, 649 of 649 probes).
+#[test]
+fn work_finality_moves_with_the_chain_with_no_voter_and_never_above_the_fold() {
+    let mut a = testnet_party_folding_at_tip();
+    let step = a.params().target_spacing_ms.max(1);
+    let mut ts = 5_000u64;
+    let mut last = 0u64;
+    for i in 0..60u64 {
+        ts += step;
+        a.produce(ts, Hash32::hash(&i.to_le_bytes()), Hash32::hash(b"work-final")).expect("produces");
+        let _ = a.fold_canonical_records();
+        let f = a.finalized_height();
+        assert!(f >= last, "⛔ the finalized height fell: {last} → {f}");
+        assert!(f <= a.fold_cursor_blue(), "⛔ final {f} above the fold cursor {}", a.fold_cursor_blue());
+        last = f;
+    }
+    assert!(last > 0, "⛔ no block final after 60 blocks with no voter (FINAL_DEPTH {})", super::FINAL_DEPTH);
+    // ⭐⭐⭐ two figures: the fork choice floors at the DEEP final block, and the fast figure users read is never below it
+    assert_eq!(a.relay.dag().finality_floor(), a.floor_final_block(), "⛔ the fork choice does not floor at the deep final block");
+    let floor_h = a.floor_final_block().and_then(|b| a.relay.dag().get(&b).map(|n| n.blue_score)).unwrap_or(0);
+    assert!(a.finalized_height() >= floor_h, "⛔ the user-facing final {} sits below the no-reorg floor {floor_h}", a.finalized_height());
 }

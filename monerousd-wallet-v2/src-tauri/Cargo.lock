@@ -3250,7 +3250,7 @@ dependencies = [
 
 [[package]]
 name = "monerousd-wallet-v2"
-version = "0.3.4"
+version = "0.3.5"
 dependencies = [
  "arti-client",
  "bip39",
@@ -3288,6 +3288,7 @@ dependencies = [
  "tokio-util",
  "tor-rtcompat",
  "ureq",
+ "usdm-agg",
  "usdm-decider",
  "usdmd-node",
  "webbrowser",

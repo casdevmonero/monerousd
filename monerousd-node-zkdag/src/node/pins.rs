@@ -9841,6 +9841,163 @@ fn db223_the_member_carrier_verifier_admits_only_its_own_spend_at_a_ring_anchor(
     assert!(!n.member_carrier_gate(&bare), "⛔ a member tuple with no carrier was admitted");
 }
 
+/// ⭐⭐ A-F114 (B′) — UNDER THE CONSTANT CHAIN A SEND'S WRAPPER IS ITS MEMBERSHIP, AT THE POOL. With the switch on for this
+/// thread (`params::set_canon_live_for_test`), sixteen canonical records enter the node's window (the first makes the note),
+/// and the note's REAL span carrier and BLINDED wrapper are proven for the spend's own `(nf, lc)`
+/// (`canon_chain::canon_spend_input`). CALIBRATION: the wrapper at a record end the window holds admits the spend through
+/// `member_carrier_verdict`. Refused: a spend with no wrapper; a member leg beside the wrapper (one encoding); a spend with
+/// another leaf commitment (the wrapper speaks for another note); the nullifier carried by a record after the end. An end the
+/// window does not hold is `AnchorNotHeld` (a retry, never a pass).
+#[test]
+fn af114_under_the_switch_a_send_is_admitted_by_its_wrapper_and_a_member_leg_is_refused() {
+    crate::params::set_canon_live_for_test(Some(true));
+    let lanes = usdm_decider::poseidon2_compress::lanes_of;
+    let cm = |v: u64| crate::spend_frontier::leaf_to_cm_bytes(lanes(&[v, 41, 43]));
+    let mut n = dd_node();
+    let need = n.mempool().required_stamp_bits();
+    let nf = cm(601);
+    let (o0, o1) = (cm(611), cm(612));
+    let mut tx = grind_tx(b"af114-bprime-spend", 10, vec![Hash32(nf), canon_nf_for_test(b"af114-bprime-claim")], need);
+    let pq = crate::cover::PQ_NOTE_BYTES;
+    let mut outs = vec![0u8; 2 * pq];
+    outs[..32].copy_from_slice(&o0);
+    outs[pq..pq + 32].copy_from_slice(&o1);
+    tx.output_notes = outs;
+    // the input note's leaf and the spend's leaf commitment, `P(P(leaf, nf), lc_blind)` (the spend carrier's own spelling)
+    let leaf = lanes(&[778, 1, 2]);
+    let binder = crate::spend_frontier::cm_bytes_to_root(&nf).expect("canonical nullifier");
+    let c = usdm_decider::poseidon2_compress::compress;
+    let lc = c(&c(&leaf, &binder), &crate::spend_frontier::TEST_LC_BLIND);
+    tx.membership_leaf_commit = crate::spend_frontier::leaf_to_cm_bytes(lc);
+    assert!(Node::is_usdm_spend_tx(&tx), "PRECONDITION: the fixture is a USDm spend");
+    // sixteen records of the one shape; the first outputs the note
+    let start = crate::canon_chain::genesis();
+    let mut chain = start;
+    let mut recs = Vec::new();
+    for i in 0..16u64 {
+        let leaves: Vec<crate::spend_frontier::Digest4> = if i == 0 { vec![leaf] } else { vec![lanes(&[9_000 + i, 7])] };
+        let tags: Vec<[u8; 32]> = vec![cm(7_000 + i)];
+        recs.push(crate::canon_chain::record(&tags, &leaves, i));
+        chain = crate::canon_chain::record_step(&chain, &tags, &leaves, i);
+        n.canon_recent.push(i, chain, std::sync::Arc::new(tags), std::sync::Arc::new(leaves), 0);
+    }
+    let (tl, to) = (crate::canon_chain::tag_lanes, crate::canon_chain::to_lanes);
+    let e = vec![(tl(&nf), to(&leaf))];
+    let carrier = usdm_agg::absence_u::prove_span(&e, to(&start), &[false], &recs).expect("the note's span proves");
+    let w = usdm_agg::absence_u::prove_spend(&e, 0, &carrier, to(&binder), to(&crate::spend_frontier::TEST_LC_BLIND)).expect("the wrapper proves");
+    let wit = |end: crate::spend_frontier::Digest4, proof: Vec<u8>| {
+        vec![crate::nf_sparse::NfAbsenceWitness {
+            proof: postcard::to_allocvec(&vec![crate::nf_sparse::CanonAbsence { proof, end }]).expect("encodes"),
+            ..Default::default()
+        }]
+    };
+    assert!(!n.member_carrier_gate(&tx), "⛔ a spend with no wrapper passed under the switch");
+    let mut good = tx.clone();
+    good.nullifier_absence = wit(chain, w.clone());
+    assert!(n.member_carrier_gate(&good), "⛔ CALIBRATION: the wrapper at a held end does not admit its own spend");
+    let mut both = good.clone();
+    both.member_tuple = vec![1u8; 32];
+    both.member_carrier = vec![2u8; 8];
+    assert!(!n.member_carrier_gate(&both), "⛔ a member leg beside the wrapper passed (one encoding)");
+    let mut far = tx.clone();
+    far.nullifier_absence = wit(start, w.clone());
+    assert!(n.member_carrier_verdict(&far) == MemberGate::AnchorNotHeld, "⛔ an end the window does not hold was not a retry");
+    let mut other = good.clone();
+    other.membership_leaf_commit = cm(999);
+    assert!(!n.member_carrier_gate(&other), "⛔ the wrapper vouched for another leaf commitment");
+    // the nullifier carried by a record after the wrapper's end: spent
+    let tags = vec![nf];
+    let after = crate::canon_chain::record_step(&chain, &tags, &[], 16);
+    n.canon_recent.push(16, after, std::sync::Arc::new(tags), std::sync::Arc::new(Vec::new()), 0);
+    assert!(!n.member_carrier_gate(&good), "⛔ a spend whose nullifier a later record carries passed");
+    crate::params::set_canon_live_for_test(None);
+}
+
+/// ⭐⭐⭐ A-F114 (B′) — A REAL PAYMENT UNDER THE CONSTANT CHAIN, ON TWO PARTIES. The switch on for this thread; a real spend
+/// (validity and cover carriers) of a note funded on both nodes, its member leg DROPPED. The production carrier
+/// (`canon_carrier_core::CanonCarrier`) follows A's window from the record that made the note over one span, and its blinded
+/// wrapper rides the spend (`nullifier_absence`). A's REAL pool door admits it (`ingest_tx`); a block lays it and both
+/// parties fold it: the nullifier is a tag of both windows (spent on both, by the canonical chain alone). A replay of the
+/// same spend is refused. CALIBRATION first: the funding record's leaves carry the note's commitment (§AO), and the
+/// carrier's chain end is the window's own.
+#[test]
+fn af114_under_the_switch_a_payment_folds_on_two_parties_by_its_wrapper() {
+    use usdm_decider::poseidon2_compress::lanes_of;
+    crate::params::set_canon_live_for_test(Some(true));
+    let mut a = crate::node::tests::testnet_party_folding_at_tip();
+    let mut b = crate::node::tests::testnet_party_folding_at_tip();
+    let seed = 41u64;
+    let (o0v, o1v, fee) = (999_000u64, 1_000u64, usdm_decider::whir_rec_block::PROTOCOL_FEE_ATOMIC);
+    let mut tx = crate::node::tests::spend_tx_paying_fee_for_test(&mut a, &mut [&mut b], seed, o0v, o1v, fee);
+    tx.member_tuple.clear();
+    tx.member_carrier.clear();
+    // the fixture's own witness (`spend_tx_paying_fee_for_test`, the same seed), for the input leaf and the blind
+    let w = usdm_decider::whir_rec_block::SpendValidityWitness {
+        value_in: o0v + o1v + fee,
+        owner: usdm_decider::whir_rec_block::NoteOwner::from_test_key(lanes_of(&[0x5eed, seed, 1, 1])),
+        value_out: o0v + o1v,
+        fee,
+        lc_blind: lanes_of(&[0x5eed, seed, 2, 2]),
+        out0_value: o0v,
+        out0_opening: lanes_of(&[0x5eed, seed, 3, 3]),
+        out1_value: o1v,
+        out1_opening: lanes_of(&[0x5eed, seed, 4, 4]),
+    };
+    let leaf = usdm_decider::whir_rec_block::spend_input_leaf(&w).expect("a well-formed witness has an input leaf");
+    let (nf, _lc) = crate::canon_chain::canon_spend_input(&tx).expect("the spend's input");
+    let ring = a.canon_recent.range(0, crate::canon_chain::CANON_RECENT_RECORDS);
+    let i = ring
+        .iter()
+        .position(|(_, _, _, l, _)| l.contains(&leaf))
+        .expect("⛔ CALIBRATION: no record in A's window outputs the note's commitment (the record leaf is not the spend's leaf)");
+    let made = ring[i].0;
+    let start_end = if i > 0 {
+        ring[i - 1].1
+    } else {
+        assert_eq!(made, 0, "PRECONDITION: the window holds the record before the note's");
+        crate::canon_chain::genesis()
+    };
+    // both chains grow until one span follows the note's record, every block laid by A and folded by both
+    let span = crate::canon_carrier_core::SPAN;
+    let mut ts = a.selected_tip().and_then(|t| a.dag().get(&t).map(|n| n.header.timestamp)).unwrap_or(0) + 1_000;
+    let mut grown = 0u64;
+    let mut grow = |a: &mut Node, b: &mut Node, ts: &mut u64, tag: &[u8]| {
+        let blk = a.produce(*ts, Hash32::hash(tag), Hash32::hash(b"af114-e2e-mc")).expect("A produces");
+        assert!(matches!(b.ingest_block(blk, *ts + 100), RelayOutcome::Added(_)), "⛔ B refused A's block");
+        let _ = a.fold_canonical_records();
+        let _ = b.fold_canonical_records();
+        *ts += 600;
+    };
+    while a.canon_recent.range(made, span).len() < span {
+        grown += 1;
+        assert!(grown < 400, "⛔ A's window never held a span after the note's record");
+        grow(&mut a, &mut b, &mut ts, &grown.to_le_bytes());
+    }
+    let recs = a.canon_recent.range(made, span);
+    let mut car = crate::canon_carrier_core::CanonCarrier::starting_at(crate::canon_chain::to_lanes(&start_end), made);
+    car.pending = vec![(crate::canon_chain::tag_lanes(&nf), crate::canon_chain::to_lanes(&leaf))];
+    for (ord, _, tags, leaves, _) in &recs {
+        car.absorb(*ord, &crate::canon_chain::record(tags, leaves, *ord)).expect("the carrier follows the window's record");
+    }
+    assert_eq!(car.end, crate::canon_chain::to_lanes(&recs[span - 1].1), "⛔ CALIBRATION: the carrier ends at another chain value than the window's");
+    let binder = crate::spend_frontier::cm_bytes_to_root(&nf).expect("canonical nullifier");
+    let (wrapper, end) = car.spend(0, crate::canon_chain::to_lanes(&binder), crate::canon_chain::to_lanes(&w.lc_blind)).expect("the spend's wrapper proves");
+    tx.nullifier_absence = vec![crate::nf_sparse::NfAbsenceWitness {
+        proof: postcard::to_allocvec(&vec![crate::nf_sparse::CanonAbsence { proof: wrapper, end: crate::canon_chain::of_lanes(&end) }]).expect("encodes"),
+        ..Default::default()
+    }];
+    let admitted = a.ingest_tx(tx.clone());
+    assert!(admitted.is_ok(), "⛔ A's pool refused the switch-form spend: {admitted:?}");
+    for k in 0..(a.params().record_fold_depth + 3) {
+        grow(&mut a, &mut b, &mut ts, &(10_000 + k).to_le_bytes());
+    }
+    for (who, n) in [("A", &a), ("B", &b)] {
+        assert!(n.canon_recent.holds(&nf), "⛔ {who}'s canonical chain does not carry the spend's nullifier: the payment did not fold");
+    }
+    assert!(a.ingest_tx(tx).is_err(), "⛔ the same spend was admitted again after it folded");
+    crate::params::set_canon_live_for_test(None);
+}
+
 /// ⭐⭐⭐ DB-223 — END TO END, IN PROCESS: a wallet's member witness book fed ONLY the node's public path-refresh
 /// stream and its note's own record builds a member-path carrier the node's pool gate ADMITS at a REAL ring anchor
 /// (nothing planted): the note is captured at arrival (peaks at the fold before its record + the record's own 256
@@ -31995,7 +32152,7 @@ fn bounty_obj(nonce: [u8; 32], amount: u64, amount_in_note: u64, k: u64, signers
     let mut note = vec![0u8; crate::cover::PQ_NOTE_BYTES];
     note[..32].copy_from_slice(&cmb);
     let clue = vec![0x5b; crate::peg_in_tx::OWNER_CLUE_MAX];
-    let stmt = crate::bounty_payout_tx::bounty_statement(&nonce, amount, &cmb, &crate::oli::owner_clue_digest(&clue));
+    let stmt = crate::bounty_payout_tx::bounty_statement(&nonce, amount, &cmb, &crate::oli::owner_clue_digest(&clue), None);
     let mut attestors: Vec<(Vec<u8>, Vec<u8>)> =
         signers.iter().map(|(pk, sk)| (pk.clone(), crate::pqauth::ml_dsa_sign(&stmt, sk).expect("signs"))).collect();
     attestors.sort_by(|x, y| x.0.cmp(&y.0));
@@ -32709,14 +32866,14 @@ fn br8_decoys_are_booked_returned_and_an_unreturned_decoy_is_slashed_on_both_nod
     let sign = |m: &[u8], pk: &[u8], sk: &[u8]| (pk.to_vec(), crate::pqauth::ml_dsa_sign(m, sk).expect("signs"));
     let txid = [0xd0u8; 32];
     let decoys = vec![DecoyEntry { vid: tid, sats: 10_000, vout: 3 }, DecoyEntry { vid, sats: 10_000, vout: 4 }];
-    let stmt = DecoyBatchTx::statement(&txid, &decoys, 0);
+    let stmt = DecoyBatchTx::statement(&txid, &decoys, 0, None);
     let batch = DecoyBatchTx { payout_txid: txid, decoys: decoys.clone(), fee_usdm: 0, attestors: vec![sign(&stmt, &pk, &sk)] };
     // TAMPERS on B before the batch block
     let weak = DecoyBatchTx { attestors: vec![sign(&stmt, &tpk, &tsk)], ..batch.clone() };
     assert!(b.decoy_batch(&weak, 0).is_err(), "⛔ a third of the weight booked a decoy batch");
     let mut stranger = batch.clone();
     stranger.decoys[0].vid = [0x77u8; 32];
-    stranger.attestors = vec![sign(&DecoyBatchTx::statement(&txid, &stranger.decoys, 0), &pk, &sk)];
+    stranger.attestors = vec![sign(&DecoyBatchTx::statement(&txid, &stranger.decoys, 0, None), &pk, &sk)];
     assert!(b.decoy_batch(&stranger, 0).is_err(), "⛔ a decoy naming an unbonded validator was booked");
     let mut forged = batch.clone();
     forged.decoys[0].sats = 20_000;

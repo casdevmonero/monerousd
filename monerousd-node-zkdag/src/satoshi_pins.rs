@@ -959,14 +959,12 @@ fn a_dsync_joiner_inherits_the_issued_sat_total_and_the_pendulum_snapshot() {
     let (issued, _) = a.peg().sat_census();
     assert!(issued > 0, "CALIBRATION: A's fold credited its rewards");
     assert!(a.peg_mut_for_test().snapshot_pendulum(6, u128::from(issued)), "A snapshots epoch 6 with every issued SAT bonded");
-    let served = a.peg().sat_census();
-    assert_ne!(served.1, (0, 10_000), "CALIBRATION: a non-default snapshot (more than a third bonded ⇒ share < 100%)");
-    let frontier = crate::sync::FrontierSnapshot {
-        root: *a.note_frontier_root().as_bytes(),
-        height: a.note_frontier_count(),
-        peaks_hex: a.spend_frontier_peaks_hex(),
-    };
-    let bundle = a.build_sync_bundle(vec![1u8; 4096], frontier).expect("A serves a bundle");
+    // ⛔ the bundle A SERVES (census S-DRAFT-ADOPT): a frozen bundle states the chain at its freeze, so what the joiner must
+    // inherit is read from the served bundle itself, never from A's state before the serve
+    let bundle = a.served_bundle_for_test();
+    let served = (bundle.nullifier.peg_sat_issued, bundle.nullifier.peg_pendulum);
+    assert!(served.0 > 0, "CALIBRATION: the served state counts issued SAT");
+    assert_ne!(served.1, (0, 10_000), "CALIBRATION: the served state holds a non-default snapshot (more than a third bonded ⇒ share < 100%)");
     let mut b = crate::node::tests::testnet_party_folding_at_tip();
     assert_eq!(b.peg().sat_census(), (0, (0, 10_000)), "CALIBRATION: the fresh joiner holds neither");
     b.set_decider_verifier(Box::new(AcceptAllDecider));

@@ -174,6 +174,7 @@ pub mod quorum_math; // the two-thirds thresholds of every bonded tally: exact, 
 pub mod relay;
 pub mod release_attestation_tx; // §BR-10: Class::ReleaseAttestation — builders' signed reproducible-build attestations
 pub mod reserve_cost_tx; // ⭐ SAFE AT SCALE — `Class::ReserveCost`: a vault's reserve falls by the public fee its custody paid a foreign chain to move its own coins
+pub mod release_confirm_tx; // ⭐ A-F114 — a payout's release as a chain object (increment 1: the type; not framed yet)
 pub mod respend; // DB-358: first spender of a nullifier in canonical order counts; decided at the record fold
 pub mod reward;
 pub mod sat_bond_tx; // Class::SatBond: the CUSTODY bond in SAT (docs/SATOSHI-NATIVE-TOKEN.md §6, closes DB-391)

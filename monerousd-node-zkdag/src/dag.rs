@@ -220,6 +220,12 @@ pub struct BlockNode {
     /// and every folded ancestor placeholder is `false` — history the certified state already counts. `add_block`
     /// reads it: a block with any unsettled parent is refused (Kaspa's `check_pruning_violation`, strict).
     pub settled: bool,
+    /// ⭐ A-F114 phase 2 — the block's ADMITTED tags (its lane minus the fold's losers and unadmitted tags), recorded by the
+    /// fold step right before the record takes its position, where the record fold steps the canonical tag chain
+    /// (`canon_chain::record_step`). Held only while
+    /// the window holds this entry (`keep_depth`). O1-FOOTPRINT-REVIEWED: at most a block's tags (~256 × 32 B) per entry of
+    /// a constant window, shared by `Arc`, never a history.
+    pub chain_tags: Option<std::sync::Arc<Vec<[u8; 32]>>>,
 }
 
 /// The GHOSTDAG block-DAG.
@@ -330,6 +336,24 @@ pub struct Dag {
     /// anchor, became head, the fold rewound below the anchor and went stale, and the node re-adopted the same bundle —
     /// 11 times in 1,500 s, victim 92 against honest 151. Read only by [`Self::finality_admits`], as the finality floor is.
     anchor_floor: Option<BlockId>,
+    /// ⛔⛔ LIVE-FOLD W1 (lane livefold, 2026-11-25; docs/LIVE-FOLD-WEDGE-DEEP-AUDIT-20261125.md) — BLOCKS WHOSE BODY NO PEER
+    /// SERVED. A block the node's fold waited on as a SHELL past the body reach (`UNFOLDED_BODY_REACH_LEVELS`, the A-F63 verdict)
+    /// with no body anywhere it can reach. `withheld_future` is each such block and every held block with it in its PAST
+    /// (filled by a children walk once, then by [`Self::insert_block`] for each new block naming a member as a parent).
+    /// A block of `withheld_future` is never head and never merged ([`Self::availability_admits`]): its state cannot be applied
+    /// by this node, so a chain through it cannot fold here. The node builds from the heaviest available block instead and the
+    /// fold, then finality, move on. MEASURED why (the live origin, build 995bab3d, 2026-11-25 04:00): the fold waited at blue
+    /// score 3785 on the shell at 3786 (credit set and evidence missing, no held body) while the chain grew to 12,597; the
+    /// re-anchor took the one reachable peer's bundle, which certified the same 3785 (it waits on the same shell), so the
+    /// wait came back; finality 0 all day (votes are judged only near the fold cursor).
+    /// BORROWED: Kaspa — a block whose body is not validated is not UTXO-valid and is never a virtual parent; Bitcoin — a node
+    /// never extends a chain whose blocks it has not fully validated.
+    /// Cleared for a block when its body lands ([`Self::clear_withheld`]): an available body makes its chain eligible again and
+    /// ordinary fork choice returns to it if it is heavier.
+    /// SCALE: both sets hold only blocks this DAG holds (pruned with them) — a constant of the retention window.
+    /// AI RESISTANT: (b) code; a peer that withholds a body gains nothing: its block and everything built on it lose the head.
+    withheld: HashSet<BlockId>,
+    withheld_future: HashSet<BlockId>,
 }
 
 /// ⛔ KASPA'S INVARIANT, KEPT (2026-11-09): a block may merge only what every honest node still holds WHOLE. Kaspa keeps its
@@ -376,8 +400,59 @@ impl Dag {
             // No quorum has been heard yet ⇒ no bound. A fresh DAG selects tips exactly as before.
             finality_floor: None,
             anchor_floor: None,
+            withheld: HashSet::new(),
+            withheld_future: HashSet::new(),
             params,
         }
+    }
+
+    /// `1` = no withheld block is in this block's past (it may be head, or be merged); `0` = it is, or it is one (W1).
+    pub fn availability_admits(&self, id: &BlockId) -> u8 {
+        u8::from(!self.withheld_future.contains(id))
+    }
+
+    /// W1: mark `id` as a block whose body no peer served, and every held block with it in its past. `true` iff newly marked.
+    /// One walk of `id`'s future over child edges, bounded by the held window.
+    pub fn mark_withheld(&mut self, id: BlockId) -> bool {
+        if !self.blocks.contains_key(&id) || !self.withheld.insert(id) {
+            return false;
+        }
+        let mut stack = vec![id];
+        while let Some(b) = stack.pop() {
+            if !self.withheld_future.insert(b) {
+                continue;
+            }
+            if let Some(n) = self.blocks.get(&b) {
+                stack.extend(n.children.iter().copied());
+            }
+        }
+        self.refresh_selected_chain_index();
+        true
+    }
+
+    /// W1: `id`'s body landed — its chain is eligible again. The future set is re-derived from the blocks still marked.
+    pub fn clear_withheld(&mut self, id: &BlockId) -> bool {
+        if !self.withheld.remove(id) {
+            return false;
+        }
+        let still: Vec<BlockId> = self.withheld.drain().collect();
+        self.withheld_future.clear();
+        for w in still {
+            self.mark_withheld(w);
+        }
+        self.refresh_selected_chain_index();
+        true
+    }
+
+    /// W1: the blocks marked withheld (a count for the operator's log and the RPC).
+    pub fn withheld_count(&self) -> usize {
+        self.withheld.len()
+    }
+
+    /// W-FOLD-1b: is `id` itself marked withheld?
+    #[must_use]
+    pub fn is_withheld(&self, id: &BlockId) -> bool {
+        self.withheld.contains(id)
     }
 
     /// The active, governance-tunable consensus parameters.
@@ -416,6 +491,10 @@ impl Dag {
             self.unlinked.insert(id);
         } else {
             self.unlinked.remove(&id);
+        }
+        // W1: a block naming a block of a withheld future as a parent has that block in its past
+        if !self.withheld_future.is_empty() && node.header.parents.iter().any(|p| self.withheld_future.contains(p)) {
+            self.withheld_future.insert(id);
         }
         self.blocks.insert(id, node);
     }
@@ -767,7 +846,7 @@ impl Dag {
     /// block selects among blocks that keep the finality point.
     pub fn selected_tip(&self) -> Option<BlockId> {
         let best = self.tips.iter().copied().max_by_key(|id| self.finality_bounded_order_key(id))?;
-        if self.finality_admits(&best) == 1 {
+        if self.head_admits(&best) {
             return Some(best);
         }
         Some(self.heaviest_admissible_below_tips().unwrap_or(best))
@@ -785,7 +864,9 @@ impl Dag {
             .iter()
             .flatten()
             .filter_map(|f| self.blocks.get(f).map(|n| n.blue_score))
-            .max()?;
+            .max()
+            // W1: with no floor, a withheld future alone sends the walk down — it stops at the first available block on each path
+            .or_else(|| (!self.withheld_future.is_empty()).then_some(0))?;
         let mut stack: Vec<BlockId> = self.tips.iter().copied().collect();
         let mut seen: HashSet<BlockId> = HashSet::new();
         let mut best: Option<BlockId> = None;
@@ -794,7 +875,7 @@ impl Dag {
                 continue;
             }
             let Some(n) = self.blocks.get(&b) else { continue };
-            if self.finality_admits(&b) == 1 {
+            if self.head_admits(&b) {
                 if best.map_or(true, |x| self.order_key(&b) > self.order_key(&x)) {
                     best = Some(b);
                 }
@@ -817,9 +898,15 @@ impl Dag {
     /// always has a head. Deliberately NOT folded into `order_key` itself — that key also drives
     /// [`Self::canonical_order`], which resolves nullifier conflicts and MUST stay node-independent, and
     /// the finality verdict is node-local (it depends on what this node has heard and still holds).
-    fn finality_bounded_order_key(&self, id: &BlockId) -> (u8, u128, BlockId) {
+    fn finality_bounded_order_key(&self, id: &BlockId) -> (u8, u8, u128, BlockId) {
         let (work, tie) = self.order_key(id);
-        (self.finality_admits(id), work, tie)
+        (self.finality_admits(id), self.availability_admits(id), work, tie)
+    }
+
+    /// A block may be head: it keeps the finality and anchor floors and no withheld block is in its past (W1). The finality
+    /// field stays the higher-order one: a quorum finalized a block whose body its signers held.
+    fn head_admits(&self, id: &BlockId) -> bool {
+        self.finality_admits(id) == 1 && self.availability_admits(id) == 1
     }
 
     /// Test-only triage of the head and its positional index: the selected tip, the floor, the index length, the unlinked
@@ -895,6 +982,21 @@ impl Dag {
     /// The currently installed finality floor, if any.
     pub fn finality_floor(&self) -> Option<BlockId> {
         self.finality_floor
+    }
+
+    /// ⭐ A-F115 — release the anchor floor a RESUME installed (`Node::boot`, right after the checkpoint and its block window
+    /// are back): this node's own checkpoint tip is a cache, not a chain authority, so the fork choice returns to weight and
+    /// the quorum's floor. Only the boot calls it, before any network door has run, so the floor it releases can only be the
+    /// resume's own. `true` when a floor was released. A certified adopt later installs its floor again through
+    /// [`Self::add_anchor_weighed`].
+    pub fn release_resume_floor(&mut self) -> bool {
+        if self.anchor_floor.is_none() {
+            return false;
+        }
+        let boundary_before = self.window_boundary();
+        self.anchor_floor = None;
+        self.head_inputs_changed(boundary_before);
+        true
     }
 
     /// ⭐⭐⭐ SYMMETRIC FINALITY TARGETS (2026-09-18). Runs 39/40 on two real producers measured a FROZEN
@@ -1428,7 +1530,8 @@ impl Dag {
         // sibling's blocks join the merge set AFTER F. BORROWED: Kaspa merges the finality point's anticone within the merge
         // depth (only a selected chain may never leave the finality point); rusty-kaspa `pick_virtual_parents` drops a tip
         // for the merge-depth bound alone. A heavier sibling stays out (`order_key(t) < sp_key`, A-F54's guard).
-        for t in tips.iter().filter(|t| **t != sp) {
+        // W1: a tip with a withheld block in its past is never merged — its mergeset would carry that block into this one
+        for t in tips.iter().filter(|t| **t != sp && self.availability_admits(t) == 1) {
             if self.order_key(t) < sp_key && within(&[sp, *t]) {
                 chosen.push(*t);
             }
@@ -1570,6 +1673,7 @@ impl Dag {
             topo_order,
             // admitted by the rule above (or no anchor was ever installed)
             settled: true,
+            chain_tags: None,
         };
         if is_gen {
             self.genesis = Some(id);
@@ -1631,6 +1735,7 @@ impl Dag {
                 topo_order,
                 // DB-282: a folded ancestor sits at or below the fold root — history the carried state counts
                 settled: false,
+                chain_tags: None,
             },
         );
         true
@@ -1731,6 +1836,7 @@ impl Dag {
                 topo_order,
                 // DB-282: the certified carry is the structure above the anchor
                 settled: true,
+                chain_tags: None,
             },
         );
         self.tips.insert(id);
@@ -1818,6 +1924,7 @@ impl Dag {
                 // block's parent list), so a shell is part of what this node follows, never re-served history. The
                 // door keeps its own admission (parents present); it is not a second graft path for old blocks.
                 settled: true,
+                chain_tags: None,
             },
         );
         // Wire the parent-side child edges (mutating entries that already exist — no new store).
@@ -1829,6 +1936,18 @@ impl Dag {
         }
         if !referenced {
             self.tips.insert(id);
+        }
+        // ⭐⭐ SELF-HEAL SH1 (lane selfheal, 2026-11-25; scratchpad/scope/build/self-heal.tsv) — A HEADER-ONLY TIP IS NEVER BUILT ON.
+        // A shell that nothing references here is a TIP this node holds no body for; extending it is what put 9,451 blocks on
+        // a body nobody served (A-F138: `produce.rs` "healed as SHELLS … producing anyway"). It is marked like a withheld block
+        // at once (never head, never merged) and the mark clears when its body lands (`fill_shell_body_preverified`); the
+        // template builds on the heaviest block whose body is held. A shell UNDER blocks already held (`referenced`, the DB-4
+        // heal of a gap) keeps W1's reach rule: its body normally arrives within seconds, and dropping the chain above it at once
+        // would move the head below a chain this node already follows.
+        // BORROWED: Kaspa's block status — a header-only block is never a virtual parent. AI RESISTANT (b): a peer that serves
+        // headers without bodies gains nothing — its headers are never extended. SCALE: one mark a shell tip; nothing grows.
+        if !referenced {
+            self.mark_withheld(id);
         }
         self.head_inputs_changed(boundary_before);
         true
@@ -1942,6 +2061,7 @@ impl Dag {
                 selected_chain_len,
                 topo_order,
                 settled: true,
+                chain_tags: None,
             },
         );
         // Reorg to the heavier adopted chain: it is now the SOLE selected tip. Our old (lighter) tips are
@@ -2094,6 +2214,13 @@ impl Dag {
     /// gate already allowed. cons: none on any growth axis (the bound is unchanged); one extra sweep per `keep_depth` blue
     /// scores (one pass over the held span every 7,516 scores at the default params — amortized O(1) per block).
     /// The blue score the sweep must keep (see `prune_floor`); `None` lifts it.
+    /// A-F114 phase 1: record the term `id` added to `A_tip` (its accept fold), on its window entry.
+    pub fn set_chain_tags(&mut self, id: &BlockId, tags: std::sync::Arc<Vec<[u8; 32]>>) {
+        if let Some(n) = self.blocks.get_mut(id) {
+            n.chain_tags = Some(tags);
+        }
+    }
+
     pub fn set_prune_floor(&mut self, floor: Option<u64>) {
         self.prune_floor = floor;
     }
@@ -2138,6 +2265,8 @@ impl Dag {
         let blocks = &self.blocks;
         self.by_receive.retain(|_, id| blocks.contains_key(id)); // DB-430: the receive index mirrors the store exactly
         self.unlinked.retain(|id| blocks.contains_key(id));
+        self.withheld.retain(|id| blocks.contains_key(id)); // W1: the marks are pruned with their blocks
+        self.withheld_future.retain(|id| blocks.contains_key(id));
         // An index entry may not outlive its block: rebuild the record-key index from the span that
         // SURVIVED. Rebuilding (rather than deleting per dropped id) is also what re-resolves a key whose
         // ambiguity the prune just removed. Same class as the retain it follows — one pass over a
@@ -3615,6 +3744,56 @@ mod tests {
             let m = dag.add_block(blk(parents, 9)).unwrap();
             assert!(dag.is_selected_chain_ancestor(&f, &m), "⛔ {party}: the control block left the finalized block");
         }
+    }
+
+
+    /// ⭐⭐ LIVE-FOLD W1 PIN — A WITHHELD BLOCK AND EVERY BLOCK BUILT ON IT LEAVE THE HEAD, AND RETURN WHEN ITS BODY LANDS. A heavy
+    /// branch g → a → x → y1 → y2 → y3 and a light one a → z: before the mark the head is y3 (heavier). With x marked withheld the
+    /// head is z (the heaviest available block), the template never merges a withheld-future tip, a new block on y3 is withheld
+    /// on arrival; when x's body lands (`clear_withheld`) the head is the heavy branch again.
+    #[test]
+    fn w1_a_withheld_block_and_its_future_leave_the_head_and_return_when_its_body_lands() {
+        let mut dag = Dag::new();
+        let g = dag.add_block(blk(vec![], 0)).unwrap();
+        let a = dag.add_block(blk(vec![g], 1)).unwrap();
+        let x = dag.add_block(blk(vec![a], 2)).unwrap();
+        let y1 = dag.add_block(blk(vec![x], 3)).unwrap();
+        let y2 = dag.add_block(blk(vec![y1], 4)).unwrap();
+        let y3 = dag.add_block(blk(vec![y2], 5)).unwrap();
+        let z = dag.add_block(blk(vec![a], 6)).unwrap();
+        assert_eq!(dag.selected_tip(), Some(y3), "CALIBRATION: the heavy branch leads before the mark");
+        assert!(dag.mark_withheld(x), "the first mark is new");
+        assert!(!dag.mark_withheld(x), "a second mark is not");
+        assert_eq!(dag.selected_tip(), Some(z), "⛔ W1: a chain through a withheld block stayed head");
+        assert!(!dag.template_parents().iter().any(|p| [x, y1, y2, y3].contains(p)), "⛔ W1: the template merged a withheld future");
+        let y4 = dag.add_block(blk(vec![y3], 7)).unwrap();
+        assert_eq!(dag.availability_admits(&y4), 0, "⛔ W1: a block built on a withheld future was admitted as available");
+        assert_eq!(dag.selected_tip(), Some(z), "⛔ W1: the withheld branch took the head back by growing");
+        let z2 = dag.add_block(blk(dag.template_parents(), 8)).unwrap();
+        assert_eq!(dag.availability_admits(&z2), 1, "⛔ W1: a block on the available chain read withheld");
+        assert_eq!(dag.selected_tip(), Some(z2), "⛔ W1: the available chain does not extend");
+        assert!(dag.clear_withheld(&x), "the body landing clears the mark");
+        assert_eq!(dag.availability_admits(&y4), 1, "⛔ W1: the future stayed withheld after the body landed");
+        assert_eq!(dag.selected_tip(), Some(y4), "⛔ W1: fork choice did not return to the heavier chain once its body landed");
+    }
+
+    /// ⭐⭐ SELF-HEAL SH1 PIN — A HEADER-ONLY TIP IS NEVER BUILT ON: g → a → b whole, then a shell s on b (a header this node holds no
+    /// body for, nothing above it) is grafted by the heal door; the head stays b and the template never names s; when s's body lands
+    /// (`clear_withheld`) s is head. A shell under a block already held (referenced) is not marked (W1's reach rule keeps it).
+    #[test]
+    fn sh1_a_header_only_tip_is_never_built_on_until_its_body_lands() {
+        let mut dag = Dag::new();
+        let g = dag.add_block(blk(vec![], 0)).unwrap();
+        let a = dag.add_block(blk(vec![g], 1)).unwrap();
+        let b = dag.add_block(blk(vec![a], 2)).unwrap();
+        let s = blk(vec![b], 3);
+        let sid = s.id();
+        assert!(dag.add_wanted_shell(s), "PRECONDITION: the heal door grafts the shell");
+        assert_eq!(dag.availability_admits(&sid), 0, "⛔ SH1: a header-only tip was admitted as available");
+        assert_eq!(dag.selected_tip(), Some(b), "⛔ SH1: a header-only tip became head");
+        assert!(!dag.template_parents().contains(&sid), "⛔ SH1: the template built on a header-only tip");
+        assert!(dag.clear_withheld(&sid), "the body landing clears the mark");
+        assert_eq!(dag.selected_tip(), Some(sid), "⛔ SH1: the shell did not lead once its body landed");
     }
 
 }

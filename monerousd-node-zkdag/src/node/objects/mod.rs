@@ -40,6 +40,7 @@ pub(crate) mod unit_open_tx;
 pub(crate) mod wrapped_asset_tx;
 pub(crate) mod wrapped_mint_tx;
 pub(crate) mod reserve_cost_tx;
+pub(crate) mod release_confirm_tx; // ⭐ A-F114 — a payout's release, applied at the fold
 pub(crate) mod sat_bond_tx;
 pub(crate) mod vault_merge_tx;
 pub(crate) mod vault_rebalance_tx;

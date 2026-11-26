@@ -299,6 +299,7 @@ fn run_serve() {
         let seat = node.request_own_seat_at_boot(&pk, &sk);
         println!("validator: {seat}");
     }
+
     // The transport that drives the LIVE NodeRuntime is the REAL Tor `.onion` mesh — ALWAYS. Onion is
     // NOT optional and there is NO non-onion node build (a featureless node would be a clearnet/IP-leak
     // privacy hole). submit_tx (RPC) pools + publishes the tx as constant-rate cells on `musdm/cells`,
@@ -810,6 +811,23 @@ where
                 std::thread::sleep(std::time::Duration::from_millis(200));
                 let _ = usdmd_node::vote_guard::vote_tick(&rt, &mut guard, &pk, &sk);
                 let _ = usdmd_node::spend_lock::lock_tick(&rt, &mut lock_guard, &pk, &sk);
+            }
+        });
+    }
+    // ⭐ A-F114 — under the network upgrade a seat request expires (`membership_bond_tx::SEAT_REQUEST_TTL_MS`), so a validator
+    // that is not seated signs a fresh one whenever its kept request is stale; once a minute at most, and never before the
+    // upgrade (`Node::own_seat_request_stale` answers false).
+    if usdmd_node::params::canon_live()
+        && std::env::var("MONEROUSD_VALIDATOR_BOND").ok().and_then(|s| s.trim().parse::<u128>().ok()).is_some_and(|b| b > 0)
+    {
+        let rt = Arc::clone(&rt);
+        let (pk, sk) = load_or_create_validator_key();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            let mut g = rt.lock().unwrap_or_else(|e| e.into_inner());
+            if g.node().own_seat_request_stale(&pk) {
+                let seat = g.node_mut().request_own_seat_at_boot(&pk, &sk);
+                println!("validator: the seat request expired; signed again: {seat}"); // status only, no key bytes
             }
         });
     }

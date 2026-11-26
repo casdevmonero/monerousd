@@ -273,6 +273,10 @@ pub enum Class {
     /// a CANCEL (the giver's pair after, two thirds of the giver, a rotation day after the carve). No note: nothing is
     /// created, nothing is lost.
     VaultRebalance = 54,
+    /// ⭐ A-F114 — a payout's RELEASE (`release_confirm_tx`): custody's threshold over "foreign transaction T paid the burns
+    /// {nf…}", folded only under the network upgrade (`params::CANON_LIVE`), where it takes each named, owed burn out of
+    /// the owed-release book on every node alike. No note: it only removes owed entries.
+    ReleaseConfirm = 58,
 }
 
 impl Class {
@@ -319,6 +323,7 @@ impl Class {
             Class::WrappedAssetRegister => "no note",
             Class::VaultMerge => "no note: a commitment transition (one custody vault's ledgers are summed into another's, proven against the chain's own pairs)",
             Class::ReserveCost => "no note: a commitment transition (a vault's reserve falls by a public foreign fee, proven against the chain's own pair; nothing is minted or released)",
+            Class::ReleaseConfirm => "no note: a payout's release (custody's threshold names the owed burns a foreign transaction paid; the fold takes them out of the owed book)",
             Class::VaultKey => "no note: the custody key record moves (a vault takes the key of its members, or retires one it replaced); no value and no ledger word",
             Class::VaultRebalance => "no note: a commitment transition (part of one custody vault's ledgers is carved into its slot, taken by another vault or taken back, each step proven against the chain's own pairs over the slot's one part commitment)",
             Class::OrderPost => "no note",
@@ -406,6 +411,7 @@ impl Class {
             51 => Class::ReserveCost,
             52 => Class::VaultKey,
             54 => Class::VaultRebalance,
+            58 => Class::ReleaseConfirm,
             _ => return None,
         })
     }
@@ -704,6 +710,11 @@ pub fn carried_note_payloads(blob: &[u8]) -> Option<Vec<Vec<u8>>> {
         // claiming one is a forgery `wrapper_binds_object` refuses.
         Class::VaultRebalance => {
             crate::vault_rebalance_tx::decode(payload)?;
+            Vec::new()
+        }
+        // A RELEASE mints nothing: it only takes owed burns out of the owed book. No note.
+        Class::ReleaseConfirm => {
+            crate::release_confirm_tx::ReleaseConfirmTx::decode(payload)?;
             Vec::new()
         }
         // A wrapped mint DOES justify a note — exactly one, its own — so the wrapper's `output_notes`
@@ -1262,6 +1273,7 @@ pub fn carriage_of(blob: &[u8]) -> Option<Vec<u8>> {
         | Class::ReserveCost
         | Class::VaultKey
         | Class::VaultRebalance
+        | Class::ReleaseConfirm
         | Class::Unbond
         | Class::MembershipBond
         | Class::Equivocation
@@ -1322,6 +1334,183 @@ pub fn carriage_note_refs(blob: &[u8]) -> Option<Vec<([u8; 32], [u8; 32])>> {
         out.push((cm, slot));
     }
     Some(out)
+}
+
+/// ⭐ A-F114 — HOW THE CONSTANT CHAIN JUDGES ONE OF AN OBJECT'S OWN LANE TAGS (from the network upgrade, `params::CANON_LIVE`;
+/// no node holds the spent set, `canon_chain`). Read by the fold's verdict, the pool door and the producer's evidence, the
+/// one table they share.
+/// * `Leg(lc)`: the tag is a NOTE's nullifier and `lc` its member leg's cross-bind (DB-363), the spent-note facts the object
+///   carries; it is judged by the spender's absence wrapper (`Node::canon_absence_refusal`), exactly as a send's input is.
+/// * `OneTime`: a one-time id whose replay the chain's own state refuses at apply (the audit's per-kind reading,
+///   docs/SPENT-SET-GROWTH-DEEP-AUDIT-20261122.md), or one derived from this same object's fee leg (so a replay re-spends
+///   that leg); judged by the window (`CanonRecent::holds`), the record-recent replays.
+/// * `Unknown`: every tag the table has not read. It FAILS CLOSED (the object loses at the fold and is refused at the pool):
+///   a tag missed here must never be judged by the window alone, or an old note past the window would spend again.
+/// AI RESISTANT: (a) the wrapper is a proof every node checks; `OneTime` rests on (b) the chained state the audit read, and
+///   an unread kind is `Unknown`, never `OneTime`. SAFE AT SCALE: a pure function of the object's bytes; nothing held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TagRole {
+    Leg(crate::spend_frontier::Digest4),
+    OneTime,
+    Unknown,
+}
+
+/// Each of the object's own lane tags (`object_own_nullifiers`, in that order) with its [`TagRole`]; `None` when the blob
+/// is not an object, as there.
+#[must_use]
+pub fn object_tag_roles(blob: &[u8]) -> Option<Vec<([u8; 32], TagRole)>> {
+    use crate::spend_frontier::{cm_bytes_to_root, leaf_to_cm_bytes};
+    let own = object_own_nullifiers(blob)?;
+    let (class, payload) = unframe(blob)?;
+    // a leg whose cross-bind is not a canonical digest has no role but Unknown
+    let leg = |nf: [u8; 32], lc: Option<crate::spend_frontier::Digest4>| (nf, lc.map_or(TagRole::Unknown, TagRole::Leg));
+    let fee = |f: &crate::asset_tx::CreationFee| leg(f.nullifier, cm_bytes_to_root(&f.leaf_commit));
+    let mut known: Vec<([u8; 32], TagRole)> = match class {
+        Class::OrderFill => {
+            let t = crate::order_fill_tx::OrderFillTx::decode(payload)?;
+            vec![
+                leg(leaf_to_cm_bytes(t.maker_nullifier), Some(t.maker_leaf_commit)),
+                leg(leaf_to_cm_bytes(t.taker_nullifier), Some(t.taker_leaf_commit)),
+            ]
+        }
+        Class::PegOut => {
+            let h = crate::peg_out_tx::decode(payload)?.0;
+            vec![leg(h.usdm_nullifier, Some(h.leaf_commit))]
+        }
+        Class::YieldClaim => {
+            let h = crate::stake_tx::decode(payload)?.h;
+            vec![leg(h.nullifier, Some(h.leaf_commit))]
+        }
+        Class::PoolDeposit => {
+            let h = crate::pool_tx::decode(payload)?.h;
+            vec![leg(h.nullifier, Some(h.leaf_commit))]
+        }
+        Class::PoolWithdraw => {
+            let h = crate::pool_tx::decode_withdraw(payload)?.h;
+            vec![leg(h.nullifier, Some(h.leaf_commit))]
+        }
+        Class::SatDelegation => {
+            let t = crate::sat_delegation_tx::SatDelegationTx::decode(payload)?;
+            vec![leg(t.nullifier, cm_bytes_to_root(&t.leaf_commit))]
+        }
+        Class::PotFill => {
+            let t = crate::pot_fill_tx::PotFillTx::decode(payload)?;
+            vec![leg(t.nullifier, cm_bytes_to_root(&t.leaf_commit))]
+        }
+        Class::UnitClose => {
+            let t = crate::unit_close_tx::UnitCloseTx::decode(payload)?;
+            vec![leg(t.unit_nullifier, cm_bytes_to_root(&t.unit_leaf_commit)), leg(t.debt_nullifier, cm_bytes_to_root(&t.debt_leaf_commit))]
+        }
+        // the device-slot claim tag rides as a send's `tag1` does: the window (the DB-329 decision for `tag1`)
+        Class::AssetSpend => {
+            let t = crate::asset_tx::AssetSpendTx::decode(payload)?;
+            let mut v = vec![leg(t.nullifier, Some(t.leaf_commit))];
+            v.extend(t.slot_tag.map(|s| (s, TagRole::OneTime)));
+            v
+        }
+        // the fresh note's leg; a re-bond's locked note is chained: the door requires it to BE the validator's current
+        // locked note (`Node::bond_locked_note`), which the re-bond replaces, and the weight to rise (`rebond_refusal`)
+        Class::SatBond => {
+            let t = crate::sat_bond_tx::SatBondTx::decode(payload)?;
+            let mut v = vec![leg(t.nullifier, Some(t.leaf_commit))];
+            v.extend(t.rebond.as_ref().map(|r| (r.nullifier_locked, TagRole::OneTime)));
+            v
+        }
+        Class::IonOrder => crate::ion_pool_tx::IonOrderTx::decode(payload)?
+            .legs
+            .iter()
+            .map(|f| leg(f.nullifier, cm_bytes_to_root(&f.leaf_commit)))
+            .collect(),
+        // a call's `Nullifier` effects are as one-time as the call: every call spends its fee note (the `Leg`), so a
+        // replayed call re-spends that note and its wrapper refuses it; and the call opens `storage_pre` by path
+        Class::DsolCall => {
+            let t = crate::dsol_call_tx::DsolCallTx::decode(payload)?;
+            let mut v = vec![leg(t.fee.nullifier, cm_bytes_to_root(&t.fee.leaf_commit))];
+            v.extend(own.iter().filter(|x| **x != t.fee.nullifier).map(|x| (*x, TagRole::OneTime)));
+            v
+        }
+        // §BR-15 a claim spends its settled order's claim leaf (member leg cross-bound by `leaf_commit`)
+        Class::DefiClaim => {
+            let t = crate::defi_batch::DefiClaimTx::decode(payload)?;
+            vec![leg(leaf_to_cm_bytes(t.nullifier), Some(t.leaf_commit))]
+        }
+        Class::DirEntry => vec![fee(&crate::dir_entry_tx::DirEntryTx::decode(payload)?.fee)],
+        // the deploy's cid is `dsol_cid(fee nullifier)`: a replay re-spends the fee leg
+        Class::DsolDeploy => {
+            let t = crate::dsol_deploy_tx::DsolDeployTx::decode(payload)?;
+            let mut v = vec![fee(&t.fee)];
+            v.extend(own.iter().filter(|x| **x != t.fee.nullifier).map(|x| (*x, TagRole::OneTime)));
+            v
+        }
+        // under the upgrade the asset id hashes the fee nullifier (`AssetCreateTx::derived_id`), so its issue right or
+        // creation id is as unique as the fee leg
+        Class::AssetCreate if crate::params::canon_live() => {
+            let t = crate::asset_tx::AssetCreateTx::decode(payload)?;
+            let mut v = vec![fee(&t.fee)];
+            v.extend(own.iter().filter(|x| **x != t.fee.nullifier).map(|x| (*x, TagRole::OneTime)));
+            v
+        }
+        Class::DefiOrder => {
+            let t = crate::defi_batch::DefiOrderTx::decode(payload)?;
+            vec![leg(leaf_to_cm_bytes(t.nullifier), Some(t.leaf_commit))]
+        }
+        // ⭐ §18.12 every slot of a DefiSlots part, real or cover, is a NOTE leg by its own (nullifier, leaf_commit): an
+        // order's burned note, a claim's settled claim leaf. So under the upgrade every slot carries a wrapper, and a real
+        // slot is not told from a cover by what it carries. The wrappers of the COVER slots come from custody's cover
+        // carrier (OWED: entries registered from each settlement's claim leaves, docs/SPENT-SET-GROWTH-DEEP-AUDIT-20261122.md);
+        // until it is built, a part with no wrapper for every slot is refused at the pool (fail closed).
+        Class::DefiSlots => {
+            let t = crate::defi_batch::DefiSlotsTx::decode(payload)?;
+            t.orders
+                .iter()
+                .map(|o| leg(leaf_to_cm_bytes(o.nullifier), Some(o.leaf_commit)))
+                .chain(t.claims.iter().map(|c| leg(leaf_to_cm_bytes(c.nullifier), Some(c.leaf_commit))))
+                .collect()
+        }
+        // chained to current state, every one of their tags (the audit's six, DecoyBatch's and BountyPayout's counters);
+        // a reward or miner payout names the carrying block's parent key in its era and fills that block's one reward slot,
+        // and a replay re-creates a commitment whose nullifier `P(nk ‖ cm)` is one, so it adds no spendable value; a bond
+        // yield claim must equal the chain's index and the accrual owed, which its move zeroes
+        // §BR-13 the set-aside's applied flag; §BR-10 a signal counts once per validator in the OPEN window only; §BR-9a a
+        // deal only in the epoch dealing now, once per dealer; a release attestation only moves a builder FORWARD
+        // (`apply_chain_release_attestation`, monotone version from the upgrade)
+        // a pool settlement and a contract fee update open the CURRENT leaf by path under the contract-state root, and
+        // each moves it (a fee only downward), so an older copy no longer opens it
+        // §BR-4 B4-2 a unit open runs its peg-in's attested verdict (chained like a peg-in) and is refused for a deposit
+        // that already backs a mint or a unit
+        // a seat request's right is one-time inside the window and EXPIRED past it (the nonce's chain-tick expiry,
+        // `membership_bond_tx::seat_nonce_until`, refused at the apply)
+        Class::MembershipBond
+        // a release: one per (ledger, txid); past the window the owed book refuses a replay (its burns are no longer owed)
+        | Class::ReleaseConfirm
+        | Class::UnitOpen
+        | Class::IonSettle
+        | Class::DsolFeeUpdate
+        | Class::SatSetAside
+        | Class::DeploymentSignal
+        | Class::EpochKeyDeal
+        | Class::ReleaseAttestation
+        | Class::SatoshiReward
+        | Class::MinerPayout
+        | Class::BondYieldClaim
+        | Class::BountyPayout
+        | Class::PegIn
+        | Class::WrappedMint
+        | Class::Liquidation
+        | Class::TheftRepayment
+        | Class::ReserveCost
+        | Class::DecoyReturn
+        | Class::DecoyBatch => own.iter().map(|x| (*x, TagRole::OneTime)).collect(),
+        _ => Vec::new(),
+    };
+    Some(
+        own.iter()
+            .map(|t| match known.iter().position(|(k, _)| k == t) {
+                Some(i) => known.swap_remove(i),
+                None => (*t, TagRole::Unknown),
+            })
+            .collect(),
+    )
 }
 
 /// ⭐⭐⭐ THE CARRIAGE IS NOT THE OBJECT — the per-note-validity binding between a transaction WRAPPER
@@ -1413,6 +1602,8 @@ pub fn object_own_nullifiers(blob: &[u8]) -> Option<Vec<[u8; 32]>> {
         }
         // SAFE AT SCALE: one cost per foreign transaction — its ledger and that transaction's id are its own nullifier.
         Class::ReserveCost => vec![crate::reserve_cost_tx::decode(payload)?.one_time_id()],
+        // A-F114: one release per (ledger, foreign transaction)
+        Class::ReleaseConfirm => vec![crate::release_confirm_tx::ReleaseConfirmTx::decode(payload)?.one_time_id()],
         // §BR-8: one booking per payout, one return per outpoint
         Class::DecoyBatch => vec![crate::peg::one_time_id_nf(crate::peg::ONE_TIME_DECOY_BATCH, &crate::decoy_tx::DecoyBatchTx::decode(payload)?.payout_txid)],
         Class::DecoyReturn => {
@@ -1847,6 +2038,17 @@ pub fn admissible(
                 eprintln!("[admit] ⛔ REFUSE DefiSlots: a claim {why}."); // DIGITAL-CASH-PRIVACY-REVIEWED: a fixed reason only
                 return false;
             }
+            // ⭐ A-F114: under the constant chain a slot carries NO member leg (its wrapper is its leg), so there is no anchor
+            // to partition by; A-F26's rule moves to the wrappers' ENDS, judged where the wrappers are seen
+            // (`Node::canon_object_absent`: every slot of one batch names one end)
+            if crate::params::canon_live() {
+                let bare = t.orders.iter().all(|o| o.member_tuple.is_empty() && o.member_carrier.is_empty())
+                    && t.claims.iter().all(|c| c.member_tuple.is_empty() && c.member_carrier.is_empty());
+                if !bare {
+                    eprintln!("[admit] ⛔ REFUSE DefiSlots: a slot carries a member leg under the constant chain (one encoding).");
+                }
+                return bare;
+            }
             // ⭐ A-F26: every slot of one batch must name ONE anchor (a partition tells real from cover)
             let mut batch_anchor: Option<crate::spend_frontier::Digest4> = None;
             let all_same = t.orders.iter().map(|o| &o.member_tuple[..]).chain(t.claims.iter().map(|c| &c.member_tuple[..]))
@@ -1987,7 +2189,10 @@ pub fn admissible(
                 eprintln!("[admit] REFUSE BountyPayout: not one canonical, bounded bounty.");
                 return false;
             };
-            if !t.signatures_and_carrier_verify() {
+            // A-F114: from the upgrade the signatures cover the ledger's bounty counter, a state the fold judges
+            // (`Node::bounty_payout_refusal`); the carrier stays stateless
+            let stateless = if crate::params::canon_live() { t.carrier_verifies() } else { t.signatures_and_carrier_verify() };
+            if !stateless {
                 eprintln!("[admit] ⛔ REFUSE BountyPayout: a signature or the note's carrier does not verify.");
                 return false;
             }
@@ -2396,6 +2601,9 @@ pub fn admissible(
         // this node's own pairs and slot, and the take's bound are the doors' (`PegLedger::check_vault_carve` /
         // `check_vault_take` / `check_vault_cancel`, at the fold). The bounds live at the decode.
         Class::VaultRebalance => crate::vault_rebalance_tx::decode(payload).is_some(),
+        // A-F114: structural only, the cost's division of labour (the vault's tally and the owed book are the fold's);
+        // refused outright before the network upgrade, so no peer can carry one on today's chain
+        Class::ReleaseConfirm => crate::params::canon_live() && crate::release_confirm_tx::ReleaseConfirmTx::decode(payload).is_some(),
         Class::WrappedAssetRegister => {
             // Structural only, the SAME division of labour `Class::Liquidation` uses: this function holds
             // no node state, so it cannot tally bonded weight or know the ratio this node currently

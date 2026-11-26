@@ -44,12 +44,20 @@ pub struct BountyPayoutTx {
 
 /// What every attestor signs.
 #[must_use]
-pub fn bounty_statement(nonce: &[u8; 32], amount: u64, note_cm: &[u8; 32], clue_digest: &[u8; 32]) -> Vec<u8> {
-    let mut m = b"MUSD/bounty-payout/v1".to_vec();
+/// ⭐ A-F114 — `seq`: the ledger's BOUNTY COUNTER the statement binds (from the network upgrade, `params::CANON_LIVE`; `None`
+/// before it, exactly the v1 bytes). The constant chain holds no set of paid nonces, and the statement binds no other state, so
+/// a re-carried bounty past the window would pay out of the surplus buffer again; bound to the counter, which steps with each
+/// bounty paid, its gathered signatures cover a passed counter and no quorum signed the statement the fold rebuilds.
+/// BORROWED: Ethereum's account nonce. Signers read the counter from their own node's chain state.
+pub fn bounty_statement(nonce: &[u8; 32], amount: u64, note_cm: &[u8; 32], clue_digest: &[u8; 32], seq: Option<u64>) -> Vec<u8> {
+    let mut m = if seq.is_some() { b"MUSD/bounty-payout/v2".to_vec() } else { b"MUSD/bounty-payout/v1".to_vec() };
     m.extend_from_slice(nonce);
     m.extend_from_slice(&amount.to_le_bytes());
     m.extend_from_slice(note_cm);
     m.extend_from_slice(clue_digest);
+    if let Some(q) = seq {
+        m.extend_from_slice(&q.to_le_bytes());
+    }
     m
 }
 
@@ -100,7 +108,24 @@ impl BountyPayoutTx {
     /// The statement the attestors signed.
     #[must_use]
     pub fn statement(&self) -> Option<Vec<u8>> {
-        Some(bounty_statement(&self.nonce, self.amount, &self.note_cm()?, &crate::oli::owner_clue_digest(&self.owner_clue)))
+        self.statement_at(None)
+    }
+    /// The statement at the ledger's bounty counter `seq` (`bounty_statement`).
+    #[must_use]
+    pub fn statement_at(&self, seq: Option<u64>) -> Option<Vec<u8>> {
+        Some(bounty_statement(&self.nonce, self.amount, &self.note_cm()?, &crate::oli::owner_clue_digest(&self.owner_clue), seq))
+    }
+    /// Every signature over the statement at `seq`.
+    #[must_use]
+    pub fn signatures_verify_at(&self, seq: Option<u64>) -> bool {
+        let Some(stmt) = self.statement_at(seq) else { return false };
+        self.attestors.iter().all(|(pk, sig)| crate::pqauth::ml_dsa_verify(&stmt, pk, sig))
+    }
+    /// The carrier opens the note to `amount` USDm (stateless).
+    #[must_use]
+    pub fn carrier_verifies(&self) -> bool {
+        crate::spend_frontier::note_cm_of(&self.note)
+            .is_some_and(|leaf| usdm_decider::whir_rec_block::verify_asset_mint_validity_bytes(&self.carrier, leaf, self.amount, [0, 0, 0]))
     }
     /// ⭐ THE STATELESS HALF: every signature verifies over the statement and the carrier opens the note to `amount` USDm.
     /// (The WEIGHT — ≥ 2/3 of the bonded set — is the fold's: it needs the chain's set.)

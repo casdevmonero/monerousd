@@ -29,6 +29,15 @@ impl Node {
         panic!("no production bundle became servable within 256 blocks: the freeze path did not reach a bundle its own join door accepts");
     }
 
+    /// ⛔ THE ONE WAY A TEST GETS A BUNDLE TO HAND A JOINER (census S-DRAFT-ADOPT, scratchpad/secure.py; user 2026-11-26: "make sure
+    /// the fixtures can never fall behind our code again and update automatically"): the bundle this node SERVES, grown from its
+    /// own tip at the chain's own spacing until one is servable. A tamper test edits a field of THIS bundle, so its refusal is
+    /// the door's verdict on the field it changed, never `AnchorArray` on a draft (a refusal that could not fail).
+    pub(crate) fn served_bundle_for_test(&mut self) -> crate::sync::SyncBundle {
+        let ts = self.selected_tip().and_then(|t| self.relay.dag().get(&t).map(|n| n.header.timestamp)).unwrap_or(0);
+        self.production_bundle_for_test(ts, "served-fixture")
+    }
+
     /// The same production bundle, decoded, for a pin that hands it to `instant_sync` or edits one field of it.
     pub(crate) fn production_bundle_for_test(&mut self, ts: u64, tag: &str) -> crate::sync::SyncBundle {
         let crate::protocol::WireMsg::SyncResponse(wire) = self.serve_production_bundle_for_test(ts, tag) else { unreachable!() };
@@ -2593,6 +2602,15 @@ impl Node {
     /// cons: none — a test door (cfg(test)); writes nothing beyond the view the runtime's warm installs.
     #[cfg(test)]
     pub(crate) fn warm_view_from_for_test(&mut self, peer: &Node) -> Result<(), &'static str> {
+        // ⛔ A FIXTURE NEVER FALLS BEHIND THE CODE (2026-11-26): under the constant chain (`params::canon_live()`, ON in every build
+        // since the A-F114 network upgrade) no node holds the spent set and the runtime warms NO view
+        // (`NodeRuntime::drive_nf_pivot_job` returns at once, A-F114 U1). This door is the runtime's warm in process, so it does
+        // exactly what the runtime does: nothing. Before, it demanded a pivot the constant chain never has ("this node stands on
+        // no placeable pivot") and two restart pins of `canonical_record_fold_tests` stood red on a step production no longer
+        // takes, while the resume they cover went unchecked.
+        if crate::canon_chain::canon_live() {
+            return Ok(());
+        }
         // the runtime's warm, in process: THIS node's own placeable pivot, the peer's key-ordered pages after the cursor,
         // and this node's band tail synced before each page (a page moves the cursor or the empty page closes the stream)
         let pivot = self.sparse_pivot().ok_or("this node stands on no placeable pivot")?;

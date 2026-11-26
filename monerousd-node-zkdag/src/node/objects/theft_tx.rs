@@ -42,7 +42,7 @@ pub fn apply_chain_reserve_theft(
     let Some((statement, offenders, loss_sats, cert)) = decode(payload) else {
         return TheftApply::Refused("the evidence is not one canonical, bounded theft object");
     };
-    if !crate::bond_tally::verify_threshold(&theft_msg(&statement, &offenders, loss_sats), &cert, pre, v) {
+    if !crate::bond_tally::verify_threshold(&crate::theft_tx::theft_msg_at(&statement, &offenders, loss_sats, node.theft_statement_seq()), &cert, pre, v) {
         return TheftApply::Refused("no ≥2/3 of the step's pre-state weight signs this theft, these offenders and this loss");
     }
     let burned: u128 = offenders
@@ -52,10 +52,18 @@ pub fn apply_chain_reserve_theft(
     if burned == 0 {
         return TheftApply::Refused("no named offender is bonded or unbonding here (already slashed, or never bonded)");
     }
+    // A-F114: the counter steps with every theft applied, so this certificate is never valid again
+    node.step_theft_seq();
     // ⭐ §BR-3 17.5 layer 1: the slashed SAT is not destroyed — it moves into the repayment pot (sold at the floor, its
     // proceeds retired), and the loss is booked once per theft for the repayment ladder (`Class::TheftRepayment`).
-    node.close_decoy_by_theft(&statement, &offenders); // §BR-8: an unreturned decoy's certificate closes its obligation
-    if !node.book_theft_loss(burned, loss_sats, &theft_loss_key(&statement)) {
+    let closed_decoy = node.close_decoy_by_theft(&statement, &offenders); // §BR-8: an unreturned decoy's certificate closes its obligation
+    // ⭐ A-F114: from the network upgrade a DECOY theft's loss is booked only by the certificate that closed its open decoy;
+    // a second certificate for one decoy closes nothing and books nothing (no key is kept to refuse it). A statement that is
+    // no decoy statement keeps the key path.
+    // The slashed SAT moves into the pot in every case (conservation); only the LOSS booking is skipped.
+    let decoy_statement = statement.starts_with(b"MUSD/decoy-unreturned/v1");
+    let skip_loss = crate::params::canon_live() && decoy_statement && !closed_decoy;
+    if !node.book_theft_loss(burned, loss_sats, &theft_loss_key(&statement), closed_decoy, skip_loss) {
         eprintln!("[bond-apply] reserve-theft slash applied; its loss was already booked (one theft books once)");
     }
     TheftApply::Slashed(burned)

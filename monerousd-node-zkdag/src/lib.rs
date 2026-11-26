@@ -288,6 +288,7 @@ pub use usdm_ledger::nf_oblivious;
 pub use usdm_ledger::nf_evidence;
 pub use usdm_ledger::join_proof;
 pub use usdm_ledger::nf_sparse;
+pub mod canon_chain; // A-F114 phase 2: the canonical tag chain a constant node holds (hash chain, never a sum)
 /// The standing wiring census: every production function must be called by production code.
 /// Test-only; compiles out entirely. See the module docs for the class it exists to catch.
 #[cfg(all(test, feature = "pins-core"))]
@@ -413,6 +414,8 @@ pub mod release_verify; // T6: `usdmd-node verify-release` — SHA256SUMS + ≥ 
 pub mod block_part; // ⭐ R4 — a pulled block crosses every bulk lane in parallel and is judged whole
 pub use usdm_ledger::custody_vaults; // ⭐ SAFE AT SCALE — the bonded set cut into custody committees of 8 to 16 (stage V1: the function and its invariants)
 pub use usdm_ledger::vault_merge_tx; // ⭐ SAFE AT SCALE — `Class::VaultMerge`: a custody vault at half strength or under hands its ledgers to another vault
+pub mod canon_carrier_core; // ⭐ A-F114 — the one absence carrier (the wallet and the custody cover carrier)
+pub use usdm_ledger::release_confirm_tx; // ⭐ A-F114 — `Class::ReleaseConfirm`: a payout's release as a chain object
 pub use usdm_ledger::reserve_cost_tx; // ⭐ SAFE AT SCALE — `Class::ReserveCost`: a vault's reserve falls by the public fee its custody paid a foreign chain to move its own coins
 pub use usdm_ledger::vault_rebalance_tx; // ⭐ SAFE AT SCALE, stage three — `Class::VaultRebalance`: part of one custody vault's ledgers moves to another vault, by proof (spec §3g)
 pub use usdm_ledger::vault_key_tx; // ⭐ SAFE AT SCALE, stage three — `Class::VaultKey`: a custody vault takes the key of its members, or retires a key it replaced

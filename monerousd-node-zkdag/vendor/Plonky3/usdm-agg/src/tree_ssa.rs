@@ -60,6 +60,12 @@ pub struct PaymentStatement {
     /// The member tuple: leaf commit, binder, anchor, outputs.
     pub member: [Digest; 4],
     pub tags: Vec<Digest>,
+    /// ⭐ A-F114 (B′) — the CONSTANT-NODE form (`CANON_LIVE`): the spend's absence wrapper stands in for its member leg, and
+    /// this is the wrapper's statement as its own program reads it: `[nf lanes, binder, leaf_commit, c_end]`
+    /// (`absence_u::verify_spend`'s `spend_io`). `binder` must be `nf` and `leaf_commit` must be `lc` ([`canon_words`]
+    /// refuses any other), so a wrapper can only ever vouch for THIS spend's note. `None`: the member form, unchanged.
+    #[serde(default)]
+    pub absence: Option<[Digest; 4]>,
 }
 
 /// A node's PROGRAM, named by its shape: a leaf's by its class shape, a merge's by its children's. Every node of one kind
@@ -68,6 +74,14 @@ pub struct PaymentStatement {
 pub enum Kind {
     /// (the spend gate's option shape bits, the cover arm's tags)
     Leaf(usize, usize),
+    /// ⭐ A-F114 (B′): a leaf of the constant-node form (spend + absence wrapper + cover); the same key as [`Kind::Leaf`].
+    LeafCanon(usize, usize),
+    /// ⭐ A-F114 (B′): the admitted absence family's WRAP program (`absence_u::Family::wrap` at `ADMITTED_SPEND_SHAPE`), whose
+    /// claims a canon leaf carries from its in-circuit verify of the wrapper.
+    AbsenceWrap,
+    /// ⭐ A-F114 (B′): the admitted family's stacked table (`absence_u::comb_program`), the kind of the wrapper's own
+    /// deferred claim.
+    AbsenceFamily,
     Merge(Vec<Kind>),
     /// V2: the block's LEDGER node — its tree ledger proof verified in circuit (`ledger_ssa::emit_tree_ledger_door`);
     /// (the output-notes root's lanes, the deletion-set root's lanes), the statement's shape.
@@ -98,22 +112,30 @@ pub struct NodeProof {
 #[must_use]
 pub fn carried(k: &Kind) -> Vec<Kind> {
     let mut set = std::collections::BTreeSet::new();
-    if let Kind::Merge(ch) = k {
-        for c in ch {
-            set.insert(c.clone());
-            for d in carried(c) {
-                set.insert(d);
+    match k {
+        Kind::Merge(ch) => {
+            for c in ch {
+                set.insert(c.clone());
+                for d in carried(c) {
+                    set.insert(d);
+                }
             }
         }
+        // a canon leaf verified one SSA proof in circuit and holds that proof's own deferred claim
+        Kind::LeafCanon(..) => {
+            set.insert(Kind::AbsenceWrap);
+            set.insert(Kind::AbsenceFamily);
+        }
+        _ => {}
     }
     set.into_iter().collect()
 }
 
-fn u4(e: Ea4) -> [u32; 4] {
+pub(crate) fn u4(e: Ea4) -> [u32; 4] {
     let s: &[Fa4] = BasedVectorSpace::<Fa4>::as_basis_coefficients_slice(&e);
     [0, 1, 2, 3].map(|i| s[i].as_canonical_u32())
 }
-fn e4(v: &[u32; 4]) -> Ea4 {
+pub(crate) fn e4(v: &[u32; 4]) -> Ea4 {
     crate::door_ssa::ea(v.map(Fa4::from_u32))
 }
 
@@ -168,7 +190,8 @@ fn parts(st: &PaymentStatement) -> Result<Vec<Part>, String> {
     let (gp, lay) = traced((0, w, n, shape_key), || usdm_decider::gate_trace::spend_validity_program(&sp.gate, w, n)).ok_or("the spend gate does not trace")?;
     let round_len = Blinded { inner: sp.gate.clone() }.degree(n) + 2;
     out.push(Part { door: CarrierDoor { kind: DoorKind::Committed, blinded: true, shape: (n, w), params, round_len, next_cols: Vec::new() }, gp, lay, bind: sp.bind.clone(), publics: base_lanes(&sp.publics)?, shape_key });
-    // the member leg (blinded chained)
+    // the member leg (blinded chained) — the member form only; the canon form's input is proven by its wrapper
+    if st.absence.is_none() {
     let t = MemberTuple { leaf_commit: st.member[0], binder: st.member[1], anchor: st.member[2], outs: st.member[3] };
     let mb = usdm_decider::gate_trace::member_statement(&t);
     let n = mb.laid_shape.0 + 1;
@@ -177,6 +200,7 @@ fn parts(st: &PaymentStatement) -> Result<Vec<Part>, String> {
     let round_len = Blinded { inner: mb.gate.clone() }.degree(n) + 2;
     let next_cols = lay.shifted.clone();
     out.push(Part { door: CarrierDoor { kind: DoorKind::Chained, blinded: true, shape: (n, w), params, round_len, next_cols }, gp, lay, bind: mb.bind.clone(), publics: base_lanes(&mb.publics)?, shape_key: 0 });
+    }
     // the cover arm (blinded chained)
     let cv = usdm_decider::gate_trace::cover_statement(&st.tags).ok_or("the cover door refuses this tag set")?;
     let n = cv.laid_shape.0 + 1;
@@ -189,7 +213,7 @@ fn parts(st: &PaymentStatement) -> Result<Vec<Part>, String> {
 }
 
 /// The committed door's sponge over base words (`PaddingFreeSponge<Perm16, 16, 8, 8>`), natively.
-fn sponge_words(words: &[Fa4]) -> [Fa4; RATE] {
+pub(crate) fn sponge_words(words: &[Fa4]) -> [Fa4; RATE] {
     use p3_symmetric::CryptographicHasher;
     use rand::SeedableRng;
     let mut rng = rand::rngs::SmallRng::seed_from_u64(crate::ssa::SEED);
@@ -198,7 +222,7 @@ fn sponge_words(words: &[Fa4]) -> [Fa4; RATE] {
 }
 
 /// The same sponge as SSA operations over addresses; returns the digest's lanes.
-fn sponge_addrs(b: &mut Builder, words: &[Addr]) -> [Addr; RATE] {
+pub(crate) fn sponge_addrs(b: &mut Builder, words: &[Addr]) -> [Addr; RATE] {
     let mut st = [ZERO; 16];
     for chunk in words.chunks(RATE) {
         let mut inp = st;
@@ -212,15 +236,61 @@ fn leaf_words(ps: &[Part]) -> Vec<Fa4> {
     ps.iter().flat_map(|p| p.bind.iter().chain(&p.publics).copied()).collect()
 }
 
-/// A leaf's statement digest, natively from the payment's statement.
-pub fn leaf_io(st: &PaymentStatement) -> Result<[Fa4; RATE], String> {
-    Ok(sponge_words(&leaf_words(&parts(st)?)))
+/// Lanes a wrapper statement takes in the leaf (four digests of eight) and the family digests beside them (three of eight).
+const CANON_STMT_WORDS: usize = 4 * RATE;
+const CANON_DIGEST_WORDS: usize = 3 * RATE;
+
+/// ⭐ A-F114 (B′) — the words a canon leaf binds beyond its parts: the wrapper's statement `[nf lanes, binder, lc, c_end]`
+/// and the admitted family's three program digests (so a leaf checked against another family's digests states another io).
+/// Refuses a statement whose wrapper does not speak for THIS spend: `binder` must be the spend's `nf` and `leaf_commit` its
+/// `lc` (the same cross-bind the member tuple made, `member_transition::cross_binds`). `None` for the member form.
+fn canon_words(st: &PaymentStatement) -> Result<Option<Vec<Fa4>>, String> {
+    let Some(a) = st.absence else { return Ok(None) };
+    if a[1] != st.nf || a[2] != st.lc {
+        return Err("the wrapper's statement speaks for another spend (binder or leaf commitment differ)".into());
+    }
+    let fam = canon_family()?;
+    let mut w: Vec<Fa4> = Vec::with_capacity(CANON_STMT_WORDS + CANON_DIGEST_WORDS);
+    for d in &a {
+        for &x in d {
+            let f = Fa4::from_u64(x);
+            if u64::from(f.as_canonical_u32()) != x {
+                return Err("a wrapper statement lane is not a canonical field element".into());
+            }
+            w.push(f);
+        }
+    }
+    w.extend(fam.digests.iter().flat_map(|d| d.iter().copied()));
+    Ok(Some(w))
 }
 
-/// A leaf's program (`carriers = None`: the statement-only build every verifier makes).
-fn leaf_builder(ps: &[Part], carriers: Option<[&[u8]; 3]>) -> Result<Builder, String> {
+/// The admitted absence family, with its two programs registered under their kinds (once).
+fn canon_family() -> Result<std::sync::Arc<crate::absence_u::Family>, String> {
+    let fam = crate::absence_u::family(crate::absence_u::ADMITTED_SPEND_SHAPE)?;
+    if cached(&Kind::AbsenceWrap).is_none() {
+        remember(&Kind::AbsenceWrap, fam.wrap.clone());
+        remember(&Kind::AbsenceFamily, crate::absence_u::comb_program(&fam));
+    }
+    Ok(fam)
+}
+
+/// A leaf's statement digest, natively from the payment's statement.
+pub fn leaf_io(st: &PaymentStatement) -> Result<[Fa4; RATE], String> {
+    let mut w = leaf_words(&parts(st)?);
+    if let Some(c) = canon_words(st)? {
+        w.extend(c);
+    }
+    Ok(sponge_words(&w))
+}
+
+/// A leaf's program (`carriers = None`: the statement-only build every verifier makes). `canon`: the canon form's words
+/// ([`canon_words`]); its carriers are `[spend, wrapper, cover]`, and it also returns the claims the leaf carries.
+fn leaf_builder(ps: &[Part], canon: Option<&[Fa4]>, carriers: Option<[&[u8]; 3]>) -> Result<(Builder, Vec<ProgClaim>), String> {
     let mut b = Builder::new();
-    let words = leaf_words(ps);
+    let mut words = leaf_words(ps);
+    if let Some(c) = canon {
+        words.extend_from_slice(c);
+    }
     let io_v = if carriers.is_some() { sponge_words(&words) } else { [Fa4::ZERO; RATE] };
     let io = b.public_vals(&io_v);
     let vals = if carriers.is_some() { words.clone() } else { vec![Fa4::ZERO; words.len()] };
@@ -235,33 +305,102 @@ fn leaf_builder(ps: &[Part], carriers: Option<[&[u8]; 3]>) -> Result<Builder, St
         k += p.bind.len();
         let pubs: Vec<Ext> = wa[k..k + p.publics.len()].iter().map(|&a| Ext([a, ZERO, ZERO, ZERO])).collect();
         k += p.publics.len();
-        emit_carrier_door(&mut b, &p.door, bind, &p.gp, &p.lay, &pubs, carriers.map(|c| c[i]), &mut WhirOnSsa)?;
+        // the canon form's parts are [spend, cover]; its carriers [spend, wrapper, cover]
+        let ci = if canon.is_some() && i == 1 { 2 } else { i };
+        emit_carrier_door(&mut b, &p.door, bind, &p.gp, &p.lay, &pubs, carriers.map(|c| c[ci]), &mut WhirOnSsa)?;
     }
-    Ok(b)
+    let Some(_) = canon else { return Ok((b, Vec::new())) };
+    // ⭐ A-F114 (B′) — THE WRAPPER, VERIFIED IN CIRCUIT. Its statement is `io ‖ D0 ‖ D1 ‖ D2 ‖ claim digest`, exactly what
+    // `absence_u::verify_spend` states natively: `io` the sponge of the bound wrapper statement, the digests the bound family
+    // digests, and the claim digest the sponge of the wrapper's own deferred claim (loaded here, carried up as
+    // `Kind::AbsenceFamily`). The in-circuit verify leaves claims about the wrap program (`Kind::AbsenceWrap`). Both kinds'
+    // claims fold to one each and ride to the root, which checks them natively (`verify_tree`).
+    let fam = canon_family()?;
+    let ab = &wa[k..k + CANON_STMT_WORDS];
+    k += CANON_STMT_WORDS;
+    let ds = &wa[k..k + CANON_DIGEST_WORDS];
+    let io_w = sponge_addrs(&mut b, ab);
+    let us: Option<crate::absence_u::USpend> = match carriers {
+        Some(c) => Some(postcard::from_bytes(c[1]).map_err(|_| "the wrapper does not decode")?),
+        None => None,
+    };
+    if us.as_ref().is_some_and(|u| u.shape != crate::absence_u::ADMITTED_SPEND_SHAPE) {
+        return Err("a wrapper of a shape the leaf does not admit".into());
+    }
+    let ny = fam.nvars + 2; // the family claim's point: nvars + KBITS
+    let cl_len = 4 * (ny + crate::ssa::NFIXED);
+    let cl_v: Vec<Fa4> = us.as_ref().map_or(vec![Fa4::ZERO; cl_len], |u| u.claim.lanes());
+    if cl_v.len() != cl_len {
+        return Err("the wrapper's claim is not the family's shape".into());
+    }
+    let cla = b.load(&cl_v);
+    let cd = sponge_addrs(&mut b, &cla);
+    let mut stmt: Vec<Addr> = io_w.to_vec();
+    stmt.extend_from_slice(ds);
+    stmt.extend_from_slice(&cd);
+    let gate = ssa_gate_program().ok_or("the universal gate does not trace")?;
+    let shape = ChildShape::of(&fam.wrap, &stmt).ok_or("the wrapper's statement is not its program's")?;
+    let d = emit_ssa_child(&mut b, &shape, &gate, us.as_ref().map(|u| &u.proof[..]), &mut WhirOnSsa)?;
+    let ext = |j: usize| Ext([cla[4 * j], cla[4 * j + 1], cla[4 * j + 2], cla[4 * j + 3]]);
+    let mut groups: std::collections::BTreeMap<Kind, Vec<crate::fold_claims::Claim>> = std::collections::BTreeMap::new();
+    groups.entry(Kind::AbsenceFamily).or_default().push(crate::fold_claims::Claim {
+        point: (0..ny).map(ext).collect(),
+        cols: crate::fold_claims::Cols::All,
+        vals: (ny..ny + crate::ssa::NFIXED).map(ext).collect(),
+    });
+    let g = groups.entry(Kind::AbsenceWrap).or_default();
+    g.push(crate::fold_claims::Claim { point: d.x.clone(), cols: crate::fold_claims::Cols::Bus, vals: d.fx.clone() });
+    g.push(crate::fold_claims::Claim { point: d.r.clone(), cols: crate::fold_claims::Cols::All, vals: d.fr.clone() });
+    let with_values = carriers.is_some();
+    let mut out = Vec::new();
+    let mut out_lanes: Vec<Addr> = Vec::new();
+    for (kind, claims) in &groups {
+        let prog = cached(kind).ok_or("an absence program is not registered")?;
+        let f = crate::fold_claims::emit_fold(&mut b, claims, prog.nvars, with_values.then_some(&prog.fixed[..]))?;
+        let ev = |e: &Ext| u4(b.ext_val(*e));
+        out.push(ProgClaim { kind: kind.clone(), y: f.y.iter().map(ev).collect(), v: f.v.iter().map(ev).collect() });
+        for e in f.y.iter().chain(&f.v) {
+            out_lanes.extend_from_slice(&e.0);
+        }
+    }
+    // the leaf's statement, after its io: the digest of the claims it carries (a merge's shape)
+    let cd_d = sponge_addrs(&mut b, &out_lanes);
+    let vals: Vec<Fa4> = cd_d.iter().map(|&a| if with_values { b.val(a) } else { Fa4::ZERO }).collect();
+    let st = b.public_vals(&vals);
+    for l in 0..RATE {
+        b.assert_eq(Ext([cd_d[l], ZERO, ZERO, ZERO]), Ext([st[l], ZERO, ZERO, ZERO]));
+    }
+    Ok((b, out))
 }
 
-/// Prove one payment's leaf from its three carriers (spend, member, cover).
+/// Prove one payment's leaf from its three carriers (spend, member, cover). In the canon form (`st.absence`), `member` is
+/// the spend's absence WRAPPER (`absence_u::prove_spend`, blinded), never its carrier.
 #[must_use]
 pub fn prove_leaf(st: &PaymentStatement, spend: &[u8], member: &[u8], cover: &[u8]) -> Option<Vec<u8>> {
     let ps = parts(st).ok()?;
-    let b = leaf_builder(&ps, Some([spend, member, cover])).ok()?;
+    let cw = canon_words(st).ok()?;
+    let (b, carried_claims) = leaf_builder(&ps, cw.as_deref(), Some([spend, member, cover])).ok()?;
     if b.mismatch.is_some() {
         return None; // a carrier the door refuses has no leaf
     }
     let (rows, prog) = lay(&b).ok()?;
     let cols = crate::ssa::execute(&b, &rows, &prog).ok()?;
     let proof = crate::ssa_door::prove(&prog, cols)?;
-    let io = sponge_words(&leaf_words(&ps));
+    let io = leaf_io(st).ok()?;
     let kind = leaf_kind(st, &ps);
     if cached(&kind).is_none() {
-        let vb = leaf_builder(&ps, None).ok()?;
+        let (vb, _) = leaf_builder(&ps, cw.as_deref(), None).ok()?;
         remember(&kind, lay(&vb).ok()?.1);
     }
-    postcard::to_allocvec(&NodeProof { proof, nvars: prog.nvars, kind, io: io.map(|x| x.as_canonical_u32()), claims: Vec::new(), payments: 1 }).ok()
+    postcard::to_allocvec(&NodeProof { proof, nvars: prog.nvars, kind, io: io.map(|x| x.as_canonical_u32()), claims: carried_claims, payments: 1 }).ok()
 }
 
 fn leaf_kind(st: &PaymentStatement, ps: &[Part]) -> Kind {
-    Kind::Leaf(ps[0].shape_key, st.tags.len())
+    if st.absence.is_some() {
+        Kind::LeafCanon(ps[0].shape_key, st.tags.len())
+    } else {
+        Kind::Leaf(ps[0].shape_key, st.tags.len())
+    }
 }
 
 /// The statement-only program of every kind met so far, built once (a leaf's from any statement of its kind).
@@ -287,7 +426,8 @@ fn leaf_program(st: &PaymentStatement) -> Result<(Kind, std::sync::Arc<Program>)
     if let Some(p) = cached(&k) {
         return Ok((k, p));
     }
-    let b = leaf_builder(&ps, None)?;
+    let cw = canon_words(st)?;
+    let (b, _) = leaf_builder(&ps, cw.as_deref(), None)?;
     let (_, prog) = lay(&b)?;
     Ok((k.clone(), remember(&k, prog)))
 }
@@ -323,8 +463,9 @@ fn merge_builder(kids: &[Kid<'_>], with_values: bool) -> Result<(Builder, Vec<Pr
         let ioa = b.load(&k.io.map(z));
         ios.extend_from_slice(&ioa);
         let mut stmt = ioa.clone();
-        if let Kind::Merge(_) = k.kind {
-            // the child's carried claims: loaded, hashed to its statement's second half, then folded here
+        if !carried(&k.kind).is_empty() {
+            // the child's carried claims (a merge's, or a canon leaf's): loaded, hashed to its statement's second half,
+            // then folded here
             let lanes: Vec<Fa4> = k.claims.iter().flat_map(claim_lanes).map(z).collect();
             let la = b.load(&lanes);
             let cd = sponge_addrs(&mut b, &la);
@@ -398,7 +539,7 @@ fn merge_program(kinds: &[Kind], st_of: &dyn Fn(&Kind) -> Option<std::sync::Arc<
 }
 
 /// The program with its statement values set (a verifier's build has zeros there).
-fn stated(prog: &Program, vals: &[Fa4]) -> Program {
+pub(crate) fn stated(prog: &Program, vals: &[Fa4]) -> Program {
     let mut p = prog.clone();
     for (i, a) in prog.statement.iter().enumerate() {
         for q in &mut p.public {
@@ -704,7 +845,7 @@ fn verify_tree(tree: &Tree, statements: &[PaymentStatement], ls: Option<&LedgerS
         }
     }
     let mut svals: Vec<Fa4> = io.to_vec();
-    if let Kind::Merge(_) = kind {
+    if !carried(&kind).is_empty() {
         svals.extend_from_slice(&claims_digest(&np.claims));
     }
     if svals.len() != prog.statement.len() || np.nvars != prog.nvars {
@@ -747,8 +888,162 @@ mod tests {
         let wit = vec![usdm_decider::nf_sparse_air::TagWitness::Decoy; 8];
         let cover = usdm_decider::nf_sparse_air::prove_spend_or_decoy_bytes(bound, &tags, &wit).expect("the wallet proves its cover");
         assert!(usdm_decider::nf_sparse_air::verify_spend_or_decoy_bytes(&cover, &tags), "CALIBRATION: the native cover door accepts it");
-        let st = PaymentStatement { c0: cms[0], c1: cms[1], nf, lc, d, t1, fee: w.fee, hours: 0, member: [t.leaf_commit, t.binder, t.anchor, t.outs], tags };
+        let st = PaymentStatement { c0: cms[0], c1: cms[1], nf, lc, d, t1, fee: w.fee, hours: 0, member: [t.leaf_commit, t.binder, t.anchor, t.outs], tags, absence: None };
         (st, [spend, member, cover])
+    }
+
+    /// ⭐⭐ A-F114 (B′) — THE CANON LEAF: a real spend and cover carrier, and the BLINDED absence wrapper of the SAME note (its
+    /// leaf an output of the first of sixteen canonical records), verified together in one leaf; the root checks the
+    /// leaf's two carried claims (the wrap program's and the family's) natively. CALIBRATION first: the wrapper's
+    /// `leaf_commit` IS the spend carrier's `lc` (one cross-bind, two proofs). Lies refused: a wrapper of another note, a
+    /// statement whose wrapper speaks for another spend, a moved chain end, a moved family claim.
+    #[test]
+    fn t9_a_canon_leaf_proves_a_payment_with_its_absence_wrapper() {
+        use crate::absence_ssa::{end_aux, out_aux, Record};
+        use crate::absence_u::{family, prove_span, prove_spend, step, verify_spend, ADMITTED_SPEND_SHAPE};
+        use usdm_decider::whir_rec_block::{asset_note_cm, owner_opening, poseidon_pair, USDM_ASSET_TAG};
+        let seed = 9u64;
+        let w = SpendValidityWitness {
+            value_in: PROTOCOL_FEE_ATOMIC,
+            owner: NoteOwner { ask: dig(seed + 1), nk: dig(seed + 2), seed: dig(seed + 3) },
+            value_out: 0,
+            fee: PROTOCOL_FEE_ATOMIC,
+            lc_blind: dig(seed + 4),
+            out0_value: 0,
+            out0_opening: dig(seed + 5),
+            out1_value: 0,
+            out1_opening: dig(seed + 6),
+        };
+        let d = dig(seed + 7);
+        let (spend, cms, nf, lc, t1) = usdm_decider::whir_rec_block::prove_spend_validity_carrier_claiming_bytes(&w, d, w.lc_blind, 0).expect("the wallet proves its spend");
+        let bound = dig(seed + 12);
+        let tags: Vec<Digest> = (0..8u64).map(|j| usdm_decider::nf_sparse_air::cover_tag_native(bound, j)).collect();
+        let wit = vec![usdm_decider::nf_sparse_air::TagWitness::Decoy; 8];
+        let cover = usdm_decider::nf_sparse_air::prove_spend_or_decoy_bytes(bound, &tags, &wit).expect("the wallet proves its cover");
+        // the spent note's leaf, natively, exactly as the spend row lays it
+        let o = owner_opening(&poseidon_pair(w.owner.ask, w.owner.nk), &w.owner.seed);
+        let leaf_d = asset_note_cm(w.value_in, USDM_ASSET_TAG, o);
+        let ln = |x: &Digest| -> crate::absence_ssa::Lanes { core::array::from_fn(|i| Fa4::from_u64(x[i])) };
+        let dn = |x: &crate::absence_ssa::Lanes| -> Digest { core::array::from_fn(|i| u64::from(x[i].as_canonical_u32())) };
+        // sixteen canonical 8 x 8 records; the first makes the note
+        let canon = |i: u64| -> Record {
+            let items = |s: u64| (0..crate::absence_ssa::CHUNK_TAGS as u64).map(|t| ln(&dig(s * 100_000 + t + 1))).collect::<Vec<_>>();
+            let tags = (0..8u64).map(|c| (items(i * 100 + c), [Fa4::ZERO; RATE])).collect();
+            let outs = (0..8u64).map(|c| (items(i * 100 + 50 + c), if c == 7 { end_aux(i) } else { out_aux() })).collect();
+            Record { tags, outs }
+        };
+        let mut rs: Vec<Record> = (1..=16u64).map(canon).collect();
+        rs[0].outs[0].0[3] = ln(&leaf_d);
+        let nf_l = ln(&nf); // the node derives the tag lanes from the nullifier's bytes; here any canonical lanes
+        let e = vec![(nf_l, ln(&leaf_d))];
+        let c0 = ln(&dig(77));
+        let mut c = c0;
+        for r in &rs {
+            c = step(&c, r).expect("step");
+        }
+        let _ = family(ADMITTED_SPEND_SHAPE).expect("the admitted family");
+        let carrier = prove_span(&e, c0, &[false], &rs).expect("the span proves");
+        let wrapper = prove_spend(&e, 0, &carrier, ln(&nf), ln(&w.lc_blind)).expect("the note's wrapper proves");
+        assert!(
+            verify_spend(&wrapper, ADMITTED_SPEND_SHAPE, &nf_l, &ln(&nf), &ln(&lc), &c),
+            "⛔ CALIBRATION: the wrapper's leaf commitment is not the spend carrier's lc (the two proofs name two notes)"
+        );
+        let st = PaymentStatement {
+            c0: cms[0], c1: cms[1], nf, lc, d, t1, fee: w.fee, hours: 0,
+            member: [[0; 8]; 4], tags, absence: Some([dn(&nf_l), nf, lc, dn(&c)]),
+        };
+        let t0 = std::time::Instant::now();
+        let leaf = prove_leaf(&st, &spend, &wrapper, &cover).expect("⛔ the canon leaf does not prove");
+        let pms = t0.elapsed().as_millis();
+        let t1r = std::time::Instant::now();
+        assert!(verify_root(&[st.clone()], &leaf), "⛔ the root refuses an honest canon leaf");
+        let np: NodeProof = postcard::from_bytes(&leaf).unwrap();
+        println!("[agg-t9] canon leaf: 2^{} rows, {} B, prove {pms} ms, root check {} ms, carried claims {:?}", np.nvars, leaf.len(), t1r.elapsed().as_millis(), np.claims.iter().map(|c| c.kind.clone()).collect::<Vec<_>>());
+        assert!(matches!(np.kind, Kind::LeafCanon(_, 8)), "the canon form's own kind: {:?}", np.kind);
+        // LIES
+        let other_leaf = asset_note_cm(w.value_in + 1, USDM_ASSET_TAG, o);
+        let mut rs2 = rs.clone();
+        rs2[0].outs[0].0[3] = ln(&other_leaf);
+        let e2 = vec![(nf_l, ln(&other_leaf))];
+        let carrier2 = prove_span(&e2, c0, &[false], &rs2).expect("another note's span proves");
+        let wrapper2 = prove_spend(&e2, 0, &carrier2, ln(&nf), ln(&w.lc_blind)).expect("another note's wrapper proves");
+        assert!(prove_leaf(&st, &spend, &wrapper2, &cover).is_none(), "⛔ LIE: a leaf proved with ANOTHER note's wrapper");
+        let mut moved = st.clone();
+        moved.absence = Some([dn(&nf_l), nf, lc, dn(&c0)]);
+        assert!(!verify_root(&[moved], &leaf), "⛔ LIE: the leaf passed for another chain end");
+        let mut other = st.clone();
+        other.absence = Some([dn(&nf_l), nf, dig(5), dn(&c)]);
+        assert!(!verify_root(&[other], &leaf), "⛔ LIE: a wrapper statement for another spend passed");
+        let mut np2 = np.clone();
+        let fi = np2.claims.iter().position(|c| c.kind == Kind::AbsenceFamily).expect("the family claim rides");
+        np2.claims[fi].v[0][0] ^= 1;
+        assert!(!verify_root(&[st.clone()], &postcard::to_allocvec(&np2).unwrap()), "⛔ LIE: a moved family claim passed");
+    }
+
+    /// ⭐ A-F114 — THE PRICE OF ONE WRAPPER CHECKED IN CIRCUIT (the DeFi cover design's input, audit 23:20): a program that
+    /// verifies one blinded wrapper (`emit_ssa_child` against the admitted family's wrap program) and nothing else, laid and
+    /// proven; its rows by kind and its prove time.
+    #[test]
+    fn t10_time_one_wrapper_verified_in_circuit() {
+        use crate::absence_ssa::{end_aux, out_aux, Record};
+        use crate::absence_u::{family, prove_span, prove_spend, ADMITTED_SPEND_SHAPE};
+        let ln = |x: &Digest| -> crate::absence_ssa::Lanes { core::array::from_fn(|i| Fa4::from_u64(x[i])) };
+        let canon = |i: u64| -> Record {
+            let items = |s: u64| (0..crate::absence_ssa::CHUNK_TAGS as u64).map(|t| ln(&dig(s * 100_000 + t + 1))).collect::<Vec<_>>();
+            let tags = (0..8u64).map(|c| (items(i * 100 + c), [Fa4::ZERO; RATE])).collect();
+            let outs = (0..8u64).map(|c| (items(i * 100 + 50 + c), if c == 7 { end_aux(i) } else { out_aux() })).collect();
+            Record { tags, outs }
+        };
+        let rs: Vec<Record> = (1..=16u64).map(canon).collect();
+        let e = vec![(ln(&dig(901)), rs[0].outs[0].0[3])];
+        let fam = family(ADMITTED_SPEND_SHAPE).expect("the admitted family");
+        let carrier = prove_span(&e, ln(&dig(77)), &[false], &rs).expect("the span proves");
+        let wrapper = prove_spend(&e, 0, &carrier, ln(&dig(902)), ln(&dig(903))).expect("the wrapper proves");
+        let us: crate::absence_u::USpend = postcard::from_bytes(&wrapper).unwrap();
+        let mut b = Builder::new();
+        // the wrapper's true statement `[nf, binder, lc, c_end]` (an in-circuit verify of another would not execute)
+        let dn = |x: &crate::absence_ssa::Lanes| -> Digest { core::array::from_fn(|i| u64::from(x[i].as_canonical_u32())) };
+        let c = usdm_decider::poseidon2_compress::compress;
+        let lc = c(&c(&dn(&e[0].1), &dig(902)), &dig(903));
+        let cp: crate::absence_u::UProof = postcard::from_bytes(&carrier).unwrap();
+        let end: Vec<Fa4> = cp.c_end.iter().map(|&x| Fa4::from_u32(x)).collect();
+        let mut stmt_v: Vec<Fa4> = e[0].0.to_vec();
+        stmt_v.extend(ln(&dig(902)));
+        stmt_v.extend(ln(&lc));
+        stmt_v.extend(end);
+        let ab = b.load(&stmt_v);
+        let io_w = sponge_addrs(&mut b, &ab);
+        let ds = b.load(&fam.digests.iter().flat_map(|d| d.iter().copied()).collect::<Vec<_>>());
+        let cla = b.load(&us.claim.lanes());
+        let cd = sponge_addrs(&mut b, &cla);
+        let mut stmt: Vec<Addr> = io_w.to_vec();
+        stmt.extend_from_slice(&ds);
+        stmt.extend_from_slice(&cd);
+        let gate = ssa_gate_program().expect("the gate");
+        let shape = ChildShape::of(&fam.wrap, &stmt).expect("the wrap program's statement");
+        let t0 = std::time::Instant::now();
+        let _ = emit_ssa_child(&mut b, &shape, &gate, Some(&us.proof[..]), &mut WhirOnSsa).expect("the child emits");
+        let built = t0.elapsed();
+        let count = |f: &dyn Fn(&crate::ssa::Op) -> bool| b.ops.iter().filter(|o| f(o)).count();
+        let alus = count(&|o| matches!(o, crate::ssa::Op::Alu(_)));
+        let hashes = count(&|o| matches!(o, crate::ssa::Op::Perm { .. } | crate::ssa::Op::Comp { .. } | crate::ssa::Op::Halve { .. } | crate::ssa::Op::Bits { .. }));
+        let (rows, prog) = lay(&b).expect("lays");
+        println!(
+            "[agg-t10] one wrapper in circuit: {} ops ({alus} multiply-adds, {hashes} hash/walk/bit rows), {} laid rows (T = 2^{}), built in {built:?}",
+            b.ops.len(),
+            prog.rows,
+            prog.nvars
+        );
+        let _ = rows;
+        // proving it (statement values are not checked here: the rows and the time are the measurement)
+        let cols = crate::ssa::execute(&b, &lay(&b).unwrap().0, &prog);
+        if let Ok(cols) = cols {
+            let t1 = std::time::Instant::now();
+            let proved = crate::ssa_door::prove(&prog, cols).is_some();
+            println!("[agg-t10] proved {proved} in {:?}", t1.elapsed());
+        } else {
+            println!("[agg-t10] execute refused: {}", cols.err().unwrap());
+        }
     }
 
     /// ⭐⭐ A LEAF: one payment's three real carriers verified wholly on the SSA row and proven; the root check (a tree of
@@ -759,7 +1054,7 @@ mod tests {
         let (st, c) = payment(1);
         let ps = parts(&st).expect("parts");
         let t0 = std::time::Instant::now();
-        let b = leaf_builder(&ps, Some([&c[0], &c[1], &c[2]])).expect("builds");
+        let (b, _) = leaf_builder(&ps, None, Some([&c[0], &c[1], &c[2]])).expect("builds");
         assert_eq!(b.mismatch, None, "⛔ an assertion of the leaf fails on honest carriers");
         let (_, prog) = lay(&b).expect("lays");
         let alu = b.ops.iter().filter(|o| matches!(o, crate::ssa::Op::Alu(_))).count();

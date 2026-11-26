@@ -149,6 +149,21 @@ pub const DA_SAMPLE_PENDING_MAX: usize = 64;
 /// fold anchor's chain length against the block's) and `wait_outgrown` (`fold_wait_since_len` against the tip's chain length).
 pub const UNFOLDED_BODY_REACH_LEVELS: u64 = 4 * crate::params::FINALITY_SEAT_ACTIVATION_DELAY;
 
+/// ⭐⭐⭐ FINALITY BY WORK — the selected-chain steps below the tip at which a block is final ([`Node::refresh_work_final`]). DERIVED:
+/// the reversal chance of an attacker with share q of the work over d steps is ≈ (q / (1 − q))^d (Nakamoto); d = ⌈ln(1e-9) /
+/// ln(1/3)⌉ = 19 at q = 0.25 and ε = 1e-9. STRUCTURE, not a duration: its time is d × the chain's real spacing.
+pub const FINAL_DEPTH: usize = 19;
+
+/// ⭐⭐⭐ FINALITY BY WORK, FASTER — the same bound counted in BLUE WORK: `FINAL_DEPTH` blue blocks above the final block (blue score),
+/// whatever the DAG's width. STRUCTURE (a block count), never a duration: its time is FINAL_DEPTH / the network's honest block rate.
+pub const FINAL_BLUE_DEPTH: u64 = FINAL_DEPTH as u64;
+
+/// The final block is never shallower than this many selected-chain steps: DEEPER than the fold's settle depth (`fold_depth_at`, 4
+/// at the default), so in normal running the final block is folded on every node and the fold cap binds only in a wedge. MEASURED why
+/// (the testnet gate's netsim join on main 93fe50e0, 6 parties: "joiner n5: finality 175 never reached node 0's 177"): at 2 steps the
+/// blue depth on a width-~3 DAG put the final block at about the fold depth, so each node's finality read its own fold position.
+pub const FINAL_MIN_STEPS: usize = 2; // figure 1 (users): the fork choice's floor is the deeper figure 2 (`floor_final`)
+
 /// A-F63, rule 1: is a block's body kept whole? This node's own block always is (its body may exist nowhere else yet); a
 /// peer's block is, unless the fold stands and the block lies more than the reach above it. Public levels only.
 #[must_use]
@@ -1999,6 +2014,69 @@ pub struct Node {
     /// is NOT yet wired — a restart currently reseeds it to the genesis value; wiring it into the O(1) snapshot is the
     /// remaining node brick.) ([[feedback_infinite_o1_fold_cardinal]])
     nf_unspent_acc: crate::spend_frontier::Digest4,
+    /// ⭐ A-F114 phase 2 (docs/SPENT-SET-GROWTH-DEEP-AUDIT-20261122.md, "FOUND 2026-11-22") — THE CANONICAL TAG CHAIN: a hash
+    /// chain over every record's tags in canonical record order (`canon_chain::record_step`), so its value after record k is
+    /// the same on every node and a carrier ending at it cannot be forged backwards. Never a sum (Wagner's k-tree hits a sum).
+    /// O1-FOOTPRINT-REVIEWED: one Digest4, whatever the height.
+    pub(crate) canon_c: crate::spend_frontier::Digest4,
+    /// The last `canon_chain::CANON_RECENT_RECORDS` records' chain ends and tags (`canon_chain::CanonRecent`): the ends a
+    /// spender's carrier may name, and the tags the node checks itself after that end.
+    /// O1-FOOTPRINT-REVIEWED: at most CANON_RECENT_RECORDS records and their tags (~21 MB at 256 tags), the oldest evicted.
+    pub(crate) canon_recent: crate::canon_chain::CanonRecent,
+    /// Records folded whose tags were held nowhere (must stay 0: the chain would diverge; the audit's open check).
+    pub(crate) canon_missing: u64,
+    /// The chain's OWN record count: the index the next record's END lane names (`canon_chain::end_aux`). Not an arrival
+    /// ordinal and not a record address — its own coordinate space.
+    pub(crate) canon_index: u64,
+    /// A-F114: the decoy batch counter (`DecoyBatchTx::statement`'s `seq`): one counter, stepped at each booked batch, kept in
+    /// the canon sidecar. O1-FOOTPRINT-REVIEWED: one u64.
+    pub(crate) canon_decoy_seq: u64,
+    /// ⭐ A-F114 UPGRADE (U2) — a joiner's pull of the judged window after it adopted a bundle (`canon_chain::CanonFill`):
+    /// while `Some`, the fold does not pass the anchor (every verdict reads the window). O1-FOOTPRINT-REVIEWED: at most
+    /// CANON_RECENT_RECORDS records while pulling — the window itself, then installed into `canon_recent` and dropped.
+    pub(crate) canon_fill: Option<crate::canon_chain::CanonFill>,
+    /// ⭐ A-F114 U3 — the canonical chain's state BEFORE each recent fold step `(fold ordinal, index, end, counters)`, oldest
+    /// first, so a fold reorg restores it exactly. O1-FOOTPRINT-REVIEWED: at most `Node::REWIND_RETAIN` entries of 72 B.
+    pub(crate) canon_rewind: std::collections::VecDeque<(u64, crate::canon_chain::CanonSnap)>,
+    /// ⭐ A-F114 U5 — the record index through which the canonical ring file on disk is current (written by the saver thread
+    /// after a write that succeeded; lowered by a rewind), so a checkpoint rewrites only the slots after it.
+    pub(crate) canon_saved_top: std::sync::Arc<crate::canon_chain::CanonSaved>,
+    /// ⭐ A-F139 — the fold step a resume found this node's canonical chain standing BEFORE (the ring file's linked part, or a
+    /// head older than the checkpoint): the fold's next pass rewinds to it and re-folds the steps after it from this node's
+    /// own blocks. CACHE-ONLY: set once at a resume, taken by the next fold pass. O1-FOOTPRINT-REVIEWED: one u64.
+    pub(crate) canon_resume_rewind: Option<u64>,
+    /// ⭐⭐⭐ FINALITY BY WORK — this node's final block and its blue score ([`Node::refresh_work_final`]), monotone. VOLATILE: a restart
+    /// recomputes it from the selected chain it resumes. O1-FOOTPRINT-REVIEWED: one (id, u64).
+    pub(crate) work_final: Option<(BlockId, u64)>,
+    /// ⭐⭐⭐ THE NO-REORG FLOOR (`Node::refresh_work_final`, figure 2): the deeper final block only the fork choice reads, monotone.
+    /// VOLATILE: a restart recomputes it from the resumed selected chain. O1-FOOTPRINT-REVIEWED: one (id, u64).
+    pub(crate) floor_final: Option<(BlockId, u64)>,
+    /// ⭐ A-F116 — the fold top (`served_seq`) at which the adopted node's stream-window replay last FAILED (its replayed
+    /// root not this node's), so the replay is retried once per newly folded record, never on every pass. CACHE-ONLY: a
+    /// process-local retry gate no rule reads.
+    pub(crate) db471_failed_top: u64,
+    /// A-F114: the bounty counter (`bounty_payout_tx::bounty_statement`'s `seq`), stepped at each bounty paid, kept in the
+    /// canon sidecar. O1-FOOTPRINT-REVIEWED: one u64.
+    pub(crate) canon_bounty_seq: u64,
+    /// A-F114: the theft counter (`theft_tx::theft_msg_at`'s `seq`), stepped at each theft applied, kept in the canon
+    /// sidecar. O1-FOOTPRINT-REVIEWED: one u64.
+    pub(crate) canon_theft_seq: u64,
+    /// ⭐ A-F114 — DELAYED PUBLICATION: the freshest absence wrappers (`postcard(Vec<CanonAbsence>)`) a spender handed this
+    /// node for a claim it holds and publishes later (a peg-out it relays to custody and then pools), keyed by the spent
+    /// note's nullifier; the spender's wallet re-sends them on every poll, so the one read at publication ends inside the
+    /// window. Not consensus: a cache of the spender's own evidence, refused by the door if stale. Read by
+    /// `spend_lane_evidence`. O1-FOOTPRINT-REVIEWED: bounded by protocol constant `CANON_HELD_MAX` entries (the oldest leaves
+    /// first), each one constant-size wrapper list; written only under `CANON_LIVE`.
+    pub(crate) canon_held_wrappers: Vec<([u8; 32], Vec<u8>)>,
+    /// ⭐ A-F114 — the releases being gathered (`release_confirm_tx::ReleaseSig`): `(ledger, txid) → (burns, signatures)`.
+    /// A gossip cache: the object rides a block. O1-FOOTPRINT-REVIEWED: bounded by protocol constant `RELEASE_BOOK_MAX`
+    /// releases (the oldest key leaves first), each at most a vault's signers; written only under `CANON_LIVE`.
+    #[allow(clippy::type_complexity)]
+    pub(crate) release_book: std::collections::BTreeMap<(u32, [u8; 32]), (Vec<[u8; 32]>, Vec<[u8; 32]>, Vec<crate::psm::MintAttestor>)>,
+    /// ⭐ A-F114 — releases THIS custodian's own payout lane confirmed, waiting for its signature (`release_tick`).
+    /// O1-FOOTPRINT-REVIEWED: bounded by protocol constant `RELEASE_BOOK_MAX`, drained every tick; only under `CANON_LIVE`.
+    #[allow(clippy::type_complexity)]
+    pub(crate) release_own_pending: Vec<(u32, [u8; 32], Vec<[u8; 32]>, Vec<[u8; 32]>)>,
     /// CONFIDENTIAL rolling accumulator of applied REAL-SPEND tx blobs (Ask 2 privacy closure) — a 32-byte O(1)
     /// rolling hash every node advances identically as it applies each block's real spends (canonical order). It is
     /// folded into the per-block nullifier decoy seed so that even a FULLY-IDLE block (no real spends this block)
@@ -3934,7 +4012,7 @@ impl Node {
         self.spine_stale
     }
 
-    fn mark_spine_stale(&mut self, why: &str) {
+    pub(crate) fn mark_spine_stale(&mut self, why: &str) {
         if !self.spine_stale {
             eprintln!(
                 "[fold-conflict] ⛔ {why} — the DAGs differ; folding stops and the next certified bundle \
@@ -4108,6 +4186,22 @@ impl Node {
         if let Some((_id, passes, backlog, window)) = self.fold_wait_is_unrecoverable() {
             return Some(format!(
                 "the canonical fold has not moved for {passes} pass(es) with {backlog} block(s) unfolded                  against a {window}-block retention window"
+            ));
+        }
+        // ⛔ FOLD OVERHAUL F-6 (lane livewedge, 2026-11-26; docs/FOLD-OVERHAUL-DEEP-AUDIT-20261126.md) — THE WEDGE IS READ FROM THE
+        // CHAIN. The pass counter above is reset by the very expiries that are supposed to end a wait (W1 clears `fold_wait_on`,
+        // `end_spine_stale` clears both counters), so it never reached its threshold through a real wedge. MEASURED (live 27780,
+        // 2026-11-25 23:5x): `fold_wait_passes` 0 and `fold_wedged` false while the fold refused every pass for hours, the cursor
+        // ~650 levels behind. A fold cursor that stands more than the fold depth plus twice the body reach behind the tip, with
+        // blocks unfolded, is wedged whatever any counter says: by then W1's expiry (one reach) and the stale re-anchor ask
+        // (another) should both have moved it. A node catching up after downtime reads wedged too, and the runtime's answer
+        // (`escalate_an_unrecoverable_fold_wait`: a throttled certified-bundle ask) is the borrowed catch-up for exactly that
+        // (Kaspa's IBD from a pruning point). SCALE: four reads; nothing stored.
+        if let Some(lag) = self.fold_lag_outgrown() {
+            return Some(format!(
+                "the fold cursor stands {lag} chain step(s) behind the tip with {} block(s) unfolded — past the fold depth plus \
+                 twice the body reach, where every wait's expiry should already have moved it",
+                self.unfolded_blocks.len()
             ));
         }
         // ⛔ BOTH CONDITIONS, CHECKED HERE. The counter is only reset to 0 on an empty set by
@@ -5298,6 +5392,7 @@ impl Node {
         // The record at ordinal `first_evict` is block index `first_evict − 1`: every window completed from it on.
         self.window_index.forget_from_block(first_evict.saturating_sub(1));
         self.spine_recent_frontiers.retain(|(o, _, _, _)| *o < first_evict); // DB-268: same rule as the root ring
+        self.canon_rewind_from(first_evict); // A-F114 U3: the canonical chain rewinds by the same rule
         // §19.4: the rewound anchor's frontier gives way to the newest anchor the trimmed ring still holds
         self.refill_epoch_anchor_frontier();
         // Wants that named the evicted ordinals named the OLD order: drop them (the schedule search: a
@@ -5817,13 +5912,9 @@ impl Node {
             // written — harness-92.log) and the late-clue path above. A REAL unit's slot takes the key that names it; a
             // cover slot keeps its first (a duplicate delivery of one block's list is still a no-op: same key, same slot).
             let real = (slot as usize) < reals.len();
-            match merged.iter_mut().find(|(s, _)| *s == slot) {
-                Some(entry) if real && entry.1 != k => {
-                    entry.1 = k;
-                    replaced += 1;
-                }
-                Some(_) => continue, // a cover slot's first key, or the same key again
-                None => merged.push((slot, k)),
+            match crate::node::da::merge_slot_tag(&mut merged, slot, k, real) {
+                crate::node::da::TagMerge::Replaced => replaced += 1,
+                crate::node::da::TagMerge::Added | crate::node::da::TagMerge::Kept => {}
             }
         }
         let added = merged.len() - before + replaced;
@@ -5855,6 +5946,62 @@ impl Node {
         if bound {
             self.file_tags_at_fixed_slots(addr, oli);
         }
+    }
+
+    /// ⛔ A-F118 (the last replica red, lane speed5r 2026-11-22) — A ROW'S SLOT TAGS ARE ONE FUNCTION OF CHAIN-BOUND DATA,
+    /// whatever path wrote them. At graft a slot's tag is the committed filing's key for the NOTE at that slot, matched by
+    /// filing identity (`file_tags_at_fixed_slots`). A strip compacted tags by POSITION (`tags_after_strip`) while the
+    /// record's cover positions are regenerated over the shorter real list, so a replayer's cover slot held the key of a note
+    /// no longer there, and a joiner (which never strips a row below its anchor) kept its graft key there instead: MEASURED
+    /// replica census main 0590db07, `da_tags_mem` slot 1 of one-real-note records 59/67. The rule, on the strip, its restore,
+    /// a joiner's bind of a stripped row and the sidecar adopt: a REAL slot keeps its key (the filing's key replaces it when
+    /// the filing names that slot's note: the graft rule); a COVER slot holds the filing's key for the note now at it, or
+    /// none. `false` when this node does not hold the block's committed filing (`block_window`), or the row is intact (its
+    /// bytes still hash to the header's root: the graft filing stands), and nothing is changed.
+    /// AI RESISTANT: (b) a locator key moves no value; the filing is hash-bound to the header (`window_block_carried_tags`).
+    /// SCALE: one fixed-shape payload scan (BLOCK_FIXED_NOTE_COUNT slots) per refiled row; nothing held, nothing grows.
+    /// cons: one payload regeneration per stripped or adopted row (the graft filer pays the same).
+    pub(crate) fn refile_row_by_filing(&mut self, seq: u64) -> bool {
+        const TAG_REC: usize = 32 + crate::oli::K_BYTES;
+        let Some(b) = self.block_for_record_addr(seq) else { return false };
+        let Some(blk) = self.block_window.get(&b) else { return false };
+        let Some(carried) = Self::window_block_carried_tags(&blk, &b).map(<[u8]>::to_vec) else { return false };
+        if carried.is_empty() || carried.len() % TAG_REC != 0 {
+            return false;
+        }
+        let Some(reals) = self.da_load(seq) else { return false };
+        // an INTACT row (its bytes still hash to the header's root) keeps the graft's filing as it stands: only a row the
+        // chain changed (stripped, or grown by a release) is refiled. MEASURED why: refiling every adopted row left both
+        // joiners of the launch sim ~4,300 tags short below record 266 (61,484 / 65,291 vs node 0 65,797; main 61ea7b0d)
+        let header_root = self.relay.dag().get(&b).map(|n| n.header.output_notes_root);
+        if header_root.is_some_and(|r| crate::block::da_notes_root_of(&reals.concat()) == r) {
+            return false;
+        }
+        let fixed = crate::cover::assemble_fixed_note_payload(&reals.concat(), seq, &self.cover_key_of(seq));
+        let ids: Vec<[u8; 32]> = fixed
+            .chunks_exact(crate::cover::PQ_NOTE_BYTES)
+            .map(|n| crate::note_transition::filing_cm(&n.fixed::<32>()))
+            .collect();
+        // the real slots' keys as held (a key a fold laid after graft, a bond release's, is a real slot's own)
+        let mut out: Vec<(u8, [u8; crate::oli::K_BYTES])> =
+            self.da_load_tags(seq).into_iter().filter(|(s, _)| (*s as usize) < reals.len()).collect();
+        for rec in carried.chunks_exact(TAG_REC) {
+            let want = crate::note_transition::filing_cm(&rec.fixed::<32>());
+            let Some(slot) = ids.iter().position(|id| *id == want).and_then(|p| u8::try_from(p).ok()) else {
+                continue;
+            };
+            let mut k = [0u8; crate::oli::K_BYTES];
+            k.copy_from_slice(&rec[32..]);
+            match out.iter_mut().find(|(s, _)| *s == slot) {
+                Some(e) => e.1 = k,
+                None => out.push((slot, k)),
+            }
+        }
+        out.sort_by_key(|(s, _)| *s);
+        if out != self.da_load_tags(seq) {
+            self.da_tags_replace(seq, out);
+        }
+        true
     }
 
     fn window_block_carried_tags<'b>(blk: &'b crate::block::Block, id: &crate::block::BlockId) -> Option<&'b [u8]> {
@@ -8236,14 +8383,125 @@ impl Node {
         let Some(just) = just else {
             return Some((Vec::new(), Vec::new()));
         };
-        let items = Self::respend_items(body, just, self.opened_credit_objects(body)); // §22: opened under this node's key
+        let objects = self.opened_credit_objects(body); // §22: opened under this node's key
+        // A-F114: each object tag's role under the constant chain (`chain_object::object_tag_roles`), read before the items
+        // take the blobs; empty before the upgrade
+        let object_roles: Vec<([u8; 32], crate::chain_object::TagRole)> = if crate::canon_chain::canon_live() {
+            objects.iter().flatten().filter_map(|b| crate::chain_object::object_tag_roles(b)).flatten().collect()
+        } else {
+            Vec::new()
+        };
+        let items = Self::respend_items(body, just, objects);
         // A-F44 DIAGNOSTIC (log only, lane goods asked 2026-11-12 13:57; no decision changes): which `judge_tag` arm answered
         // Wait — the evidence step's band root unknown here, or a later step's admitted set unknown — and the evidence
         // steps involved, so a wait that can never end is told apart from a band that is merely behind.
         let wait_root = std::cell::Cell::new(0u32);
         let wait_admitted = std::cell::Cell::new(0u32);
         let wait_ordinals = std::cell::Cell::new((u64::MAX, 0u64));
-        let verdict = {
+        let canon_bare_only = std::cell::Cell::new(false);
+        let verdict = if crate::canon_chain::canon_live() {
+            // ⭐ A-F114 2c — THE CONSTANT CHAIN DECIDES: each tag by `canon_tag_spent`, from the block's own evidence and this
+            // node's window (the records before this one), so every node reaches one verdict with no set held.
+            let evidence = crate::nf_evidence::decode_canon_list(&body.tag_evidence);
+            let padded = &body.nullifier_proof.padded_tags;
+            // a note leg's cross-bind, from a stated spend row or an object's own `Leg` (`chain_object::object_tag_roles`)
+            let mut lc_of: std::collections::HashMap<[u8; 32], crate::spend_frontier::Digest4> = body
+                .note_transition
+                .as_ref()
+                .and_then(crate::member_transition::stated_spend_rows)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|r| crate::spend_frontier::cm_bytes_to_root(&r.leaf_commit).map(|lc| (r.nullifier, lc)))
+                .collect();
+            for (t, r) in &object_roles {
+                if let crate::chain_object::TagRole::Leg(lc) = r {
+                    lc_of.entry(*t).or_insert(*lc);
+                }
+            }
+            // an object tag the table has not read fails closed; a `OneTime` one is judged by the window
+            let unknown: std::collections::HashSet<[u8; 32]> = object_roles
+                .iter()
+                .filter(|(_, r)| *r == crate::chain_object::TagRole::Unknown)
+                .map(|(t, _)| *t)
+                .chain(
+                    // an object item's tag with no role at all (its blob did not read) is unknown too
+                    items
+                        .iter()
+                        .filter(|i| i.key.is_some())
+                        .flat_map(|i| i.tags.iter().copied())
+                        .filter(|t| !object_roles.iter().any(|(k, _)| k == t)),
+                )
+                .collect();
+            // ⭐ A-F114 (B′) — A TREE-FORM SPEND'S ABSENCE IS ROOT-PROVEN. Its wrapper was verified INSIDE the block's root (the
+            // canon leaf, `usdm_agg::tree_ssa`), so no wrapper bytes travel with it; its statement names the end the wrapper
+            // was built to. The fold re-checks the block's roots over the tree-form statements itself (never trusting that
+            // every path into the DAG ran the block door: an adopt is a path too), and only then takes each one's
+            // `(nullifier, end)`; the tag is then judged by the window exactly as `canon_absence_refusal` judges it after its
+            // proof: the end is a record end this node holds, and no record after it carries the tag. A block whose roots
+            // do not verify gives no pair, and its tree-form spends lose here (fail-closed on the spends, never the chain).
+            // SCALE: one root check per block that carries tree-form spends (~0.2 s, `agg_root` header), nothing per height.
+            // AI RESISTANT (a): the root is a proof every node checks; a lying prover is the tree's own rows (t9).
+            let root_proven: std::collections::HashMap<[u8; 32], crate::spend_frontier::Digest4> = {
+                let mut sts = Vec::new();
+                let mut pairs = Vec::new();
+                for raw in &body.tx_bodies {
+                    let Some(tx) = crate::chain_object::decode_exact::<crate::mempool::PqTx>(raw) else { continue };
+                    if !crate::spend_evidence::is_tree_form(&tx) {
+                        continue;
+                    }
+                    let Some((e, st)) = crate::spend_evidence::tree_evidence_of(&tx) else { continue };
+                    if let Some(a) = st.absence {
+                        pairs.push((e.tuple.nullifier, a[3]));
+                    }
+                    sts.push(st);
+                }
+                if !sts.is_empty() && crate::agg_root::verify_roots(&sts, &body.agg_tables) {
+                    pairs.into_iter().collect()
+                } else {
+                    std::collections::HashMap::new()
+                }
+            };
+            // A-F114 U3 DIAGNOSTIC: which arm judged a tag spent (counts only)
+            let arms = std::cell::Cell::new([0u32; 5]);
+            let bump = |k: usize| {
+                let mut a = arms.get();
+                a[k] += 1;
+                arms.set(a);
+            };
+            let v = crate::respend::decide_at_fold(&items, |t| {
+                if let (Some(end), Some(_)) = (root_proven.get(t), lc_of.get(t)) {
+                    let spent = self.canon_recent.ordinal_of_end(end).is_none_or(|o| self.canon_recent.spent_after(t, o));
+                    if spent {
+                        bump(0);
+                    }
+                    return Some(spent);
+                }
+                let e = padded.iter().position(|p| p == t).and_then(|i| evidence.get(i)).and_then(Option::as_ref);
+                let r = self.canon_tag_spent(t, lc_of.get(t), unknown.contains(t), e);
+                if r == Some(true) {
+                    bump(match (lc_of.contains_key(t), e.is_some(), unknown.contains(t)) {
+                        (true, false, _) => 1,
+                        (true, true, _) => 2,
+                        (false, _, true) => 3,
+                        _ => 4,
+                    });
+                }
+                r
+            });
+            // ⭐ A-F114 U3: a stated row with NO wrapper is a cover row (or a row whose input nothing proves): it loses, so its
+            // outputs are never credited (a row whose membership nothing proves could otherwise mint), and on an honest chain
+            // that is every block's decoy rows — not a double spend. The DB-358 alarm below is kept for the other arms only.
+            let a = arms.get();
+            canon_bare_only.set(a[1] > 0 && a[0] + a[2] + a[3] + a[4] == 0);
+            if a[0] + a[2] + a[3] + a[4] > 0 {
+                // DIGITAL-CASH-PRIVACY-REVIEWED: five counters of verdict arms at a public fold ordinal; no tag, cm, amount or owner.
+                eprintln!(
+                    "[canon-judge] fold {ordinal}: spent by [root-proven end, stated row with no evidence, stated row refused, unknown object tag, window holds] = {a:?} of {} item(s)",
+                    items.len()
+                );
+            }
+            v
+        } else {
             // ⭐ PRIVATE SHARDING §2.2, §8: every node reads the block's own evidence, holding the shard or not, so a holder and a
             // non-holder cannot differ. The held view is only compared, to catch a defect loudly.
             let s_b = self.fold_point_spent_set();
@@ -8318,7 +8576,7 @@ impl Node {
         }
         let gone: std::collections::HashSet<[u8; 32]> = revoke.iter().copied().collect();
         let revoked = self.fold_strip_row(b, seq, &gone);
-        if revoked > 0 {
+        if revoked > 0 && !canon_bare_only.get() {
             // DIGITAL-CASH-PRIVACY-REVIEWED: a COUNT of revoked notes of a double-spend attempt only — no tag, cm,
             // amount, key or owner; an honest chain never prints it.
             eprintln!(
@@ -8805,6 +9063,8 @@ impl Node {
                     // SAFE AT SCALE, stage three (spec §3g): the rebalance writes two vaults' ledger pairs at its fold
                     | Class::VaultRebalance
                     | Class::ReserveCost
+                    // A-F114: a payout's release takes owed burns out of the owed book at its fold
+                    | Class::ReleaseConfirm
                     // SAFE AT SCALE, stage three: the custody key record's writer. MEASURED 2026-11-11 (its own node pin,
                     // red first): without this arm the object rode the block and no node applied it — nothing logged,
                     // nothing refused, the record unmoved on producer and peer alike.
@@ -8912,6 +9172,8 @@ impl Node {
                 row.0.insert(at, note);
             }
         }
+        // ⛔ A-F118: the restored row's cover slots follow the graft rule over its restored payload
+        let _ = self.refile_row_by_filing(seq);
     }
 
     /// ⭐⭐ DB-321 — THE SPARSE ROOT THIS NODE CAN VOUCH FOR: its accumulator's root while that accumulator is complete for
@@ -9689,13 +9951,165 @@ impl Node {
     }
 
     /// ⭐ §BR-3 17.5 — a theft's slash books its loss and moves the slashed SAT into the repayment pot (`PegLedger::book_theft`).
-    pub(crate) fn book_theft_loss(&mut self, slashed: u128, loss_sats: u64, key: &[u8; 32]) -> bool {
-        self.peg.book_theft(slashed, loss_sats, key)
+    pub(crate) fn book_theft_loss(&mut self, slashed: u128, loss_sats: u64, key: &[u8; 32], closed_decoy: bool, skip_loss: bool) -> bool {
+        self.peg.book_theft_chained(slashed, loss_sats, key, closed_decoy, skip_loss)
     }
 
     /// ⭐ §BR-8 B8-a — the fold-side decoy booking (the peg door judges it against this node's bonded set).
     pub fn decoy_batch(&mut self, t: &crate::decoy_tx::DecoyBatchTx, carrying_tick: u64) -> Result<(), &'static str> {
-        self.peg.decoy_batch_door(t, carrying_tick, &self.validators, &crate::pqauth::MlDsaVerifier)
+        let seq = self.decoy_statement_seq();
+        let r = self.peg.decoy_batch_door(t, carrying_tick, &self.validators, &crate::pqauth::MlDsaVerifier, seq);
+        if r.is_ok() && seq.is_some() {
+            self.canon_decoy_seq += 1; // A-F114: the counter steps with each booked batch, so its statement is never valid twice
+        }
+        r
+    }
+
+    /// How many releases the gathering book keeps (`release_book`).
+    pub(crate) const RELEASE_BOOK_MAX: usize = 64;
+
+    /// ⭐ A-F114 — this custodian's payout lane saw `txid` of `ledger` reach its confirmations, paying `burns`: queued for
+    /// this custodian's signature (`NodeRuntime::release_tick`). Nothing before the network upgrade.
+    pub fn queue_own_release(&mut self, ledger: u32, txid: [u8; 32], burns: Vec<[u8; 32]>, swept: Vec<[u8; 32]>) {
+        if !crate::params::canon_live() || (burns.is_empty() && swept.is_empty()) {
+            return;
+        }
+        while self.release_own_pending.len() >= Self::RELEASE_BOOK_MAX {
+            self.release_own_pending.remove(0);
+        }
+        self.release_own_pending.push((ledger, txid, burns, swept));
+    }
+
+    /// ⭐ A-F114 — A RELEASE THIS NODE CAN FRAME: a gathered release whose signatures reach the paying vault's threshold
+    /// through the door's own tally (`PegLedger::burn_signed`) and whose every burn is still owed here. Any node may frame
+    /// it; the object is the signers' statement.
+    pub fn release_ready_to_frame(&self, verifier: &dyn crate::pqauth::PqVerifier) -> Option<crate::release_confirm_tx::ReleaseConfirmTx> {
+        for ((ledger, txid), (burns, swept, atts)) in &self.release_book {
+            if atts.len() > crate::release_confirm_tx::MAX_RELEASE_ATTESTORS
+                || burns.iter().any(|nf| !self.peg.release_pending(nf))
+                || swept.iter().any(|d| !self.peg.deposit_minted(d))
+            {
+                continue;
+            }
+            let msg = crate::release_confirm_tx::release_statement(*ledger, txid, burns, swept);
+            if crate::peg::PegLedger::burn_signed(crate::peg::ledger_vault(*ledger), &self.validators, verifier, &msg, atts) {
+                return Some(crate::release_confirm_tx::ReleaseConfirmTx {
+                    ledger: *ledger,
+                    txid: *txid,
+                    released: burns.clone(),
+                    swept: swept.clone(),
+                    attestors: atts.iter().map(|a| (a.pubkey.clone(), a.sig.clone())).collect(),
+                });
+            }
+        }
+        None
+    }
+
+    /// ⭐ A-F114 — frame and pool a release (its lane laid as a cost's is); it leaves the gathering book once pooled.
+    /// CHAIN-PUBLISH-REVIEWED: this IS the publication; the owed book moves only at the fold, on every node.
+    pub fn publish_release_confirm(&mut self, t: &crate::release_confirm_tx::ReleaseConfirmTx) -> Result<Hash32, MempoolError> {
+        let mut tx = t.as_pq_tx(self.mempool.required_stamp_bits());
+        if !self.lay_object_lane(&mut tx) {
+            return Err(MempoolError::InvalidProof);
+        }
+        let id = self.pool_own_publication(tx)?;
+        self.release_book.remove(&(t.ledger, t.txid));
+        Ok(id)
+    }
+
+    /// ⭐ A-F114 — THIS CUSTODIAN'S OWN SIGNATURE over the release of `txid`, for burns ITS OWN payout lane paid (the caller
+    /// is that lane, at the transaction's confirmation). `None` before the network upgrade, unless `pk` is this node's custody
+    /// identity, or when a named burn is not owed in this node's own book.
+    #[must_use]
+    pub fn own_release_sig(&self, pk: &[u8], sk: &[u8], ledger: u32, txid: &[u8; 32], released: &[[u8; 32]], swept: &[[u8; 32]]) -> Option<crate::release_confirm_tx::ReleaseSig> {
+        if !crate::params::canon_live() || self.custodian_id() != Some(crate::pqauth::pubkey_id(pk)) {
+            return None;
+        }
+        let sorted = |v: &[[u8; 32]]| {
+            let mut v = v.to_vec();
+            v.sort_unstable();
+            v.dedup();
+            v
+        };
+        let (burns, swept) = (sorted(released), sorted(swept));
+        if (burns.is_empty() && swept.is_empty())
+            || burns.len() > crate::release_confirm_tx::MAX_RELEASED
+            || swept.len() > crate::release_confirm_tx::MAX_RELEASED
+            || burns.iter().any(|nf| !self.peg.release_pending(nf))
+            || swept.iter().any(|d| !self.peg.deposit_minted(d))
+        {
+            return None;
+        }
+        let msg = crate::release_confirm_tx::release_statement(ledger, txid, &burns, &swept);
+        let sig = crate::pqauth::ml_dsa_sign(&msg, sk)?;
+        Some(crate::release_confirm_tx::ReleaseSig { ledger, txid: *txid, released: burns, swept, pubkey: pk.to_vec(), sig })
+    }
+
+    /// ⭐ A-F114 — GATHER one custodian's release signature: counted only for a signer the chain seats in the paying vault,
+    /// over the statement this node forms, and only while every named burn is owed in this node's own book. `true` when NEW
+    /// (the re-gossip signal).
+    pub fn release_sig_ingest(&mut self, s: &crate::release_confirm_tx::ReleaseSig, verifier: &dyn crate::pqauth::PqVerifier) -> bool {
+        if !crate::params::canon_live() {
+            return false;
+        }
+        let signer = crate::pqauth::pubkey_id(&s.pubkey);
+        if self.vault_seats_sorted(crate::peg::ledger_vault(s.ledger)).binary_search(&signer).is_err()
+            || s.released.iter().any(|nf| !self.peg.release_pending(nf))
+            || s.swept.iter().any(|d| !self.peg.deposit_minted(d))
+        {
+            return false;
+        }
+        let msg = crate::release_confirm_tx::release_statement(s.ledger, &s.txid, &s.released, &s.swept);
+        if !verifier.verify(&s.pubkey, &msg, &s.sig) {
+            return false;
+        }
+        // a release whose burns are no longer owed (another release folded them) leaves the book
+        let peg = &self.peg;
+        self.release_book.retain(|_, (burns, swept, _)| burns.iter().all(|nf| peg.release_pending(nf)) && swept.iter().all(|d| peg.deposit_minted(d)));
+        let key = (s.ledger, s.txid);
+        if let Some((burns, swept, atts)) = self.release_book.get_mut(&key) {
+            if *burns != s.released || *swept != s.swept || atts.iter().any(|a| a.pubkey == s.pubkey) {
+                return false; // another burn list for one transaction, or already gathered
+            }
+            atts.push(crate::psm::MintAttestor { pubkey: s.pubkey.clone(), sig: s.sig.clone() });
+            return true;
+        }
+        while self.release_book.len() >= Self::RELEASE_BOOK_MAX {
+            self.release_book.pop_first();
+        }
+        self.release_book.insert(key, (s.released.clone(), s.swept.clone(), vec![crate::psm::MintAttestor { pubkey: s.pubkey.clone(), sig: s.sig.clone() }]));
+        true
+    }
+
+    /// A-F114: keep the spender's freshest wrappers for a claim of `nf` this node holds (`canon_held_wrappers`).
+    pub(crate) fn canon_hold_wrappers(&mut self, nf: [u8; 32], wrappers: Vec<u8>) {
+        if !crate::params::canon_live() || wrappers.is_empty() {
+            return;
+        }
+        self.canon_held_wrappers.retain(|(k, _)| *k != nf);
+        if self.canon_held_wrappers.len() >= crate::canon_chain::CANON_HELD_MAX {
+            self.canon_held_wrappers.remove(0);
+        }
+        self.canon_held_wrappers.push((nf, wrappers));
+    }
+
+    /// A-F114: the theft counter a theft certificate binds now (`None` before the network upgrade).
+    #[must_use]
+    pub fn theft_statement_seq(&self) -> Option<u64> {
+        crate::params::canon_live().then_some(self.canon_theft_seq)
+    }
+
+    /// A-F114: step the theft counter (a theft applied); nothing before the network upgrade.
+    pub(crate) fn step_theft_seq(&mut self) {
+        if crate::params::canon_live() {
+            self.canon_theft_seq += 1;
+        }
+    }
+
+    /// A-F114: the decoy batch counter a batch statement binds now (`None` before the network upgrade, `params::CANON_LIVE`).
+    #[must_use]
+    pub fn decoy_statement_seq(&self) -> Option<u64> {
+        crate::params::canon_live().then_some(self.canon_decoy_seq)
     }
 
     /// ⭐ §BR-8 B8-a — the fold-side decoy return.
@@ -9719,8 +10133,8 @@ impl Node {
     }
 
     /// §BR-8: a theft certificate naming an unreturned decoy closes its obligation.
-    pub(crate) fn close_decoy_by_theft(&mut self, statement: &[u8], offenders: &[[u8; 32]]) {
-        self.peg.close_decoy_by_theft(statement, offenders);
+    pub(crate) fn close_decoy_by_theft(&mut self, statement: &[u8], offenders: &[[u8; 32]]) -> bool {
+        self.peg.close_decoy_by_theft(statement, offenders)
     }
 
     /// §BR-3 17.5 layer 1 — a buy request this node relays: the buyer's carriers, its membership (Admit door) and the price
@@ -10230,20 +10644,26 @@ impl Node {
         let opening = self.liquidation_opening_now(asset_id)?;
         let rule = self.peg.liquidation_rule(asset_id)?;
         let plan = crate::peg::plan_liquidation(&opening, &rule)?;
-        let mark_epoch = self.peg.price_mark_for(asset_id)?.epoch_id;
-        let (reserve, minted) = self.psm_commit_pair(asset_id)?;
-        let mut id = blake3::Hasher::new();
-        id.update(b"USDMD-LIQ-CLOSE-ID-v1");
-        id.update(&asset_id.to_le_bytes());
-        id.update(&mark_epoch.to_le_bytes());
-        for x in reserve.iter().chain(minted.iter()) {
-            id.update(&x.to_le_bytes());
-        }
+        let (position_id, mark_epoch) = if crate::params::canon_live() {
+            // A-F114: the one derivation the door checks the close against (`PegLedger::liquidation_close_id_now`)
+            self.peg.liquidation_close_id_now(asset_id)?
+        } else {
+            let mark_epoch = self.peg.price_mark_for(asset_id)?.epoch_id;
+            let (reserve, minted) = self.psm_commit_pair(asset_id)?;
+            let mut id = blake3::Hasher::new();
+            id.update(b"USDMD-LIQ-CLOSE-ID-v1");
+            id.update(&asset_id.to_le_bytes());
+            id.update(&mark_epoch.to_le_bytes());
+            for x in reserve.iter().chain(minted.iter()) {
+                id.update(&x.to_le_bytes());
+            }
+            (*id.finalize().as_bytes(), mark_epoch)
+        };
         let [retired_commit, seized_commit, new_reserve_commit, new_minted_commit, new_pool_t, new_pool_p, new_pool_s] = plan.commits(&opening);
         let header = crate::liquidation_tx::LiquidationHeader {
             epoch_id: mark_epoch,
             asset_id,
-            position_id: *id.finalize().as_bytes(),
+            position_id,
             retired_commit,
             seized_commit,
             new_reserve_commit,
@@ -11974,6 +12394,19 @@ impl Node {
             return Err(MempoolError::InvalidProof);
         }
         self.pool_own_publication(tx)
+    }
+
+    /// ⭐ A-F114: a payout's release at the fold, against the chain's bonded set (`PegLedger::release_confirm`).
+    pub(crate) fn apply_release_confirm(
+        &mut self,
+        ledger: u32,
+        released: &[[u8; 32]],
+        swept: &[[u8; 32]],
+        msg: &[u8],
+        verifier: &dyn crate::pqauth::PqVerifier,
+        attestors: &[crate::psm::MintAttestor],
+    ) -> crate::peg::PegOutcome {
+        self.peg.release_confirm(ledger, released, swept, msg, &self.validators, verifier, attestors)
     }
 
     /// ⭐ SAFE AT SCALE — APPLY A RESERVE COST the block carries (`reserve_cost_tx::apply_chain_reserve_cost`): the
@@ -17324,6 +17757,35 @@ impl Node {
         self.note_backfill_cursor = 0;
     }
 
+    /// ⛔ A-F118, THE JOINER'S SIDE (lane speed5-b4, 2026-11-23) — A PAGE'S COVERAGE MOVES THE BYTE CURSOR ONLY OVER RECORDS THIS
+    /// NODE CAN NOW ANSWER. MEASURED (netsim launch sim on ea1fba12, the diagnosis rows): joiner n5 placed records 7–23 at node 0's
+    /// own addresses (`da_addr_at_ordinal` agrees) yet held NONE of their bytes or tags, sidecar backlog 0, no want named — 2,794
+    /// tags short of node 0, deterministic across runs. A kind-8 range page covering them arrived while n5's headers-first span
+    /// was still OPEN, so the entries were refused, and `advance_note_backfill_cursor(covered_upto)` moved the cursor past them;
+    /// the byte debt counts only blocks this node grafted (`payload_gap`), so a jumped-over record was owed by no lane, forever.
+    /// The sidecar lane closed this class for ROWS (`name_sidecar_page_holes` before its cursor moves); this closes it for BYTES:
+    /// the coverage is honest only up to the first ordinal above the cold line whose record this node PLACES but cannot answer
+    /// (`da_record_notes`: not held, not regenerable — whose miss arm also raises the by-id want, bounded). Records the cold
+    /// prune releases by design sit below the cold line and are never read here.
+    /// §9.6: (3) moves no value; (5) work per page ≤ `DA_LADDER_SPAN` map reads (a constant), stopping at the first owed record;
+    /// (7) a constant per page, no term in nodes or height. AI RESISTANT (b) code: a lying page can only fail its entries, which
+    /// keeps them owed (asked again, of any peer) — it can never move the cursor past a record.
+    /// cons: a record no peer can serve keeps this node's byte walk at it (re-asked at the lane's existing pace) and the node
+    /// honestly owing it, where before it was silently skipped.
+    pub fn backfill_cover_honest(&self, covered_upto: u64) -> u64 {
+        let cold = self.certified_record_position().saturating_sub(Self::DA_LADDER_SPAN);
+        let from = self.note_backfill_cursor.max(cold).max(1);
+        let end = covered_upto.min(from.saturating_add(Self::DA_LADDER_SPAN));
+        for o in from..end {
+            if let Some(a) = self.da_addr_at_ordinal(o) {
+                if !self.da_record_held(a) && self.da_record_notes(a).is_none() {
+                    return o.max(self.note_backfill_cursor);
+                }
+            }
+        }
+        covered_upto
+    }
+
     /// Move the backfill cursor forward to `to` (never backward), so a page of cover-only blocks advances the
     /// walk instead of pinning it and stalling every later payment behind it.
     pub fn advance_note_backfill_cursor(&mut self, to: u64) {
@@ -18040,7 +18502,16 @@ impl Node {
     /// §14 — one held payment's leaf inputs: its statement and its three full carriers.
     pub(crate) fn leaf_input_of(&self, id: &Hash32) -> Option<TreeLeafInput> {
         let h = self.agg_held.get(id)?;
-        Some((h.statement.clone(), h.full.blob.clone(), h.full.member_carrier.clone(), h.full.spend_or_decoy.clone()))
+        // ⭐ A-F114 (B′): under the constant chain the leaf's middle carrier is the spend's ONE blinded wrapper (the tree's
+        // canon leaf verifies it in circuit), never a member carrier (the form carries none)
+        let middle = if crate::canon_chain::canon_live() {
+            let ws = h.full.nullifier_absence.first().map(crate::nf_sparse::canon_wrappers).unwrap_or_default();
+            let [w] = ws.as_slice() else { return None };
+            w.proof.clone()
+        } else {
+            h.full.member_carrier.clone()
+        };
+        Some((h.statement.clone(), h.full.blob.clone(), middle, h.full.spend_or_decoy.clone()))
     }
 
     /// §14 — a held payment that can never be laid in tree form (its leaf was refused): out of the hold, its bundles and the
@@ -18245,7 +18716,13 @@ impl Node {
             || self.agg_held.len() >= AGG_HOLD_MAX
             || Self::spend_tuple_of(&full).is_none()
             || !full.membership_carrier.is_empty()
-            || full.member_carrier.is_empty()
+            // ⭐ A-F114 (B′): under the constant chain the middle carrier is the spend's one wrapper, and no member leg rides
+            || (if crate::canon_chain::canon_live() {
+                !full.member_carrier.is_empty()
+                    || full.nullifier_absence.first().map(crate::nf_sparse::canon_wrappers).unwrap_or_default().len() != 1
+            } else {
+                full.member_carrier.is_empty()
+            })
             || full.spend_or_decoy.is_empty()
             || crate::spend_evidence::is_tree_form(&full)
         {
@@ -18340,14 +18817,31 @@ impl Node {
             // DB-223: the input's member-path carrier rides beside its spend (the pool door already verified it,
             // cross-bound it to this tuple and checked its anchor against the ring). ⭐ Q7: a spend WITHOUT one is not
             // stated — every peer refuses a block whose member transition does not cover each stated spend.
-            let Some(mt) = crate::member_transition::read_tuple(&tx.member_tuple).filter(|_| !carriers.member_carrier.is_empty())
-            else {
-                continue;
+            // ⭐ A-F114 (B′): under the constant chain the spend's input is proven by its ONE wrapper (no member leg), so it
+            // is stated when the canonical door accepts that wrapper for the spend's own input, and no member is pushed
+            // (the block's member ledger has nothing to state; `finish_member_after` judges no member under the switch)
+            let switch_form = crate::canon_chain::canon_live();
+            let mt = if switch_form {
+                // the verdict reads the FULL send's wrapper (`carriers`, A-F76's class: a tree-form body is pooled with its
+                // wrapper's bytes stripped, so asking it of the pooled body refused every held payment, FOUND by
+                // `agg_tree_tests::af114_under_the_switch_a_tree_form_payment_folds_on_two_parties_by_its_root`)
+                if !carriers.member_tuple.is_empty() || !carriers.member_carrier.is_empty() || self.member_carrier_verdict(carriers) != MemberGate::Pass {
+                    continue;
+                }
+                None
+            } else {
+                let Some(mt) = crate::member_transition::read_tuple(&tx.member_tuple).filter(|_| !carriers.member_carrier.is_empty())
+                else {
+                    continue;
+                };
+                Some(mt)
             };
             // ⭐ lane agg: a payment held in tree form is pooled with no carrier; its ledger rows lay from the FULL
             // carriers this node verified (`Node::agg_held`), which every other field shares byte for byte
             let carriers = self.agg_held.get(id).map_or(tx, |h| &h.full);
-            members.push((carriers.member_carrier.clone(), mt));
+            if let Some(mt) = mt {
+                members.push((carriers.member_carrier.clone(), mt));
+            }
             spend_sets.push((carriers.spend_or_decoy.clone(), tx.nullifiers.iter().map(|n| *n.as_bytes()).collect()));
             spends.push((carriers.blob.clone(), tuple, d));
             clocks.push(tx.clock_ms);
@@ -18638,7 +19132,9 @@ impl Node {
         let shape = crate::note_transition::ledger_shape_wire()?;
         if let Some(statements) = statements {
             // V2: the note statement alone; the producer still refuses what laying the member ledger refused
-            if !crate::member_transition::members_state_the_spends(&p.members, &published, &l.ring, l.seed) {
+            // ⭐ A-F114 (B′): under the constant chain no spend carries a member (each one's wrapper is its membership, judged
+            // per tag at the fold), so there is no member list to state the spends
+            if !crate::canon_chain::canon_live() && !crate::member_transition::members_state_the_spends(&p.members, &published, &l.ring, l.seed) {
                 eprintln!("[note-transition] ⛔ a stated spend with no member carrier, or a member anchor outside this node's ring — the slot is dropped");
                 return None;
             }
@@ -18650,6 +19146,12 @@ impl Node {
             }
             // DIGITAL-CASH-PRIVACY-REVIEWED: sizes only.
             eprintln!("[note-transition] the ledger (tree-ledger note statement) proved and self-verified: agg {} byte(s)", nt.agg.len());
+            return Some(Some(crate::member_transition::MemberTransition { agg: Vec::new(), tuples: Vec::new(), shape }));
+        }
+        // ⭐ A-F114 (B′): under the constant chain no spend carries a member, so there is no member ledger to lay, on the armed
+        // double either (FOUND by the two-party pin: the double's lay over a stated spend with no member returned None and
+        // dropped the slot, so A produced nothing); the block carries the empty member transition of the ledger shape
+        if crate::canon_chain::canon_live() {
             return Some(Some(crate::member_transition::MemberTransition { agg: Vec::new(), tuples: Vec::new(), shape }));
         }
         let agg = crate::member_transition::build_member_ledger_with(&p.members, &published, &l.ring, onr, l.seed, ledger_bound)?;
@@ -19395,6 +19897,18 @@ impl Node {
     /// MUST-STAY-GREEN: the seat pins (`a_membership_seat_rides_the_publishers_own_block_and_lands_on_the_peer`, db369), the
     ///   fast journey.
     /// cons: none — the same bytes the two copies built.
+    /// ⭐ A-F114: is this node's kept seat request past its expiry, so the daemon must sign a fresh one? `false` before the
+    /// network upgrade (a request never expires) and when the node is seated.
+    #[must_use]
+    pub fn own_seat_request_stale(&self, pk: &[u8]) -> bool {
+        if !crate::params::canon_live() || self.validators().is_seated(&crate::pqauth::pubkey_id(pk)) {
+            return false;
+        }
+        let Some(blob) = self.own_membership_bond.as_ref() else { return true };
+        let header = crate::chain_object::unframe(blob).and_then(|(_, p)| crate::membership_bond_tx::decode(p)).map(|(h, _, _)| h);
+        header.is_none_or(|h| crate::membership_bond_tx::seat_nonce_expiry_tick(&h.nonce) < self.chain_tick())
+    }
+
     pub fn request_own_seat_at_boot(&mut self, pk: &[u8], sk: &[u8]) -> String {
         if pk.is_empty() || sk.is_empty() {
             return "⛔ no identity key for this node — a seat is signed by it".into();
@@ -19413,8 +19927,14 @@ impl Node {
         };
         // The header is UNDER the signature (custody points + encapsulation key), so a relay cannot re-frame this seat
         // with substituted reserve key shares.
-        let header =
-            crate::membership_bond_tx::MembershipBondHeader { secp33, ed32, kem_ek, nonce: crate::membership_bond_tx::fresh_seat_nonce() };
+        // A-F114: from the upgrade the nonce carries the request's expiry (`membership_bond_tx::seat_nonce_until`)
+        let nonce = if crate::params::canon_live() {
+            let ttl_ticks = crate::membership_bond_tx::SEAT_REQUEST_TTL_MS / crate::dag::MESH_TARGET_SPACING_MS;
+            crate::membership_bond_tx::seat_nonce_until(self.chain_tick().saturating_add(ttl_ticks.max(1)))
+        } else {
+            crate::membership_bond_tx::fresh_seat_nonce()
+        };
+        let header = crate::membership_bond_tx::MembershipBondHeader { secp33, ed32, kem_ek, nonce };
         let msg = crate::pqauth::validator_membership_msg(&mid, &header.digest());
         let signed: Vec<u8> = match crate::pqauth::ml_dsa_sign(&msg, sk) {
             Some(s) if !s.is_empty() => s,
@@ -20171,7 +20691,7 @@ impl Node {
     }
 
     pub fn finalized_height(&self) -> u64 {
-        self.finality.finalized_height()
+        self.user_final_height() // ⭐⭐⭐ FINALITY BY WORK: the one figure; the vote tally (`self.finality`) decides nothing final
     }
 
     /// ⭐ SPEED L7 — the finalized height a USER-FACING reader acts on: the higher of the chain's (carried votes, folded)
@@ -20188,11 +20708,80 @@ impl Node {
     /// MUST-STAY-GREEN: `two_nodes_holding_the_same_blocks_read_the_same_finality_whichever_of_them_heard_the_votes` and the
     ///   G2 pins (they read `finalized_height`, which a heard vote still never moves), db370, the validator finality pins.
     pub fn user_final_height(&self) -> u64 {
-        self.finality.finalized_height().max(self.observed.finalized_height())
+        self.work_final.map_or(0, |(_, h)| h)
     }
 
-    /// The block behind [`Self::user_final_height`]: the pair of whichever tally stands higher.
+    /// ⭐⭐⭐ FINALITY BY WORK, NO VOTES (docs/LIVE-FINALITY-AND-FOLD-WEDGE-DEEP-AUDIT-20261125.md DECIDED; user 2026-11-25: "do we even
+    /// need quorum for finality? … leave the quorum for only protecting the bridges custody and remove its ability to control
+    /// finality and replace it with something faster and better that doesnt rely on votes"). BORROWED: Kaspa's finality point,
+    /// Bitcoin's confirmation depth. The FINAL block is the block [`FINAL_DEPTH`] selected-chain steps below this node's selected
+    /// tip, kept MONOTONE (it never moves to a lower height; the fork choice floors at it, `sync_finality_floor_into_dag`, so no re-org
+    /// reaches below it — Kaspa's finality-violation rule). It waits on nothing but the chain's own blocks: no vote, seat, committee
+    /// or fold, so it can never halt while blocks are produced (NOTHING HALTS, AGENTS.md §2).
+    /// SECURITY, named: reversing a final block needs an attacker to out-work the honest chain over FINAL_DEPTH steps; with share q
+    /// of the work its chance is ≈ (q / (1 − q))^FINAL_DEPTH (Nakamoto's bound) — 1e-9 at q = 0.25. ASSUMPTION: an honest majority
+    /// of the work and a network delay below one selected-chain step; past it a node partitioned for FINAL_DEPTH steps can finalize a
+    /// branch the rest did not (Kaspa's own named exposure). AI RESISTANT (b): arithmetic over public work every node checks; no
+    /// seat can withhold it. SCALE: O(FINAL_DEPTH) a refresh, constant in nodes, seats and height; one (id, height) held.
+    /// cons: a block is final FINAL_DEPTH × the real spacing after it lands (≈ 37 s at the live 1,953 ms target), and the 2/3
+    /// accountable signature of the vote tally is no longer what finality means.
+    /// ⭐⭐⭐ TWO FIGURES, TWO JOBS (user 2026-11-25: "we might as well do 1 and 2 since thats already the proven solution"; BORROWED:
+    /// Kaspa's fast confirmation beside its deep finality point):
+    /// 1. FINAL FOR USERS (`work_final`, what `user_final_height` / `finalized_height` / the final record / payouts read): the FAST rule,
+    ///    `FINAL_BLUE_DEPTH` blue blocks above, at least `FINAL_MIN_STEPS` chain steps — the Nakamoto bound counted in blocks, so on a wide
+    ///    DAG it arrives FINAL_DEPTH / width as soon.
+    /// 2. THE NO-REORG FLOOR (`floor_final`, what ONLY the fork choice reads, `sync_finality_floor_into_dag`): the deeper rule proven on
+    ///    the gate's join and replica census (c0a7599d), `FINAL_DEPTH` selected-chain steps, so a natural reorg of a multi-producer DAG
+    ///    can never sit below the floor and trap a node on a losing branch (MEASURED why: lane e9a7b9f5's replica census, the two
+    ///    replaying nodes stood with 52 blocks unfolded while the floor sat 8 steps deep).
+    /// Both are capped at the fold cursor (a final block's whole past is folded) and monotone; neither ever leads the fold.
+    pub(crate) fn refresh_work_final(&mut self) {
+        if let Some(f) = self.final_block_by(FINAL_BLUE_DEPTH, FINAL_MIN_STEPS) {
+            if self.work_final.is_none_or(|(_, fh)| f.1 > fh) {
+                self.work_final = Some(f);
+            }
+        }
+        if let Some(f) = self.final_block_by(0, FINAL_DEPTH) {
+            if self.floor_final.is_none_or(|(_, fh)| f.1 > fh) {
+                self.floor_final = Some(f);
+            }
+        }
+    }
+
+    /// The selected-chain block at least `blue_depth` blue blocks and `min_steps` chain steps below the selected tip, walked further
+    /// down to the fold cursor (a final block's whole past is folded, so no shell the fold still waits on sits under it), or None.
+    fn final_block_by(&self, blue_depth: u64, min_steps: usize) -> Option<(BlockId, u64)> {
+        let dag = self.relay.dag();
+        let mut b = dag.selected_tip()?;
+        let tip_blue = dag.get(&b).map_or(0, |n| n.blue_score);
+        let mut steps = 0usize;
+        loop {
+            let blue = dag.get(&b).map_or(0, |n| n.blue_score);
+            if steps >= min_steps && tip_blue.saturating_sub(blue) >= blue_depth {
+                break;
+            }
+            b = dag.get(&b).and_then(|n| n.selected_parent)?;
+            steps += 1;
+        }
+        let cursor = self.fold_cursor_blue();
+        while dag.get(&b).is_some_and(|n| n.blue_score > cursor) {
+            b = dag.get(&b).and_then(|n| n.selected_parent)?;
+        }
+        dag.get(&b).map(|n| (b, n.blue_score))
+    }
+
+    /// The no-reorg floor's block (fork choice only).
+    pub(crate) fn floor_final_block(&self) -> Option<BlockId> {
+        self.floor_final.map(|(b, _)| b)
+    }
+
+    /// The block behind [`Self::user_final_height`]: the work-final block ([`Self::refresh_work_final`]).
     pub(crate) fn user_final_block(&self) -> Option<BlockId> {
+        self.work_final.map(|(b, _)| b)
+    }
+
+    /// The vote tallies' block (kept for the custody paths that still read signatures; never finality).
+    pub(crate) fn vote_final_block(&self) -> Option<BlockId> {
         // ⭐ A-F86: the observed block stands in only while it extends the chain's own final block; one that does not (an
         // observed quorum the chain's tally later out-finalized on another chain) is never a floor or a fold root.
         if self.observed.finalized_height() > self.finality.finalized_height()
@@ -20392,7 +20981,7 @@ impl Node {
     }
 
     pub fn finalized_block(&self) -> Option<BlockId> {
-        self.finality.finalized_block()
+        self.user_final_block() // ⭐⭐⭐ FINALITY BY WORK: the one final block (the vote tally's is `self.finality`, internal only)
     }
 
     // ---- Bicameral governance of the runtime-tunable params ----
@@ -21347,7 +21936,19 @@ impl Node {
             from_genesis = false;
         }
         let anchor = (!from_genesis).then(|| (want_front - 1, below_hex));
+        // ⛔ A-F116 (MEASURED 2026-11-22, the testnet gate's netsim join on main f1c02f5f, TIMEOUT past its 1,778 s wall): under
+        // the switch this replay failed ("reaches a spine root that is not this node's", equal leaf counts) and, filling
+        // nothing, ran again on EVERY fold pass — 5,582 replays of ~300 records in one launch, against 0 on the last green
+        // join. A replay of the same held records to the same top fails the same way, so it is retried only when a new
+        // record has folded (`served_seq` moved). The mismatch's cause is audited apart (A-F116 row). cons: an adopted node
+        // whose replay can never succeed tries once per folded record instead of once per pass.
+        if self.db471_failed_top == top {
+            return;
+        }
         let (replayed, recorded) = self.rebuild_windows_from_records(anchor);
+        if recorded == 0 {
+            self.db471_failed_top = top;
+        }
         // DIGITAL-CASH-PRIVACY-REVIEWED: ordinals and counts of public spine windows; no note, tag, amount, key or owner.
         eprintln!("[db471] the adopted node's stream windows rebuilt from ordinal {want_front}: {replayed} record(s) replayed, {recorded} window(s)");
     }
@@ -21557,6 +22158,11 @@ impl Node {
     /// within a few blocks of the tip, which the catch-up lanes cover in one round trip.
     pub const AUTOSAVE_MIN_INTERVAL_MS: u64 = 5_000;
 
+    /// The top folded record ordinal (the rewind's coordinate), for the canonical chain's checkpoint.
+    pub(crate) fn da_ord_top_for_canon(&self) -> u64 {
+        self.da_ord_top
+    }
+
     pub fn autosave(&mut self) {
         use std::sync::atomic::Ordering;
         let Some(path) = self.persist_path.as_ref().map(|t| t.path.clone()) else {
@@ -21597,6 +22203,7 @@ impl Node {
         let win_files = self.window_index.take_dirty_files();
         let win_dirty = self.window_index.dirty_handle();
         let win_anchor = self.window_anchor();
+        let canon_ring = self.capture_canon_ring(); // A-F114 U5: the canonical chain, captured under the lock
         // ⛔⛔⛔ THE IN-FLIGHT FLAG MUST CLEAR EVEN IF THE SAVE PANICS.
         //
         // `save_in_flight` is this node's own gate (per node since 2026-09-20 — see its field doc for the
@@ -21621,6 +22228,16 @@ impl Node {
         }
         let saver = std::thread::spawn(move || {
             let _clear_on_any_exit = SaveInFlightGuard(in_flight);
+            // A-F114 U5: the canonical chain FIRST, so a crash before the snapshot leaves it ahead (rolled back at the resume)
+            // W8: never a ring for a snapshot the rollback rule will refuse (the two files never part)
+            // O1-INFINITY-REVIEWED: one read of the in-memory watermark; the ring written (or not) is the same one ring file.
+            let ring_ok = !crate::persist::save_would_be_refused(&path, snap.blue_score, snap.height);
+            if let Some((head, slots, saved, epoch, top)) = canon_ring.as_ref().filter(|_| ring_ok) {
+                match crate::persist::save_canon_ring(&path, head, slots) {
+                    Ok(()) => saved.landed(*epoch, *top), // A-F139: never undoes a rewind that landed during the write
+                    Err(e) => eprintln!("[persist] ⛔ the canonical chain was not written beside the checkpoint: {e}"),
+                }
+            }
             match crate::persist::save_with_fold(&path, &snap, &fold) {
                 Ok(true) => {
                     crate::block_window::BlockWindow::flush_unlinks(&unlink);
@@ -21793,6 +22410,7 @@ impl Node {
             // was a local accumulator no verdict reads. MEASURED: 112 bodies asked for on every round, none servable, holding the lanes.
             nf_fold_base_words: Default::default(),
             nf_fold_span: Vec::new(),
+            canon: self.canon_state(),
             peg_price_marks: self.peg.price_mark_census(),
             bond_heights: self.bond_heights_census(),
             bond_locked_notes: self.bond_locked_census(),

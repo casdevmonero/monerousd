@@ -887,6 +887,11 @@ impl Node {
             // under a ring commit this chain never held: the block stays, its unverifiable spends do not apply. The
             // verdict reads the DAG alone, so every node that holds the block decides it the same way and never waits.
             let clock_reached = self.ledger_clock_is_reached(b, nt.clock_ms);
+            // ⭐ A-F114 (B′): under the constant chain a spend names no anchor (its wrapper's end is judged per tag by
+            // `canon_tag_spent`), so a reached clock leaves nothing to judge here; a clock not reached still refuses below
+            if crate::canon_chain::canon_live() && clock_reached {
+                return nothing;
+            }
             if clock_reached && self.member_ring_commit_is_canonical(&body.header.member_ring_commit) {
                 // §22c: the ledger's ring is this chain's; each stated spend's OWN anchor still has to be in it.
                 return self.native_spend_anchors_at_fold(b, body, nt, ordinal);
@@ -1214,9 +1219,24 @@ impl Node {
             // per-wallet (bucket, ek) target is written.
             // CHAIN-OBJECT: the unbond object the validator signed (its clue digest) — this is its fold-applied release.
             let _ = self.place_note_tag_in_record(seq, &cm, crate::oli::index_key(&u.owner_clue));
+            // ⛔ A-F118: the grown row's cover slots follow the graft rule over its regenerated payload (`refile_row_by_filing`;
+            // the positional shift above is what a node without the block's filing keeps)
+            let _ = self.refile_row_by_filing(seq);
             self.unbonding.remove(&vid);
             // DIGITAL-CASH-PRIVACY-REVIEWED: a fixed string; no id, note, amount, bucket or key.
             eprintln!("[bond-fold] ⭐ DB-274 P2: an unbonding window closed — its collateral note was released into this step's record");
+        }
+        // ⭐ A-F114 — from the network upgrade a slashed id that holds nothing (`ValidatorSet::settled_slashed`) and no
+        // bond lock, bond height or unbonding here leaves the slashed set; the diff below journals it, so a rewind puts it
+        // back. The set is then bounded by the slashed ids still referenced, never by every slashing ever.
+        if crate::params::canon_live() {
+            let settled: Vec<[u8; 32]> = self
+                .validators
+                .settled_slashed()
+                .into_iter()
+                .filter(|id| !self.bond_locked.contains_key(id) && !self.bond_height.contains_key(id) && !self.unbonding.contains_key(id))
+                .collect();
+            self.validators.forget_slashed(&settled);
         }
         let mut vids: Vec<[u8; 32]> = before_set
             .every_vid()
@@ -3037,6 +3057,36 @@ impl Node {
     /// node does not hold is told apart from a carrier that fails — the block door's `AnchorVerdict::Wait` / `Decided` split
     /// at the tx door.
     pub(super) fn member_carrier_verdict(&self, tx: &PqTx) -> MemberGate {
+        // ⭐ A-F114 (B′) — UNDER THE CONSTANT CHAIN THE WRAPPER IS THE MEMBERSHIP. Its created bit proves the input's leaf an
+        // output of a record of THIS chain, and it binds the spend's own `(nf, lc)` (`canon_chain::canon_spend_input`), so
+        // a member leg would prove the same thing twice: it is refused (one encoding), and the spend's one wrapper decides.
+        // An end the window does not hold is the old "anchor not held" (a retry once this node folds there).
+        // §9.6: (2) the wrapper by `canon_absence_refusal` (`absence_u::verify_spend` at the admitted shape); (3) none
+        // created; (4) the window and the carrier refuse a spent input; (6) parity with the member door: the same input,
+        // the same "is it in this chain" question, against a value this node holds; (8) (a) a proof every node checks.
+        if crate::canon_chain::canon_live() {
+            if !tx.member_carrier.is_empty() || !tx.member_tuple.is_empty() {
+                eprintln!("[admit] ⛔ REFUSE: a member leg under the constant chain (the spend's wrapper is its membership)");
+                return MemberGate::Refuse;
+            }
+            let Some((nf, lc)) = crate::canon_chain::canon_spend_input(tx) else {
+                eprintln!("[admit] ⛔ REFUSE: a spend whose input does not decode");
+                return MemberGate::Refuse;
+            };
+            let ws = tx.nullifier_absence.first().map(crate::nf_sparse::canon_wrappers).unwrap_or_default();
+            let [w] = ws.as_slice() else {
+                eprintln!("[admit] ⛔ REFUSE: a spend without exactly one absence wrapper");
+                return MemberGate::Refuse;
+            };
+            if self.canon_recent.ordinal_of_end(&w.end).is_none() {
+                return MemberGate::AnchorNotHeld;
+            }
+            if let Some(why) = self.canon_absence_refusal(&nf, &lc, w) {
+                eprintln!("[admit] ⛔ REFUSE: {why}");
+                return MemberGate::Refuse;
+            }
+            return MemberGate::Pass;
+        }
         // ⭐ DB-223 phase C (Q7): there is no legacy door left to leave a spend to — an absent carrier proves nothing.
         if tx.member_carrier.is_empty() || tx.member_tuple.is_empty() {
             eprintln!("[admit] ⛔ REFUSE: a spend with no member-path carrier proves no input");

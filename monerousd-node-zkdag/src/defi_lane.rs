@@ -137,7 +137,33 @@ pub enum SlotFate {
 }
 
 /// The lane's view of its node (the node, or a test's stand-in): the book, the fold's blue score, the events, the door.
+/// ⭐ A-F114 — what a cover's wrapper is proven over under the constant chain: the end of the record before a span of the
+/// window, that span's first index, and its `SPAN` records' tags and leaves (`canon_chain::CanonRecent`), handed to the
+/// slot builder's thread (it reads no node). A cover's leaf is an output of the span's first record.
+#[derive(Clone, Debug)]
+pub struct CanonCoverWindow {
+    pub start_end: crate::spend_frontier::Digest4,
+    pub start_index: u64,
+    pub recs: Vec<(Vec<[u8; 32]>, Vec<crate::spend_frontier::Digest4>)>,
+}
+
 pub trait DefiHost {
+    /// ⭐ A-F114 — under the constant chain, the window span a cover's wrapper is proven over (`None`: not enough records yet,
+    /// or before the upgrade)
+    fn canon_cover_window(&self) -> Option<CanonCoverWindow> {
+        self.canon_cover_window_at(None)
+    }
+    /// ⭐ A-F114 — the window span that CLOSES a global span (aligned, `(index + 1) % SPAN == 0`) at chain end `end`, or the
+    /// newest such span (`None`)
+    fn canon_cover_window_at(&self, _end: Option<crate::spend_frontier::Digest4>) -> Option<CanonCoverWindow> {
+        None
+    }
+    /// ⭐ A-F114 — the chain end of the wrapper a slot's holder relayed for nullifier `nf` (`None`: none held)
+    fn slot_wrapper_end(&self, _nf: [u64; 8]) -> Option<crate::spend_frontier::Digest4> {
+        None
+    }
+    /// ⭐ A-F114 — keep the wrappers the slot builder proved (its covers'), by nullifier, for the slots' publication
+    fn hold_wrappers(&mut self, _ws: Vec<([u8; 32], Vec<u8>)>) {}
     fn book(&self) -> DefiBook;
     fn score(&self) -> u64;
     /// The chain clock at this node's tip (`Node::chain_time_ms`): what a batch's settlement window counts on.
@@ -195,6 +221,21 @@ pub struct NodeHost<'a> {
     pub payout: &'a crate::btc_payout::PayoutLane,
 }
 
+impl NodeHost<'_> {
+    /// ⭐ A-F114 — is a slot's nullifier spent, as THIS node can say before carrying it? Under the network upgrade no node
+    /// holds the spent set, so the custody intake reads the canonical chain's recent window (a spend inside it). A spend older
+    /// than the window is refused at the fold by the slot's own wrapper, the authority as everywhere; this is a courtesy that
+    /// keeps a dead slot out of the batch early. Before the upgrade it is the spent set, as it was.
+    fn slot_spent(&self, nf: [u64; 8]) -> bool {
+        let tag = crate::spend_frontier::leaf_to_cm_bytes(nf);
+        if crate::params::canon_live() {
+            self.node.canon_recent.holds(&tag)
+        } else {
+            self.node.is_nullifier_spent(&crate::hash::Hash32(tag))
+        }
+    }
+}
+
 impl DefiHost for NodeHost<'_> {
     fn chain_ms(&self) -> u64 {
         self.node.chain_time_ms()
@@ -250,15 +291,73 @@ impl DefiHost for NodeHost<'_> {
         }
         out
     }
+    fn canon_cover_window_at(&self, end: Option<crate::spend_frontier::Digest4>) -> Option<CanonCoverWindow> {
+        if !crate::canon_chain::canon_live() {
+            return None;
+        }
+        let span = crate::canon_carrier_core::SPAN;
+        let oldest = self.node.canon_recent.oldest()?;
+        let all = self.node.canon_recent.range(oldest, crate::canon_chain::CANON_RECENT_RECORDS);
+        // a record that closes a global span, with a whole span and its predecessor in the window: the named end, or the newest
+        // its predecessor's end: the record before it in the window, or the chain's genesis value for the span at record 0
+        // (FOUND by the real-order pin: a note funded in the chain's first span had no window record before it)
+        let before = |first: usize| -> Option<crate::spend_frontier::Digest4> {
+            if first > 0 {
+                Some(all[first - 1].1)
+            } else {
+                (all[0].0 == 0).then(crate::canon_chain::genesis)
+            }
+        };
+        let closes = |j: usize| (all[j].0 + 1) % span as u64 == 0 && j + 1 >= span && before(j + 1 - span).is_some();
+        let j = (0..all.len()).rev().find(|&j| closes(j) && end.is_none_or(|e| all[j].1 == e))?;
+        let first = j + 1 - span;
+        Some(CanonCoverWindow {
+            start_end: before(first)?,
+            start_index: all[first].0,
+            recs: all[first..=j].iter().map(|(_, _, t, l, _)| (t.as_ref().clone(), l.as_ref().clone())).collect(),
+        })
+    }
+    fn slot_wrapper_end(&self, nf: [u64; 8]) -> Option<crate::spend_frontier::Digest4> {
+        let k = crate::spend_frontier::leaf_to_cm_bytes(nf);
+        let (_, held) = self.node.canon_held_wrappers.iter().find(|(x, _)| *x == k)?;
+        let ws: Vec<crate::nf_sparse::CanonAbsence> = postcard::from_bytes(held).ok()?;
+        ws.first().map(|w| w.end)
+    }
+    fn hold_wrappers(&mut self, ws: Vec<([u8; 32], Vec<u8>)>) {
+        for (nf, w) in ws {
+            self.node.canon_hold_wrappers(nf, w);
+        }
+    }
     fn slot_live(&self, carrier: &[u8], tuple: &[u8], leaf_commit: [u64; 8], nf: [u64; 8]) -> bool {
-        !self.node.is_nullifier_spent(&crate::hash::Hash32(crate::spend_frontier::leaf_to_cm_bytes(nf)))
-            && self.node.defi_member_leg(carrier, tuple, leaf_commit, nf)
+        // ⭐ A-F114: under the constant chain a slot's leg is its relayed wrapper, judged by the canonical door
+        if crate::canon_chain::canon_live() {
+            return carrier.is_empty()
+                && tuple.is_empty()
+                && self.node.canon_slot_state(&crate::spend_frontier::leaf_to_cm_bytes(nf), &leaf_commit) == crate::canon_chain::CanonSlot::Live;
+        }
+        !self.slot_spent(nf) && self.node.defi_member_leg(carrier, tuple, leaf_commit, nf)
     }
     fn slot_dead(&self, carrier: &[u8], tuple: &[u8], leaf_commit: [u64; 8], nf: [u64; 8]) -> bool {
-        self.node.is_nullifier_spent(&crate::hash::Hash32(crate::spend_frontier::leaf_to_cm_bytes(nf)))
-            || self.node.defi_member_leg_refused(carrier, tuple, leaf_commit, nf)
+        if crate::canon_chain::canon_live() {
+            // a member leg under the constant chain is one encoding too many: it can never be carried
+            return !carrier.is_empty()
+                || !tuple.is_empty()
+                || matches!(
+                    self.node.canon_slot_state(&crate::spend_frontier::leaf_to_cm_bytes(nf), &leaf_commit),
+                    crate::canon_chain::CanonSlot::Spent | crate::canon_chain::CanonSlot::Refused
+                );
+        }
+        self.slot_spent(nf) || self.node.defi_member_leg_refused(carrier, tuple, leaf_commit, nf)
     }
     fn slot_fate(&self, carrier: &[u8], tuple: &[u8], leaf_commit: [u64; 8], nf: [u64; 8]) -> SlotFate {
+        if crate::canon_chain::canon_live() {
+            return match self.node.canon_slot_state(&crate::spend_frontier::leaf_to_cm_bytes(nf), &leaf_commit) {
+                crate::canon_chain::CanonSlot::Spent => SlotFate::NullifierSpent,
+                crate::canon_chain::CanonSlot::Refused => SlotFate::LegRefused,
+                _ if !carrier.is_empty() || !tuple.is_empty() => SlotFate::LegRefused,
+                _ => SlotFate::Carried,
+            };
+        }
         if self.node.is_nullifier_spent(&crate::hash::Hash32(crate::spend_frontier::leaf_to_cm_bytes(nf))) {
             SlotFate::NullifierSpent
         } else if self.node.defi_member_leg_refused(carrier, tuple, leaf_commit, nf) {
@@ -601,6 +700,12 @@ impl Drop for Run {
 pub struct DefiLane {
     /// ⭐ §18.14 — the pair this lane runs
     pub pair: u8,
+    /// ⭐ A-F114 — this member's cover share for a batch in proving (the batch, its job), and the last batch it delivered
+    share_job: Option<(u64, std::sync::mpsc::Receiver<Option<CoverShare>>)>,
+    share_sent: Option<u64>,
+    /// ⭐ A-F114 — relays of the wrappers this lane proved (`postcard((legs, wrappers))`, the `WireMsg::CanonWrappers` body), for
+    /// the runtime to send (`NodeRuntime`'s lane loop drains it)
+    pub wrapper_relay: Vec<Vec<u8>>,
     path: Option<std::path::PathBuf>,
     file: CustodyFile,
     /// this custodian's custody KEM pair (the key the book's roster names) and its index there
@@ -628,7 +733,7 @@ pub struct DefiLane {
     /// the batch whose slots this custodian published
     slots_sent: Option<u64>,
     /// the batch whose slots are being built off the tick thread (covers' proofs and legs), and where they arrive
-    slot_job: Option<(u64, std::sync::mpsc::Receiver<Option<Vec<db::DefiSlotsTx>>>)>,
+    slot_job: Option<(u64, std::sync::mpsc::Receiver<Option<(Vec<db::DefiSlotsTx>, Vec<([u8; 32], Vec<u8>)>)>>)>,
     /// the batch whose expiry this node last pooled, and the fold step it did so at
     expire_sent: Option<(u64, u64)>,
     /// ⭐ Earn step 3 — this custodian's shares of EVERY pair's closed window `(lines, salt)` (pair order), handed in by the
@@ -639,6 +744,61 @@ pub struct DefiLane {
 
 /// ⭐ THE BATCH'S SLOTS from its real orders and claims (oldest first) and covers to exactly `SLOTS` each, every cover's leg
 /// proven from one of `books` (gathered on the tick thread), in the custody's random order (a cover's position names nothing).
+/// ⭐ A-F114 — ONE switch-form cover leg (the builder's covers and a committee member's share alike): the leaf an output of
+/// the window span's first record (`i` picks which), the production carrier over the span, the wrapper for the cover's
+/// own `(nf, lc = P(P(leaf, nf), blind))` (the claim and order proofs' own cross-bind spelling). Returns the leg the cover
+/// proof takes (no member carrier, no tuple) and `(nf bytes, lc, held wrapper bytes)`.
+fn canon_cover_leg(w: &CanonCoverWindow, i: usize, nf: [u64; 8], blind: [u64; 8]) -> Option<(dcu::CoverLeg, ([u8; 32], crate::spend_frontier::Digest4, Vec<u8>))> {
+    let made = w.recs.first()?;
+    let leaf = *made.1.get(i % made.1.len().max(1))?;
+    let nf_b = crate::spend_frontier::leaf_to_cm_bytes(nf);
+    let c = usdm_decider::poseidon2_compress::compress;
+    let lc = c(&c(&leaf, &nf), &blind);
+    let mut car = crate::canon_carrier_core::CanonCarrier::starting_at(crate::canon_chain::to_lanes(&w.start_end), w.start_index);
+    car.pending = vec![(crate::canon_chain::tag_lanes(&nf_b), crate::canon_chain::to_lanes(&leaf))];
+    for (k, (tags, leaves)) in w.recs.iter().enumerate() {
+        let idx = w.start_index + k as u64;
+        car.absorb(idx, &crate::canon_chain::record(tags, leaves, idx)).ok()?;
+    }
+    let (proof, end) = car.spend(0, crate::canon_chain::to_lanes(&nf), crate::canon_chain::to_lanes(&blind)).ok()?;
+    let held = postcard::to_allocvec(&vec![crate::nf_sparse::CanonAbsence { proof, end: crate::canon_chain::of_lanes(&end) }]).ok()?;
+    Some(((leaf, Vec::new(), Vec::new(), lc), (nf_b, lc, held)))
+}
+
+/// ⭐ A-F114 — A COMMITTEE MEMBER'S SHARE OF A BATCH'S COVERS (audit 23:30): `k` covers (claims first, then orders) proven to
+/// the window span `w` under this member's own `key`, with their wrappers. Submitted to the batch's intake as ordinary slots
+/// (a cover is told from a real slot by nothing), so the builder proves only what the shares leave.
+pub(crate) fn build_cover_share(
+    book: &DefiBook,
+    epoch: u64,
+    pk: &crate::epoch_key::EpochPublicKey,
+    k: usize,
+    key: &[u8; 32],
+    w: &CanonCoverWindow,
+) -> Option<(Vec<db::DefiClaimTx>, Vec<db::DefiOrderTx>, Vec<([u8; 32], crate::spend_frontier::Digest4, Vec<u8>)>)> {
+    let next = std::cell::Cell::new(0usize);
+    let out: std::cell::RefCell<Vec<([u8; 32], crate::spend_frontier::Digest4, Vec<u8>)>> = std::cell::RefCell::new(Vec::new());
+    let leg_for = |nf: [u64; 8], blind: [u64; 8]| -> Option<dcu::CoverLeg> {
+        let i = next.get();
+        next.set(i + 1);
+        let (leg, held) = canon_cover_leg(w, i, nf, blind)?;
+        out.borrow_mut().push(held);
+        Some(leg)
+    };
+    let (mut claims, mut orders) = (Vec::new(), Vec::new());
+    for j in 0..k {
+        let kk = *blake3::Hasher::new_keyed(key).update(b"share").update(&(j as u64).to_le_bytes()).finalize().as_bytes();
+        if j < k.div_ceil(2) {
+            claims.push(dcu::cover_claim(book.pair, &leg_for, &kk)?);
+        } else {
+            orders.push(dcu::cover_order(book, epoch, pk, &leg_for, &kk)?);
+        }
+    }
+    Some((claims, orders, out.into_inner()))
+}
+
+type CoverShare = (Vec<db::DefiClaimTx>, Vec<db::DefiOrderTx>, Vec<([u8; 32], crate::spend_frontier::Digest4, Vec<u8>)>);
+
 pub(crate) fn build_slots(
     book: &DefiBook,
     epoch: u64,
@@ -647,11 +807,25 @@ pub(crate) fn build_slots(
     mut claims: Vec<db::DefiClaimTx>,
     books: &[([u8; 32], crate::member_witness::MemberWitnessBook)],
     key: &[u8; 32],
-) -> Option<Vec<db::DefiSlotsTx>> {
+    canon: Option<&CanonCoverWindow>,
+) -> Option<(Vec<db::DefiSlotsTx>, Vec<([u8; 32], Vec<u8>)>)> {
     let next = std::cell::Cell::new(0usize);
+    let wrappers: std::cell::RefCell<Vec<([u8; 32], Vec<u8>)>> = std::cell::RefCell::new(Vec::new());
     let leg_for = |nf: [u64; 8], blind: [u64; 8]| -> Option<dcu::CoverLeg> {
         let i = next.get();
         next.set(i + 1);
+        // ⭐ A-F114 — UNDER THE CONSTANT CHAIN A COVER'S LEG IS ITS OWN WRAPPER, never a member leg: its leaf an output of
+        // the window span's first record, its one-note list followed over the span by the production carrier
+        // (`canon_carrier_core::CanonCarrier`), the wrapper bound to the cover's own `(nf, lc)` with
+        // `lc = P(P(leaf, nf), blind)` (the claim and order proofs' own cross-bind spelling). The wrapper is held under the
+        // cover's nullifier for the slots' publication. A cover mints 0 by its own proof; a cover that cannot be proven
+        // gives no batch (the batch waits).
+        // (decided by the window the tick thread passed, never this thread's switch: a test turns the switch on per thread)
+        if let Some(w) = canon {
+            let (leg, (nf_b, _, held)) = canon_cover_leg(w, i, nf, blind)?;
+            wrappers.borrow_mut().push((nf_b, held));
+            return Some(leg);
+        }
         let (cm, mb) = books.get(i % books.len().max(1))?;
         let (carrier, tuple) = mb.carrier_for(cm, nf, blind, &[0u8; 32], &[0u8; 32]).ok()?;
         let mut tb = Vec::with_capacity(crate::member_transition::MEMBER_TUPLE_BYTES);
@@ -678,7 +852,8 @@ pub(crate) fn build_slots(
     };
     let po = shuffle(orders.len());
     let pc = shuffle(claims.len());
-    db::DefiSlotsTx::parts(book.pair, book.batch, po.into_iter().map(|i| orders[i].clone()).collect(), pc.into_iter().map(|i| claims[i].clone()).collect())
+    let parts = db::DefiSlotsTx::parts(book.pair, book.batch, po.into_iter().map(|i| orders[i].clone()).collect(), pc.into_iter().map(|i| claims[i].clone()).collect())?;
+    Some((parts, wrappers.into_inner()))
 }
 
 /// How many fold steps past a batch's close every custodian (not only its publisher) publishes the slots.
@@ -783,6 +958,9 @@ impl DefiLane {
             pending_claims: Vec::new(),
             slots_sent: None,
             slot_job: None,
+            share_job: None,
+            share_sent: None,
+            wrapper_relay: Vec::new(),
             expire_sent: None,
             epoch_lines: Vec::new(),
         }
@@ -923,7 +1101,9 @@ impl DefiLane {
         if book.frozen() {
             return gossip;
         }
-        if let Some(parts) = self.slots_due(host, &book) {
+        if let Some((parts, ws)) = self.slots_due(host, &book) {
+            // A-F114: the covers' wrappers are held first, so the slots' publication finds every slot's (`publish_defi_slots`)
+            host.hold_wrappers(ws);
             // every part, each its own transaction (spec §18.12); the batch is this custodian's once all of them pooled
             if parts.iter().fold(true, |ok, t| host.publish_slots(t) && ok) {
                 self.slots_sent = Some(book.batch);
@@ -934,6 +1114,9 @@ impl DefiLane {
         let Some(me) = self.me_index else {
             return gossip;
         };
+        if crate::canon_chain::canon_live() {
+            self.cover_share_tick(host, &book, me, &mut gossip);
+        }
         self.absorb(events, &book, me);
         let mut out = gossip;
         let Some(state) = self.file.me.clone() else { return out };
@@ -1591,6 +1774,56 @@ impl DefiLane {
     /// ⭐ A GOSSIPED LANE MESSAGE: a handshake to this custodian, an engine message to it, a peer's part. Nothing it says is
     /// believed without its tag under the pair key (a handshake is an encapsulation only this custodian can open).
     /// ⭐ spec §18.12 — keep a buyer's slot for the next batch's slots (once per nullifier; the oldest dropped past the bound).
+    /// ⭐ A-F114 — A COMMITTEE MEMBER'S COVER SHARE (audit 23:30): while a batch takes its slots, a member that is NOT the
+    /// batch's builder (`batch mod n`) proves `⌈2·SLOTS / n⌉` covers off the tick thread, then submits them as ordinary slots
+    /// to every custodian (`DefiMpcMsg::Submit`) and relays their wrappers (`wrapper_relay` → `WireMsg::CanonWrappers`),
+    /// holding them itself too. One share a batch. SAFE AT SCALE: a member's work is a constant share of a fixed-size batch.
+    /// A share that never arrives costs nothing but time: the builder proves the covers it lacks (`build_slots`).
+    fn cover_share_tick<H: DefiHost>(&mut self, host: &mut H, book: &DefiBook, me: u32, out: &mut Vec<DefiMpcMsg>) {
+        let n = book.roster.len() as u64;
+        if n < 2 || book.batch % n == u64::from(me) || !book.is_open() || book.slotted || book.batch_closed(host.score()) {
+            return;
+        }
+        if let Some((b, rx)) = self.share_job.as_ref() {
+            if *b != book.batch {
+                self.share_job = None;
+            } else {
+                match rx.try_recv() {
+                    Ok(r) => {
+                        self.share_job = None;
+                        let Some((claims, orders, ws)) = r else { return };
+                        for (claim, body) in claims.iter().map(|c| (true, c.encode())).chain(orders.iter().map(|o| (false, o.encode()))) {
+                            if let Some(body) = body {
+                                out.push(DefiMpcMsg::Submit { claim, body });
+                            }
+                        }
+                        host.hold_wrappers(ws.iter().map(|(nf, _, w)| (*nf, w.clone())).collect());
+                        for (nf, lc, w) in ws {
+                            if let Ok(bytes) = postcard::to_allocvec(&(vec![(nf, lc)], w)) {
+                                self.wrapper_relay.push(bytes);
+                            }
+                        }
+                        self.share_sent = Some(book.batch);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => self.share_job = None,
+                }
+                return;
+            }
+        }
+        if self.share_sent == Some(book.batch) {
+            return;
+        }
+        let (Some(w), Some((epoch, pk)), Some(key)) = (host.canon_cover_window(), host.seal_epoch(), dcu::custody_entropy()) else { return };
+        let k = (2 * db::SLOTS).div_ceil(n as usize);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let book2 = book.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(build_cover_share(&book2, epoch, &pk, k, &key, &w));
+        });
+        self.share_job = Some((book.batch, rx));
+    }
+
     fn take_submission(&mut self, m: &DefiMpcMsg) {
         let DefiMpcMsg::Submit { claim, body } = m else { return };
         if *claim {
@@ -1621,7 +1854,7 @@ impl DefiLane {
     /// applied, and this custodian the batch's publisher (`batch mod n`); then every other custodian too, a few fold steps on
     /// (a publisher offline never stalls the batch — the first slots to apply win). The oldest live real slots (their legs
     /// hold here, their nullifiers unspent), then covers to exactly `SLOTS` each.
-    fn slots_due<H: DefiHost>(&mut self, host: &H, book: &DefiBook) -> Option<Vec<db::DefiSlotsTx>> {
+    fn slots_due<H: DefiHost>(&mut self, host: &H, book: &DefiBook) -> Option<(Vec<db::DefiSlotsTx>, Vec<([u8; 32], Vec<u8>)>)> {
         let me = self.me_index? as u64;
         let n = book.roster.len() as u64;
         let score = host.score();
@@ -1691,17 +1924,45 @@ impl DefiLane {
             .collect();
         let claims: Vec<db::DefiClaimTx> =
             self.pending_claims.iter().filter(|c| host.slot_live(&c.member_carrier, &c.member_tuple, c.leaf_commit, c.nullifier)).take(db::SLOTS).cloned().collect();
-        // A-F26: every cover is proven at the batch's epoch anchor so no partition by anchor tells real from cover
-        let (anchor_ordinal, anchor_root, anchor_frontier) = host.epoch_anchor_info()?;
-        let books = host.cover_books(2 * db::SLOTS - orders.len() - claims.len(), anchor_ordinal, anchor_root, &anchor_frontier);
-        if books.is_empty() {
-            return None;
-        }
-        // ⭐ the covers' legs and proofs are built OFF the tick thread (≈ 1–2 s each): the node keeps producing meanwhile
+        // ⭐ A-F114: under the constant chain a cover's leg is its wrapper over a window span (no member book, no anchor); a
+        // window too short to hold a span gives no batch yet (it waits). ONE END A BATCH (A-F26's class): the batch carries
+        // only the real slots whose wrappers name the end most of them name, and its covers are proven to that end; a slot
+        // at another end waits for a later batch (its wallet's newest aligned end becomes the common one).
+        let (orders, claims, canon) = if crate::canon_chain::canon_live() {
+            let mut count: Vec<(crate::spend_frontier::Digest4, usize)> = Vec::new();
+            for nf in orders.iter().map(|o| o.nullifier).chain(claims.iter().map(|c| c.nullifier)) {
+                if let Some(e) = host.slot_wrapper_end(nf) {
+                    match count.iter_mut().find(|(x, _)| *x == e) {
+                        Some((_, n)) => *n += 1,
+                        None => count.push((e, 1)),
+                    }
+                }
+            }
+            let common = count.iter().max_by_key(|(_, n)| *n).map(|(e, _)| *e);
+            let at = |nf: [u64; 8]| common.is_some_and(|e| host.slot_wrapper_end(nf) == Some(e));
+            let orders: Vec<db::DefiOrderTx> = orders.into_iter().filter(|o| at(o.nullifier)).collect();
+            let claims: Vec<db::DefiClaimTx> = claims.into_iter().filter(|c| at(c.nullifier)).collect();
+            (orders, claims, Some(host.canon_cover_window_at(common)?))
+        } else {
+            (orders, claims, None)
+        };
+        let books = if canon.is_some() {
+            Vec::new()
+        } else {
+            // A-F26: every cover is proven at the batch's epoch anchor so no partition by anchor tells real from cover
+            let (anchor_ordinal, anchor_root, anchor_frontier) = host.epoch_anchor_info()?;
+            let b = host.cover_books(2 * db::SLOTS - orders.len() - claims.len(), anchor_ordinal, anchor_root, &anchor_frontier);
+            if b.is_empty() {
+                return None;
+            }
+            b
+        };
+        // ⭐ the covers' legs and proofs are built OFF the tick thread (≈ 1–2 s each; ~9 s each under the constant chain, a
+        // span and a wrapper): the node keeps producing meanwhile
         let (tx, rx) = std::sync::mpsc::channel();
         let book2 = book.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(build_slots(&book2, epoch, &pk, orders, claims, &books, &key));
+            let _ = tx.send(build_slots(&book2, epoch, &pk, orders, claims, &books, &key, canon.as_ref()));
         });
         self.slot_job = Some((book.batch, rx));
         None

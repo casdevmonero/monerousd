@@ -2246,19 +2246,14 @@ impl Sim {
         if i == j || i >= self.parties.len() || j >= self.parties.len() {
             return;
         }
-        let bundle = {
-            let src = &mut self.parties[j];
-            match src.build_sync_bundle(
-                vec![1u8; 4096],
-                FrontierSnapshot {
-                    root: *src.note_frontier_root().as_bytes(),
-                    height: src.note_frontier_count(),
-                    peaks_hex: src.spend_frontier_peaks_hex(),
-                },
-            ) {
-                Some(b) => b,
-                None => return,
-            }
+        // ⛔ A FIXTURE NEVER FALLS BEHIND THE DOOR (census S-DRAFT-ADOPT, 2026-11-26): a scheduled jump takes the bundle the source
+        // node SERVES (`serve_join_bundle`: its frozen bundles, each checked by the joiner's own door before it is served), never a
+        // draft beside the serve path. From 11/10 the door refused every draft `AnchorArray`, so every scheduled jump was a silent
+        // no-op and the two schedule fuzzers reported parties on different tips. A source that cannot serve yet (no frozen bundle
+        // with its 32 vouchers) offers no jump, exactly as a real joiner finds no bundle to take.
+        let bundle = match self.parties[j].serve_join_bundle().and_then(|w| crate::sync::SyncBundle::from_wire(&w)) {
+            Some(b) => b,
+            None => return,
         };
         let keep = bundle.clone();
         if matches!(self.parties[i].instant_sync(bundle), AdoptOutcome::Adopted(_)) {

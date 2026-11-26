@@ -1665,6 +1665,20 @@ pub fn save_with_fold(path: &PathBuf, snap: &NodeSnapshot, fold: &FoldRecord) ->
     save_inner(path, snap, Some(fold))
 }
 
+/// ⛔⛔ LIVE-FOLD W8 (lane livefold, 2026-11-25; docs/LIVE-FOLD-WEDGE-DEEP-AUDIT-20261125.md W8) — WOULD [`save_inner`] REFUSE a
+/// snapshot of weight `(blue_score, height)` at `path` as a rollback? Read-only (the watermark is not moved). The canonical ring is
+/// written BEFORE the snapshot (A-F114 U5), so a ring written for a snapshot the rollback rule then refused left the ring OLDER than
+/// the checkpoint on disk — MEASURED on the live origin: "REFUSED a snapshot write that would ROLL STATE BACK: heaviest seen
+/// blue_score=3864 … vs candidate 3785", then at the next boot "the canonical chain on disk is older than the checkpoint" and the
+/// spine stale until a bundle no peer could serve. Every canonical ring write asks this first and skips a ring whose snapshot will
+/// not land, so the two files never part.
+/// O1-INFINITY-REVIEWED: a read of the one in-memory watermark per snapshot path; it writes nothing and keys nothing per item.
+#[must_use]
+pub fn save_would_be_refused(path: &PathBuf, blue_score: u64, height: u64) -> bool {
+    let g = HEAVIEST_SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    g.as_ref().and_then(|m| m.get(path)).is_some_and(|best| (blue_score, height) < *best)
+}
+
 fn save_inner(path: &PathBuf, snap: &NodeSnapshot, fold: Option<&FoldRecord>) -> std::io::Result<bool> {
     // MONOTONE PERSIST (see `HEAVIEST_SEEN`). WHAT PRODUCES the refused condition: a SECOND node process
     // on the same snapshot path — measured 2026-08-13 as a hand-spawned twin with the wrong env that came
@@ -1767,6 +1781,178 @@ pub fn save_nf_view(snapshot: &PathBuf, tags: &[[u8; 32]]) -> std::io::Result<()
 pub fn load_nf_view(snapshot: &PathBuf) -> Option<Vec<[u8; 32]>> {
     let bytes = std::fs::read(nf_view_path(snapshot)).ok()?;
     crate::chain_object::decode_exact::<Vec<[u8; 32]>>(&bytes)
+}
+
+/// ⭐ A-F114 phase 2 — THE CANONICAL TAG CHAIN beside the snapshot (a sidecar, never a snapshot field: the checkpoint decodes
+/// only at `SNAPSHOT_SCHEMA`, so a new field would make a live node refuse its own file after the upgrade). Stamped with the
+/// last record ordinal it folded, so a resume trusts it only at the fold position the snapshot restored.
+/// O1-FOOTPRINT-REVIEWED: one Digest4, at most canon_chain::CANON_RECENT_RECORDS recent records with their tags and output leaves and
+/// two u64 counters, rewritten whole (~16 MB at 256 of each a record; cons: that write per capture).
+pub fn canon_path(snapshot: &PathBuf) -> PathBuf {
+    snapshot.with_extension("canon")
+}
+pub type CanonEntry = (u64, crate::spend_frontier::Digest4, Vec<[u8; 32]>, Vec<crate::spend_frontier::Digest4>, u64);
+/// (record index, chain value, window, missing count, (decoy batch counter, bounty counter, theft counter), the vouched state
+/// of a window pull still under way — A-F114 U2: a restart mid-pull resumes the pull, never an empty window).
+/// And (A-F114 U3) the rewind ring, so a fold reorg right after a restart rewinds the chain exactly.
+type CanonSidecar = (
+    u64,
+    crate::spend_frontier::Digest4,
+    Vec<CanonEntry>,
+    u64,
+    (u64, u64, u64),
+    Option<crate::canon_chain::CanonState>,
+    Vec<(u64, crate::canon_chain::CanonSnap)>,
+);
+pub fn save_canon(
+    snapshot: &PathBuf,
+    index: u64,
+    c: &crate::spend_frontier::Digest4,
+    recent: &[CanonEntry],
+    missing: u64,
+    seqs: (u64, u64, u64),
+    fill: Option<crate::canon_chain::CanonState>,
+    rewind: &[(u64, crate::canon_chain::CanonSnap)],
+) -> std::io::Result<()> {
+    let bytes = postcard::to_allocvec(&(index, *c, recent.to_vec(), missing, seqs, fill, rewind.to_vec())).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let tmp = snapshot.with_extension("canon.tmp");
+    std::fs::write(&tmp, &bytes)?;
+    std::fs::rename(&tmp, canon_path(snapshot))
+}
+/// ⭐ A-F114 UPGRADE (U5) — THE CANONICAL CHAIN ON DISK, AT EVERY CHECKPOINT. Under the switch the chain is consensus state:
+/// written only at a clean shutdown (the sidecar above), a crash resumed a chain older than the checkpoint beside it. It is
+/// now a FIXED-SIZE RING FILE, one slot per record index modulo the slots (`CANON_RING_SLOTS`), each slot one record at its
+/// fixed width, plus a small head (index, end, counters, the rewind ring, the fold top it was captured at, the window
+/// digest). A checkpoint rewrites only the slots whose records are new or rewound since the last write that succeeded —
+/// ~16 KB a record, never the window — then the head; it is written BEFORE the snapshot, so a crash between the two leaves
+/// the chain AHEAD of the snapshot, which the rewind ring rolls back at the resume.
+/// BORROWED: a circular log (a ring buffer file of fixed records, as a write-ahead log's segments are reused).
+/// O1-FOOTPRINT-REVIEWED: one file of CANON_RING_SLOTS fixed slots (~25 MB) and a head of a few KB, whatever the height.
+/// cons: ~16 KB written per folded record (~3 KB/s at the derived target), one 25 MB file.
+pub const CANON_RING_SLOTS: usize = crate::canon_chain::CANON_RECENT_RECORDS + crate::canon_chain::CANON_SERVE_MARGIN;
+/// One slot: index u64 ‖ end 32 ‖ score u64 ‖ n_tags u16 ‖ n_leaves u16 ‖ tags (≤ RECORD_TAGS × 32) ‖ leaves (≤ RECORD_LEAVES × 32).
+pub const CANON_SLOT_BYTES: usize = 8 + 32 + 8 + 2 + 2 + (crate::canon_chain::RECORD_TAGS + crate::canon_chain::RECORD_LEAVES) * 32;
+/// The head: (index, end, missing, counters, a pull under way, the rewind ring, the fold top at capture, the window digest).
+pub type CanonHead = (
+    u64,
+    crate::spend_frontier::Digest4,
+    u64,
+    (u64, u64, u64),
+    Option<crate::canon_chain::CanonState>,
+    Vec<(u64, crate::canon_chain::CanonSnap)>,
+    u64,
+    [u8; 32],
+);
+pub fn canon_ring_path(snapshot: &PathBuf) -> PathBuf {
+    snapshot.with_extension("canonring")
+}
+pub fn canon_head_path(snapshot: &PathBuf) -> PathBuf {
+    snapshot.with_extension("canonhead")
+}
+/// Encode one record into its slot.
+#[must_use]
+pub fn canon_slot(e: &CanonEntry) -> Option<Vec<u8>> {
+    let (i, c, tags, leaves, score) = e;
+    if tags.len() > crate::canon_chain::RECORD_TAGS || leaves.len() > crate::canon_chain::RECORD_LEAVES {
+        return None;
+    }
+    let mut b = Vec::with_capacity(CANON_SLOT_BYTES);
+    b.extend_from_slice(&i.to_le_bytes());
+    b.extend_from_slice(&crate::canon_chain::digest_bytes(c));
+    b.extend_from_slice(&score.to_le_bytes());
+    b.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+    b.extend_from_slice(&(leaves.len() as u16).to_le_bytes());
+    for t in tags {
+        b.extend_from_slice(t);
+    }
+    for l in leaves {
+        b.extend_from_slice(&crate::canon_chain::digest_bytes(l));
+    }
+    b.resize(CANON_SLOT_BYTES, 0);
+    Some(b)
+}
+fn canon_unslot(b: &[u8]) -> Option<CanonEntry> {
+    if b.len() != CANON_SLOT_BYTES {
+        return None;
+    }
+    let i = u64::from_le_bytes(b[0..8].try_into().ok()?);
+    let c = crate::canon_chain::digest_of_bytes(b[8..40].try_into().ok()?)?;
+    let score = u64::from_le_bytes(b[40..48].try_into().ok()?);
+    let nt = usize::from(u16::from_le_bytes(b[48..50].try_into().ok()?));
+    let nl = usize::from(u16::from_le_bytes(b[50..52].try_into().ok()?));
+    if nt > crate::canon_chain::RECORD_TAGS || nl > crate::canon_chain::RECORD_LEAVES {
+        return None;
+    }
+    let mut at = 52;
+    let mut tags = Vec::with_capacity(nt);
+    for _ in 0..nt {
+        tags.push(b[at..at + 32].try_into().ok()?);
+        at += 32;
+    }
+    let mut leaves = Vec::with_capacity(nl);
+    for _ in 0..nl {
+        leaves.push(crate::canon_chain::digest_of_bytes(b[at..at + 32].try_into().ok()?)?);
+        at += 32;
+    }
+    Some((i, c, tags, leaves, score))
+}
+/// Write the slots given (each at its index's place), then the head (temp + rename). The slots go first: a head names
+/// only records its slots already hold. The file is set to its one fixed length (`CANON_RING_SLOTS` × `CANON_SLOT_BYTES`)
+/// and never grows: a slot is overwritten in place when its index comes round again.
+/// LOCAL-STORAGE-REQUIRED: the canonical chain's recent records are consensus state this node's fold judges by, and
+///   nothing else can supply them at a resume: the DA keeps a record's leaves but not its admitted nullifier tags (they ride
+///   the block body, which no node keeps — audit 11:50), no proof carries them, and a peer can (the window pull) only when one
+///   is reachable. A LONE node restarting — this testnet's origin — has no peer, so without this file its fold would wait for
+///   ever: a chain halt. It is the snapshot's own kind of file: this node's resume point, never a per-item file and never
+///   read as another node's authority (a joiner checks every record link by link against a vouched end).
+/// bound: one file of exactly CANON_RING_SLOTS (1,536) × CANON_SLOT_BYTES (16,436 B) ≈ 25.2 MB, plus a head of a few KB,
+///   at any height — fixed length, slots reused by index modulo the slots.
+pub fn save_canon_ring(snapshot: &PathBuf, head: &CanonHead, slots: &[(u64, Vec<u8>)]) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let total = (CANON_RING_SLOTS * CANON_SLOT_BYTES) as u64;
+    let mut f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(canon_ring_path(snapshot))?;
+    if f.metadata()?.len() != total {
+        f.set_len(total)?;
+    }
+    for (i, b) in slots {
+        if b.len() != CANON_SLOT_BYTES {
+            return Err(std::io::Error::other("a canonical slot of the wrong width"));
+        }
+        f.seek(SeekFrom::Start((*i as usize % CANON_RING_SLOTS * CANON_SLOT_BYTES) as u64))?;
+        f.write_all(b)?;
+    }
+    f.sync_data()?;
+    let bytes = postcard::to_allocvec(head).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let tmp = snapshot.with_extension("canonhead.tmp");
+    std::fs::write(&tmp, &bytes)?;
+    std::fs::rename(&tmp, canon_head_path(snapshot))
+}
+/// The head and the longest run of records its slots hold ending at `head.index − 1`, oldest first (read backward from the
+/// head; a slot that is not the record its index names ends the run). The caller checks the run's links and its reach.
+/// O1-INFINITY-REVIEWED: reads one fixed-length file (CANON_RING_SLOTS × CANON_SLOT_BYTES) and a head of a few KB; at most CANON_RING_SLOTS records come back, at any height.
+pub fn load_canon_ring(snapshot: &PathBuf) -> Option<(CanonHead, Vec<CanonEntry>)> {
+    let head = crate::chain_object::decode_exact::<CanonHead>(&std::fs::read(canon_head_path(snapshot)).ok()?)?;
+    let Ok(bytes) = std::fs::read(canon_ring_path(snapshot)) else { return Some((head, Vec::new())) };
+    if bytes.len() != CANON_RING_SLOTS * CANON_SLOT_BYTES {
+        return Some((head, Vec::new()));
+    }
+    let mut out = Vec::new();
+    let mut i = head.0;
+    while i > 0 && out.len() < CANON_RING_SLOTS {
+        i -= 1;
+        let at = i as usize % CANON_RING_SLOTS * CANON_SLOT_BYTES;
+        match canon_unslot(&bytes[at..at + CANON_SLOT_BYTES]) {
+            Some(e) if e.0 == i => out.push(e),
+            _ => break,
+        }
+    }
+    out.reverse();
+    Some((head, out))
+}
+pub fn load_canon(snapshot: &PathBuf) -> Option<CanonSidecar> {
+    let bytes = std::fs::read(canon_path(snapshot)).ok()?;
+    let v = crate::chain_object::decode_exact::<CanonSidecar>(&bytes)?;
+    (v.2.len() <= crate::canon_chain::CANON_RECENT_RECORDS + crate::canon_chain::CANON_SERVE_MARGIN).then_some(v)
 }
 
 /// THE WINDOW ANCHOR beside the snapshot: the oldest frontier of the node's recent-frontier ring, `(ordinal, peaks_hex)`

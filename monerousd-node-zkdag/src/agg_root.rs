@@ -73,6 +73,8 @@ pub struct PaymentStatement {
     pub hours: u64,
     pub member: MemberTuple,
     pub tags: Vec<Digest>,
+    /// ⭐ A-F114 (B′): the constant-node form's wrapper statement `[nf tag lanes, binder, lc, end]`; `None`, the member form.
+    pub absence: Option<[Digest; 4]>,
 }
 
 /// The tree's own statement type (lane agg's crate holds the member tuple as its four digests).
@@ -88,6 +90,7 @@ fn tree_statement(st: &PaymentStatement) -> usdm_agg::tree_ssa::PaymentStatement
         hours: st.hours,
         member: [st.member.leaf_commit, st.member.binder, st.member.anchor, st.member.outs],
         tags: st.tags.clone(),
+        absence: st.absence,
     }
 }
 

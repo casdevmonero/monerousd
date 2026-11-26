@@ -2632,6 +2632,7 @@ impl PayoutLane {
     fn settle_or_recover(&mut self, node: &mut Node, src: &BtcSource) {
         let ids: Vec<[u8; 32]> = self.slots.keys().copied().collect();
         for id in ids {
+            let txid_bytes = self.slots.get(&id).map(|s| s.plan.tx.txid());
             let (txid, raw, inputs, legs, legs_sats, change) = {
                 let Some(slot) = self.slots.get(&id) else {
                     continue;
@@ -2657,6 +2658,18 @@ impl PayoutLane {
                     // CACHE-ONLY: the release mirrors what THIS node's own source saw confirm; the burn was applied from
                     // `Class::PegOut` long before, and a rebalance's ledgers move only by `Class::VaultRebalance`.
                     let rebalance = self.slots.get(&id).is_some_and(|s| s.plan.rebalance_out.is_some());
+                    // ⭐ A-F114: from the network upgrade the release is a CHAIN object (`Class::ReleaseConfirm`): this
+                    // custodian queues its signature over the burns this transaction paid, as its own lane built it
+                    if let (false, Some(tb)) = (rebalance, txid_bytes) {
+                        let ledger = node.ledger_here(crate::peg::NATIVE_PEG_ASSET_ID);
+                        // the deposits this transaction swept: its inputs at a minted deposit's reserve address
+                        let swept: Vec<[u8; 32]> = inputs
+                            .iter()
+                            .map(|i| crate::peg::deposit_id_for_reserve_address(&i.address))
+                            .filter(|d| node.peg().deposit_minted(d))
+                            .collect();
+                        node.queue_own_release(ledger, tb, legs.clone(), swept);
+                    }
                     for nf in legs.iter().filter(|_| !rebalance) {
                         let outcome = node.settle_reserve_release_observed(nf);
                         // DB-375: no nullifier beside the payout txid (that pair IS the USDm↔BTC link).

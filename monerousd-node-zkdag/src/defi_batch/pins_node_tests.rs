@@ -208,7 +208,7 @@ fn slots_of(a: &Node, custody: &TestCustody, book: &DefiBook, orders: Vec<DefiOr
     let (pk, _) = crate::epoch_release::test_epoch_keypair();
     let _ = custody;
     let mb = a.member_book_for_note(cover_cm).expect("the lane gathers the cover note's member book");
-    crate::defi_lane::build_slots(book, 0, &pk, orders, claims, &[(*cover_cm, mb)], &[seed; 32]).expect("the lane builds the batch's slots")
+    crate::defi_lane::build_slots(book, 0, &pk, orders, claims, &[(*cover_cm, mb)], &[seed; 32], None).map(|(parts, _)| parts).expect("the lane builds the batch's slots")
 }
 
 /// The part of `parts` that carries nullifier `nf`.
@@ -297,12 +297,19 @@ fn claim(a: &Node, dealing: &ba::OrderDealing, p_num: u128, p_den: u128, j_min: 
 
 /// A produces a block; B ingests it; both fold.
 fn step(a: &mut Node, b: &mut Node, ts: &mut u64, tag: &[u8]) {
+    step_gap(a, b, ts, tag, 600);
+}
+
+/// [`step`] with the next block stamped `gap_ms` later: the chain clock (median time past) moves by the stamps, so a stage
+/// that waits for a duration of CHAIN TIME is reached in blocks of a slower chain, not in more blocks. Nothing else reads the
+/// gap: the same produce, relay and fold on both parties.
+fn step_gap(a: &mut Node, b: &mut Node, ts: &mut u64, tag: &[u8], gap_ms: u64) {
     let blk = a.produce(*ts, Hash32::hash(tag), Hash32::hash(b"br15-mc")).expect("A produces");
     let got = b.ingest_block(blk, *ts + 100);
     assert!(matches!(got, RelayOutcome::Added(_)), "⛔ B refused A's block: {got:?}");
     let _ = a.fold_canonical_records();
     let _ = b.fold_canonical_records();
-    *ts += 600;
+    *ts += gap_ms;
 }
 
 /// ⭐⭐⭐ §BR-15 ACCEPTANCE — AN ORDER IS SEALED, SETTLED BY AN AUDITED BATCH AND CLAIMED WITHOUT NAMING IT, ON TWO NODES; and
@@ -546,15 +553,26 @@ fn br15_an_order_settles_by_audit_and_its_claim_pays_exactly_its_fill_on_both_no
     let refunds: Vec<[u64; 8]> = b.peg().defi_book().orders.iter().map(|o| refund_leaf(&o.amount_commit, &o.limit_commit)).collect();
     let expire = DefiExpireTx { pair: 0, batch: 2, leaves: refunds };
     TEST_EXPIRE_MS.with(|c| c.set(Some(30_000)));
-    assert!(expire.verdict(b.peg().defi_book(), 0, b.chain_time_ms()).is_err(), "⛔ an expiry inside the settlement window passed");
+    // the fold judges an expiry at the CARRYING block's blue score (`node/objects/defi_batch.rs`: `score()`), so a party is
+    // asked at the score its next block would carry, never at ordinal 0 (at 0 `batch_closed` is false for ever)
+    let next_score = |n: &Node| n.selected_tip().and_then(|t| n.dag().get(&t)).map_or(0, |x| x.blue_score + 1);
+    assert!(expire.verdict(b.peg().defi_book(), next_score(&b), b.chain_time_ms()).is_err(), "⛔ an expiry inside the settlement window passed");
     // FAST ISOLATION (lane speed5, 2026-11-19): step only until the expiry's own verdict passes on both parties, at most
     // BATCH_STEPS + 120. MEASURED why: the fixed 124 real-proof steps (~42 s each on a loaded machine) ran past door-defi's
     // 3,600 s hang guard (results.tsv 2026-11-19 02:48, "timed out after 3600 s"), so the door read FAIL on a test that was
     // still passing. The claim is unchanged: the expiry is refused inside the window (above) and applies after it (below).
+    // ⛔ FOUND 2026-11-22 (lane speed5, door-defi's own run): this loop asked the verdict at ORDINAL 0, where
+    // `batch_closed(0)` is false for any batch opened after genesis, so the loop could never end. It ran to its cap
+    // (124 steps on 11-19: past door-defi's 3,600 s guard, results.tsv 02:48 and 10:19; 44 steps on 11-22: "the settlement
+    // window never closed in 44 steps"). Both 11-19's note ("a fixed step count") and this morning's ("600 ms stamps")
+    // named the wrong cause. Each party is now asked at the score its next block carries (`next_score`). Blocks are stamped
+    // 10 s apart here, so the 30 s of chain time (median time past) passes in ~9 blocks of a slower chain. The claim is
+    // unchanged: refused inside the window (above), applied after it (below), on both parties.
+    const EXPIRY_GAP_MS: u64 = 10_000;
     let mut steps = 0u64;
-    while [&a, &b].iter().any(|n| expire.verdict(n.peg().defi_book(), 0, n.chain_time_ms()).is_err()) {
-        assert!(steps < BATCH_STEPS + 120, "⛔ the settlement window never closed in {} steps", BATCH_STEPS + 120);
-        step(&mut a, &mut b, &mut ts, &(300 + steps).to_le_bytes());
+    while [&a, &b].iter().any(|n| expire.verdict(n.peg().defi_book(), next_score(n), n.chain_time_ms()).is_err()) {
+        assert!(steps < BATCH_STEPS + 40, "⛔ the settlement window never closed in {} steps", BATCH_STEPS + 40);
+        step_gap(&mut a, &mut b, &mut ts, &(300 + steps).to_le_bytes(), EXPIRY_GAP_MS);
         steps += 1;
     }
     eprintln!("[br15-e2e] the expiry window closed after {steps} step(s)");
@@ -583,4 +601,196 @@ fn br15_an_order_settles_by_audit_and_its_claim_pays_exactly_its_fill_on_both_no
         assert!(n.is_nullifier_spent(&rnf), "⛔ {who} did not pay the refund");
     }
     eprintln!("[br15-e2e] every batch {SLOTS} orders + {SLOTS} claims: order {} → tick {honest_tick} → claimed {paid} SAT on both nodes; order {} → expired → refunded on both", dealing.amount, dealing2.amount);
+}
+
+/// ⭐⭐ A-F114 — UNDER THE CONSTANT CHAIN A BATCH'S COVERS CARRY THEIR OWN WRAPPERS, AND THE BATCH SLOTS ON TWO PARTIES. The
+/// switch on for this thread; a window of more than one span on both parties; the real slot builder (`build_slots` with the
+/// host's `canon_cover_window`) builds a whole batch of covers. CALIBRATION by construction: `cover_claim` / `cover_order`
+/// refuse a leg whose leaf commitment is not their proof's own (`plc != lc`), so a batch builds only if every cover's
+/// `P(P(leaf, nf), blind)` IS its proof's cross-bind. Then: every slot carries no member leg; every wrapper reads `Live` at
+/// the canonical door (`Node::canon_slot_state`); the parts publish with every slot's wrapper carried
+/// (`publish_defi_slots`), and both parties hold the batch slotted.
+#[test]
+fn af114_under_the_switch_a_batch_of_covers_carries_its_own_wrappers_and_slots_on_two_parties() {
+    crate::params::set_canon_live_for_test(Some(true));
+    let mut a = crate::node::tests::testnet_party_folding_at_tip();
+    let mut b = crate::node::tests::testnet_party_folding_at_tip();
+    a.autoprove_band_for_test();
+    b.autoprove_band_for_test();
+    let mut ts = 5_000u64;
+    let span = crate::canon_carrier_core::SPAN;
+    let mut grown = 0u64;
+    // an ALIGNED span (closing a global multiple of SPAN, with its predecessor) needs about two spans of records in the window
+    while a.canon_recent.len() <= 2 * span {
+        grown += 1;
+        assert!(grown < 400, "⛔ the window never held two spans");
+        step(&mut a, &mut b, &mut ts, &grown.to_le_bytes());
+    }
+    let custody = TestCustody::open(4, 1, 1_000_000, 2_000_000);
+    for n in [&mut a, &mut b] {
+        *n.peg_mut_for_test().defi_book_mut(0).expect("the pair") = custody.book();
+    }
+    let book = a.peg().defi_book().clone();
+    let lane = crate::btc_payout::PayoutLane::new();
+    let window = {
+        use crate::defi_lane::DefiHost;
+        crate::defi_lane::NodeHost { pair: 0, node: &mut a, payout: &lane }.canon_cover_window().expect("⛔ the host gives no cover window")
+    };
+    let (pk, _) = crate::epoch_release::test_epoch_keypair();
+    let t0 = std::time::Instant::now();
+    let (parts, ws) = crate::defi_lane::build_slots(&book, 0, &pk, Vec::new(), Vec::new(), &[], &[7u8; 32], Some(&window))
+        .expect("⛔ the builder's covers did not build under the switch (a leg's leaf commitment is not its proof's)");
+    eprintln!("[af114-covers] {} cover wrapper(s) proved in {:?} ({} part(s))", ws.len(), t0.elapsed(), parts.len());
+    assert_eq!(ws.len(), 2 * SLOTS, "⛔ every cover slot carries its own wrapper");
+    for p in &parts {
+        assert!(
+            p.orders.iter().all(|o| o.member_carrier.is_empty() && o.member_tuple.is_empty())
+                && p.claims.iter().all(|c| c.member_carrier.is_empty() && c.member_tuple.is_empty()),
+            "⛔ a cover slot carries a member leg under the switch"
+        );
+    }
+    for (nf, w) in &ws {
+        a.canon_hold_wrappers(*nf, w.clone());
+    }
+    for p in &parts {
+        for (nf, lc) in p.orders.iter().map(|o| (o.nullifier, o.leaf_commit)).chain(p.claims.iter().map(|c| (c.nullifier, c.leaf_commit))) {
+            let state = a.canon_slot_state(&crate::spend_frontier::leaf_to_cm_bytes(nf), &lc);
+            assert_eq!(state, crate::canon_chain::CanonSlot::Live, "⛔ a cover's wrapper is not Live at the canonical door");
+        }
+    }
+    slot_in(&mut a, &mut b, &mut ts, &parts, b"af114-covers");
+    crate::params::set_canon_live_for_test(None);
+}
+
+/// ⭐ A-F114 — A COMMITTEE MEMBER'S COVER SHARE (audit 23:30) under the constant chain: `build_cover_share` proves `k` covers
+/// (claims then orders) to the window's aligned span under the member's own key, each with no member leg and a wrapper the
+/// canonical door reads `Live`, so a builder that holds the relayed wrappers carries them as it carries any slot.
+#[test]
+fn af114_under_the_switch_a_committee_members_cover_share_is_live_at_the_canonical_door() {
+    crate::params::set_canon_live_for_test(Some(true));
+    let mut a = crate::node::tests::testnet_party_folding_at_tip();
+    let mut b = crate::node::tests::testnet_party_folding_at_tip();
+    a.autoprove_band_for_test();
+    b.autoprove_band_for_test();
+    let mut ts = 5_000u64;
+    let span = crate::canon_carrier_core::SPAN;
+    let mut grown = 0u64;
+    while a.canon_recent.len() <= 2 * span {
+        grown += 1;
+        assert!(grown < 400, "⛔ the window never held two spans");
+        step(&mut a, &mut b, &mut ts, &grown.to_le_bytes());
+    }
+    let custody = TestCustody::open(4, 1, 1_000_000, 2_000_000);
+    let book = custody.book();
+    let lane = crate::btc_payout::PayoutLane::new();
+    let window = {
+        use crate::defi_lane::DefiHost;
+        crate::defi_lane::NodeHost { pair: 0, node: &mut a, payout: &lane }.canon_cover_window().expect("⛔ no aligned cover window")
+    };
+    assert_eq!((window.start_index) % span as u64, 0, "⛔ the cover window's span is not aligned to the chain");
+    let (pk, _) = crate::epoch_release::test_epoch_keypair();
+    let t0 = std::time::Instant::now();
+    let (claims, orders, ws) = crate::defi_lane::build_cover_share(&book, 0, &pk, 4, &[9u8; 32], &window).expect("⛔ the member's share did not build");
+    eprintln!("[af114-share] {} claim(s) + {} order(s), {} wrapper(s) in {:?}", claims.len(), orders.len(), ws.len(), t0.elapsed());
+    assert_eq!((claims.len(), orders.len(), ws.len()), (2, 2, 4), "⛔ a share of 4 is two claims, two orders and their four wrappers");
+    for (nf, _, w) in &ws {
+        a.canon_hold_wrappers(*nf, w.clone());
+    }
+    for (nf, lc) in claims.iter().map(|c| (c.nullifier, c.leaf_commit)).chain(orders.iter().map(|o| (o.nullifier, o.leaf_commit))) {
+        assert_eq!(
+            a.canon_slot_state(&crate::spend_frontier::leaf_to_cm_bytes(nf), &lc),
+            crate::canon_chain::CanonSlot::Live,
+            "⛔ a share's cover is not Live at the canonical door"
+        );
+    }
+    assert!(
+        claims.iter().all(|c| c.member_carrier.is_empty() && c.member_tuple.is_empty())
+            && orders.iter().all(|o| o.member_carrier.is_empty() && o.member_tuple.is_empty()),
+        "⛔ a share's cover carries a member leg"
+    );
+    crate::params::set_canon_live_for_test(None);
+}
+
+/// ⭐⭐⭐ A-F114 — A REAL ORDER UNDER THE CONSTANT CHAIN, BATCHED WITH COVERS AT ONE END, ON TWO PARTIES. The switch on for this
+/// thread; a pair-0 note funded on both parties; the global span holding its record closed. The real order spending it
+/// (`order_from_note`) has its member leg dropped, and its wrapper comes from an ALIGNED carrier (the span boundary at or before
+/// the note's record, the note pending) over that span, relayed to the builder. The builder's covers are proven to the
+/// SAME end (`canon_cover_window_at`), so every slot names one end (A-F26's class); the batch publishes and slots on both
+/// parties, and the order's nullifier is a tag of both windows (the buyer's note spent, by the canonical chain alone).
+#[test]
+fn af114_under_the_switch_a_real_order_slots_with_covers_at_one_end_on_two_parties() {
+    crate::params::set_canon_live_for_test(Some(true));
+    let mut a = crate::node::tests::testnet_party_folding_at_tip();
+    let mut b = crate::node::tests::testnet_party_folding_at_tip();
+    a.autoprove_band_for_test();
+    b.autoprove_band_for_test();
+    let mut ts = 5_000u64;
+    let k = 161u64;
+    let (note, note_cm) = pair0_buy_note(k);
+    let (blk, _) = a.carry_notes_in_a_block_for_test(ts, &note);
+    assert!(matches!(b.ingest_block(blk, ts + 100), RelayOutcome::Added(_)), "PRECONDITION: B takes the funding block");
+    let _ = a.fold_canonical_records();
+    let _ = b.fold_canonical_records();
+    ts += 600;
+    let leaf = crate::spend_frontier::note_leaf_of(&note_cm);
+    let span = crate::canon_carrier_core::SPAN as u64;
+    // the note's record, the global span holding it, and that span closed with its predecessor held
+    let mut start: Option<(u64, crate::spend_frontier::Digest4)> = None;
+    for g in 0..400u64 {
+        let ring = a.canon_recent.range(0, crate::canon_chain::CANON_RECENT_RECORDS);
+        if let Some(i) = ring.iter().position(|(_, _, _, l, _)| l.contains(&leaf)) {
+            let made = ring[i].0;
+            let b0 = made - made % span;
+            let before = ring.iter().find(|r| r.0 + 1 == b0).map(|r| r.1).or_else(|| (b0 == 0).then(crate::canon_chain::genesis));
+            if let Some(e) = before {
+                if a.canon_recent.range(b0, span as usize).len() == span as usize {
+                    start = Some((b0, e));
+                    break;
+                }
+            }
+        }
+        step(&mut a, &mut b, &mut ts, &(g + 7_000).to_le_bytes());
+    }
+    let (b0, start_end) = start.expect("⛔ the global span holding the note's record never closed in A's window");
+    let mut custody = TestCustody::open(4, 1, 1_000_000, 2_000_000);
+    for n in [&mut a, &mut b] {
+        *n.peg_mut_for_test().defi_book_mut(0).expect("the pair") = custody.book();
+    }
+    let (mut order, dealing) = order_from_note(&a, &mut custody, k);
+    order.member_carrier.clear();
+    order.member_tuple.clear();
+    let (cm, nf, lc) = dealing.spend_publics();
+    let nf_b = crate::spend_frontier::leaf_to_cm_bytes(nf);
+    let mut car = crate::canon_carrier_core::CanonCarrier::starting_at(crate::canon_chain::to_lanes(&start_end), b0);
+    car.pending = vec![(crate::canon_chain::tag_lanes(&nf_b), crate::canon_chain::to_lanes(&cm))];
+    for (ord, _, tags, leaves, _) in a.canon_recent.range(b0, span as usize) {
+        car.absorb(ord, &crate::canon_chain::record(&tags, &leaves, ord)).expect("the aligned carrier follows the span");
+    }
+    let (proof, end) = car.spend(0, crate::canon_chain::to_lanes(&nf), crate::canon_chain::to_lanes(&dealing.lc_blind)).expect("the order's wrapper proves");
+    let end = crate::canon_chain::of_lanes(&end);
+    a.canon_hold_wrappers(nf_b, postcard::to_allocvec(&vec![crate::nf_sparse::CanonAbsence { proof, end }]).expect("encodes"));
+    assert_eq!(a.canon_slot_state(&nf_b, &lc), crate::canon_chain::CanonSlot::Live, "⛔ the real order's wrapper is not Live");
+    let book = a.peg().defi_book().clone();
+    let lane = crate::btc_payout::PayoutLane::new();
+    let window = {
+        use crate::defi_lane::DefiHost;
+        crate::defi_lane::NodeHost { pair: 0, node: &mut a, payout: &lane }
+            .canon_cover_window_at(Some(end))
+            .expect("⛔ no cover window at the real order's end")
+    };
+    let (pk, _) = crate::epoch_release::test_epoch_keypair();
+    let (parts, ws) = crate::defi_lane::build_slots(&book, 0, &pk, vec![order.clone()], Vec::new(), &[], &[5u8; 32], Some(&window))
+        .expect("⛔ the batch did not build around the real order");
+    assert_eq!(ws.len(), 2 * SLOTS - 1, "the builder proves every slot but the real one");
+    for (n, w) in &ws {
+        a.canon_hold_wrappers(*n, w.clone());
+    }
+    slot_in(&mut a, &mut b, &mut ts, &parts, b"af114-real-order");
+    for g in 0..(a.params().record_fold_depth + 2) {
+        step(&mut a, &mut b, &mut ts, &(g + 9_000).to_le_bytes());
+    }
+    for (who, n) in [("A", &a), ("B", &b)] {
+        assert!(n.canon_recent.holds(&nf_b), "⛔ {who}'s canonical chain does not carry the real order's nullifier: the buyer's note was not spent");
+    }
+    crate::params::set_canon_live_for_test(None);
 }

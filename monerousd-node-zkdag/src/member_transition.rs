@@ -561,7 +561,8 @@ pub fn spends_proven_on_block_with(
     // `spend_evidence::evidence_fields`, its anchor at the fold against this node's own recent roots after the header's ring
     // commit is checked against this chain's ring history (`Node::member_anchors_at_fold`). `mt.agg` travels EMPTY (one
     // encoding). The armed double keeps its own 32 B member seal (`bound_weight::MEMBER_LEDGER`), judged here as before.
-    if ledger_bound {
+    // ⭐ A-F114 (B′): under the constant chain no member ledger rides (each spend's wrapper is its membership), armed or not
+    if ledger_bound && !crate::params::canon_live() {
         if !verify_member_ledger_under_with(&mt.agg, &published, p.ring_commit, output_notes_root, seed, true) {
             return None;
         }

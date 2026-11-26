@@ -107,6 +107,31 @@ pub fn seat_right_nf(id: &[u8; 32], header: &MembershipBondHeader) -> [u8; 32] {
 /// are CSPRNG-minted, so their hash is uniform; the same idiom mints the node's DA secret). Never a fixed value: two
 /// requests with one nonce are one right, and the second could never seat.
 #[must_use]
+/// ⭐ A-F114 — A SEAT REQUEST EXPIRES (from the network upgrade, `params::CANON_LIVE`). The one-shot right
+/// (`seat_right_nf`) was refused a second time only by the spent set, which the constant chain does not hold; a replayed old
+/// request could re-seat a founder that left, and hand it custody shares of the first deposits. So the nonce's first 8 bytes
+/// carry the request's EXPIRY as a chain tick (`Node::chain_tick_at`, BIP113's median-time-past clock), signed with the rest:
+/// past it the apply refuses the request, so a replay past the window is always expired, and inside the window the right
+/// still refuses it. The daemon signs a fresh request when its kept one goes stale (`Node::own_seat_request_stale`). cons: a
+/// request not carried within [`SEAT_REQUEST_TTL_MS`] is signed again (one more request a minute while unseated).
+pub const SEAT_REQUEST_TTL_MS: u64 = 600_000;
+
+/// A fresh seat nonce that expires at chain tick `expiry_tick`.
+#[must_use]
+pub fn seat_nonce_until(expiry_tick: u64) -> [u8; 32] {
+    let mut n = fresh_seat_nonce();
+    n[..8].copy_from_slice(&expiry_tick.to_le_bytes());
+    n
+}
+
+/// The chain tick a seat nonce expires at (`seat_nonce_until`).
+#[must_use]
+pub fn seat_nonce_expiry_tick(nonce: &[u8; 32]) -> u64 {
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&nonce[..8]);
+    u64::from_le_bytes(b)
+}
+
 pub fn fresh_seat_nonce() -> [u8; 32] {
     let (ek, dk) = crate::pqkem::keypair();
     let mut h = blake3::Hasher::new();

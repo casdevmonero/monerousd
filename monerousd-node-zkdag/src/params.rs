@@ -1436,3 +1436,41 @@ mod merge_depth_invariant {
         assert!(super::MERGE_DEPTH_CAP_DEFAULT as u64 + 16 > keep, "CALIBRATION: the past-scan count alone broke the invariant");
     }
 }
+
+/// ⭐ THE CONSTANT-NODE SWITCH (A-F114, docs/SPENT-SET-GROWTH-DEEP-AUDIT-20261122.md): when on, the fold and the pool decide
+/// every spend by the canonical tag chain (`canon_chain::canon_absence_refusal`, the window) instead of the spent set, and
+/// the objects whose uniqueness the set kept take their constant forms (an asset's id hashes its creation's fee nullifier).
+/// A PROTOCOL CONSTANT, switched on at a network upgrade from a new genesis (every fork at height 1, charter §2) once every
+/// reader is wired. Off, nothing changes. One definition, here, so the ledger and the node read the same switch.
+/// ⭐⭐ ON (lane speed5, 2026-11-22; user 2026-11-22: "focus on completing whats needed to get the network upgrade done and the
+/// 01 node live"): the network upgrade from a new genesis. Every switch path is pinned on two parties (payment, tree payment,
+/// send door, DeFi order with covers, double spend in concurrent blocks, join pulling the vouched window, restart and
+/// rollback); the band runs fixed-root and no node holds the spent set (U1). Owed, named in the audit: the wallet archive for
+/// a carrier away past the node's reach (U6), the peg-ledger replay sets' recent-window bound (U4).
+pub const CANON_LIVE: bool = true;
+
+/// ⭐ THE SWITCH AS EVERY READER ASKS IT (A-F114): [`CANON_LIVE`] in every build. In the node's OWN test build only
+/// (`cfg(test)`, never a feature, never a wallet or a release), a test may turn the constant chain on for ITS thread
+/// ([`set_canon_live_for_test`]), so the switch's paths can be pinned before the network upgrade. A production binary
+/// has no override: no route, flag or file can flip it.
+#[must_use]
+#[inline]
+pub fn canon_live() -> bool {
+    #[cfg(test)]
+    if let Some(v) = CANON_LIVE_TEST.with(std::cell::Cell::get) {
+        return v;
+    }
+    CANON_LIVE
+}
+
+#[cfg(test)]
+thread_local! {
+    static CANON_LIVE_TEST: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// TEST BUILDS ONLY — the switch for this thread (`None`: the constant).
+#[cfg(test)]
+pub fn set_canon_live_for_test(on: Option<bool>) {
+    CANON_LIVE_TEST.with(|c| c.set(on));
+}
+

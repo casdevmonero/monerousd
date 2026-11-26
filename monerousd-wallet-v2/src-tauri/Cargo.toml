@@ -3,7 +3,7 @@
 [package]
 name = "monerousd-wallet-v2"
 default-run = "monerousd-wallet-v2"
-version = "0.3.4"
+version = "0.3.5"
 license = "Apache-2.0"
 edition = "2021"
 description = "MoneroUSD Wallet V2 — the first post-quantum private stablecoin desktop wallet (clean-room, Tauri)."
@@ -72,6 +72,7 @@ rayon = "1"            # parallelize the per-note ML-KEM decap across cores (ind
 # into a trustless WHIR carrier, `verify_air_direct_light_decider_bytes` checks it. WHIR is trustless BY
 # DESIGN (transparent, hashless, no ceremony, no toxic waste); the wallet proves + self-verifies in-process.
 usdm-decider = { path = "../../monerousd-node-zkdag/vendor/Plonky3/usdm-decider" }
+usdm-agg = { path = "../../monerousd-node-zkdag/vendor/Plonky3/usdm-agg" } # A-F114: the absence carrier and the spend wrapper
 # The greenfield node, linked as a PURE-RUST library (no C dylibs) so the phone runs its OWN in-process node:
 # `usdmd_node::serve::run_in_process(port, gpc)` on a bg thread binds loopback RPC. The pure-Rust Poseidon2
 # PoUW kernel + WHIR verify are now ALWAYS-ON in usdmd-node (the classical RandomX fallback + its former

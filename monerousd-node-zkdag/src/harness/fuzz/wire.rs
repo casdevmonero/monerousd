@@ -43,7 +43,9 @@ use crate::chain_object::{decode_exact, Class};
 
 /// Every class the mempool may carry. Exhaustive by construction: `Class` has no `_` arm anywhere in this
 /// file, so adding a sixth class breaks the build here until it is given a canonical value.
-pub const CLASSES: [Class; 55] = [
+pub const CLASSES: [Class; 56] = [
+    // ⭐ A-F114 — a payout's release, listed the day the class landed.
+    Class::ReleaseConfirm,
     // ⭐ SAFE AT SCALE, stage three — part of a vault's ledgers moves to another vault, listed the day the class landed.
     Class::VaultRebalance,
     // ⭐ SAFE AT SCALE, stage three — a vault takes or retires a custody key, listed the day the class landed.
@@ -577,6 +579,11 @@ pub fn canonical(class: Class) -> Vec<u8> {
             }
             .encode()
         }
+        Class::ReleaseConfirm => {
+            // The real encoder, on the smallest object the strict decoder accepts: one released burn.
+            crate::release_confirm_tx::ReleaseConfirmTx { ledger: crate::peg::NATIVE_PEG_ASSET_ID, txid: [5u8; 32], released: vec![[6u8; 32]], swept: Vec::new(), attestors: vec![(vec![1u8; 4], vec![2u8; 4])] }
+                .encode()
+        }
         Class::ReserveCost => {
             // The real encoder, on the smallest object the strict decoder accepts: a fee under the floor (no bound proof).
             crate::reserve_cost_tx::ReserveCost {
@@ -1022,6 +1029,7 @@ pub fn current_door_accepts(class: Class, bytes: &[u8]) -> bool {
         Class::DefiEarnEpoch => crate::defi_batch::DefiEarnEpochTx::decode(bytes).is_some(),
         Class::VaultMerge => crate::vault_merge_tx::decode(bytes).is_some(),
         Class::ReserveCost => crate::reserve_cost_tx::decode(bytes).is_some(),
+        Class::ReleaseConfirm => crate::release_confirm_tx::ReleaseConfirmTx::decode(bytes).is_some(),
         Class::VaultKey => crate::vault_key_tx::decode(bytes).is_some(),
         Class::VaultRebalance => crate::vault_rebalance_tx::decode(bytes).is_some(),
         Class::PoolWithdraw => crate::pool_tx::decode_withdraw(bytes).is_some(),
@@ -1098,6 +1106,7 @@ pub fn prefix_door_accepts(class: Class, bytes: &[u8]) -> bool {
         Class::DefiEarnEpoch => postcard::from_bytes::<crate::defi_batch::DefiEarnEpochTx>(bytes).is_ok(),
         Class::VaultMerge => postcard::from_bytes::<crate::vault_merge_tx::VaultMergePayload>(bytes).is_ok(),
         Class::ReserveCost => postcard::from_bytes::<crate::reserve_cost_tx::ReserveCostPayload>(bytes).is_ok(),
+        Class::ReleaseConfirm => postcard::from_bytes::<crate::release_confirm_tx::ReleaseConfirmTx>(bytes).is_ok(),
         Class::VaultKey => postcard::from_bytes::<crate::vault_key_tx::VaultKeyPayload>(bytes).is_ok(),
         Class::VaultRebalance => postcard::from_bytes::<crate::vault_rebalance_tx::VaultRebalancePayload>(bytes).is_ok(),
         Class::PoolWithdraw => postcard::from_bytes::<crate::pool_tx::PoolWithdrawPayload>(bytes).is_ok(),
@@ -1199,6 +1208,7 @@ pub fn class_name(class: Class) -> &'static str {
         Class::DefiEarnEpoch => "DefiEarnEpoch",
         Class::VaultMerge => "VaultMerge",
         Class::ReserveCost => "ReserveCost",
+        Class::ReleaseConfirm => "ReleaseConfirm",
         Class::VaultKey => "VaultKey",
         Class::VaultRebalance => "VaultRebalance",
         Class::PoolWithdraw => "PoolWithdraw",

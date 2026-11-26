@@ -43,6 +43,23 @@ pub fn decode_list(bytes: &[u8]) -> Vec<Option<TagEvidence>> {
     }
 }
 
+/// ⭐ A-F114 2c — the constant chain's evidence for one REAL spend tag: the spend wrapper (`usdm_agg::absence_ssa::SpendProof`)
+/// and the chain end it was built to. Index-aligned with the block's padded tags in the same header-bound `tag_evidence`
+/// bytes (`tag_evidence_root`), in this encoding from the network upgrade that switches `canon_chain::CANON_LIVE` on.
+/// O1-FOOTPRINT-REVIEWED: per-block bytes (one wrapper per real input, a fixed lane width), never a node store.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CanonTagEvidence {
+    pub end: Digest4,
+    pub wrapper: Vec<u8>,
+}
+
+/// The constant chain's evidence list; a list that does not decode reads as empty, so its real spends lose, the same on
+/// every node.
+#[must_use]
+pub fn decode_canon_list(bytes: &[u8]) -> Vec<Option<CanonTagEvidence>> {
+    postcard::from_bytes(bytes).unwrap_or_default()
+}
+
 /// A node's ask to its peers about the set: tags that are in a pool or a block already, so a holder learns nothing a block will not
 /// publish. Never sent by a wallet. (§9.6: answering creates no value and moves no state; the asker checks every answer.)
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

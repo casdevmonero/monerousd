@@ -41,9 +41,11 @@ pub struct PegOutHeader {
     pub proposal_nonce: [u8; 32],
     /// ⭐ THE BURN'S CROSS-BIND (§BB for the redeem, 2026-09-17). The burned note's `leaf_commit` —
     /// the value the executor and every attesting custodian verified the bond-validity carrier
-    /// against — so a node that never pooled the redeem can justify the block's deletion of that
-    /// note from the object alone (`chain_object::carried_burn_binds`: `spend_cross_bind(cm, nf) ==
-    /// leaf_commit`), exactly as `AssetSpend` declares its burn. Without it the ledger released on
+    /// against — bound into the attested statement. (The node-side recomputation this doc once named,
+    /// `chain_object::carried_burn_binds` over `spend_cross_bind(cm, nf)`, does not exist: `spend_cross_bind` was deleted
+    /// by DB-363 because it linked a spend to its receive, `spend_frontier.rs:1845`; the commitment is hiding.) From the
+    /// network upgrade it is this burn's `Leg` cross-bind, which the spender's absence wrapper is checked against
+    /// (`chain_object::object_tag_roles`, A-F114). Before DB-363, without it the ledger released on
     /// every node while the note stayed in the unspent tree of every node that had not pooled the
     /// transaction (measured in-process: C's unspent root diverged from A's after the burn block).
     /// Bound into the attested statement, so an executor cannot swap it after gathering.

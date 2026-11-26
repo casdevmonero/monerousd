@@ -47,13 +47,24 @@ pub fn apply_chain_defi(node: &mut crate::node::Node, blob: &[u8], block_ts: u64
                     Some(_) => Err("a slot names a different anchor than the batch's first slot (A-F26: every slot of one batch names one anchor)"),
                 }
             };
-            for o in &t.orders {
+            // ⭐ A-F114: under the constant chain a slot carries no member leg: its leg is its wrapper, judged per tag where the
+            // record takes its position (`Node::canon_tag_spent`, the object's `Leg` roles); a member leg is one encoding too
+            // many. A-F26's one-anchor rule becomes one END per batch, judged where the wrappers are seen
+            // (`Node::canon_object_absent`).
+            let canon = crate::params::canon_live();
+            if canon
+                && (t.orders.iter().any(|o| !o.member_tuple.is_empty() || !o.member_carrier.is_empty())
+                    || t.claims.iter().any(|c| !c.member_tuple.is_empty() || !c.member_carrier.is_empty()))
+            {
+                return Err("a slot carries a member leg under the constant chain (its wrapper is its leg)");
+            }
+            for o in t.orders.iter().filter(|_| !canon) {
                 check_anchor(&o.member_tuple, &mut batch_anchor)?;
                 if !node.defi_member_leg(&o.member_carrier, &o.member_tuple, o.leaf_commit, o.nullifier) {
                     return Err("an order slot's note is not under an anchor this node's fold produced");
                 }
             }
-            for c in &t.claims {
+            for c in t.claims.iter().filter(|_| !canon) {
                 check_anchor(&c.member_tuple, &mut batch_anchor)?;
                 if !node.defi_member_leg(&c.member_carrier, &c.member_tuple, c.leaf_commit, c.nullifier) {
                     return Err("a claim slot's leaf is not under an anchor this node's fold produced");

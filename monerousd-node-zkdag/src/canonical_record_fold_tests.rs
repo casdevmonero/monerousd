@@ -83,6 +83,9 @@ mod tests {
     }
 
     fn produce(n: &mut Node, ts: u64, tag: &str) -> Block {
+        // the served bundle (`bundle_of`) may have grown this node's chain at the chain's own spacing, past the pin's clock: a
+        // block is never stamped at or below its producer's tip, so the pin's next step stays a valid block whatever the serve needed
+        let ts = ts.max(genesis_ts(n).saturating_add(1));
         n.produce(ts, Hash32::hash(tag.as_bytes()), Hash32::hash(b"miner"))
             .expect("a block produces")
     }
@@ -350,10 +353,13 @@ mod tests {
             blocks.push(d);
         }
         let _ = node_a.fold_canonical_records();
-        assert!(node_a.block_record_folded_for_test(&member), "PRECONDITION: A folded the batch's member");
-        assert!(!node_a.block_record_folded_for_test(&c.id()), "PRECONDITION: A's fold stopped mid-batch, before the chain block");
+        // ⛔ FOLD OVERHAUL (docs/FOLD-OVERHAUL-DEEP-AUDIT-20261126.md, F-7): this test used to assert that A folded the batch's
+        // member and stopped before its chain block — a half-applied step held between passes, the shape that wedged the live
+        // testnet. A step is atomic now: with the chain block's record missing, A folds NOTHING of the batch.
+        assert!(!node_a.block_record_folded_for_test(&member), "ATOMIC STEP: A folded a member of a step it could not finish");
+        assert!(!node_a.block_record_folded_for_test(&c.id()), "PRECONDITION: A's step waits on the chain block's record");
         assert!(node_b.block_record_folded_for_test(&c.id()), "CONTROL: B folded the whole batch");
-        // the checkpoint is taken NOW, mid-batch — the snapshot AND its fold record, through the ONE resume a boot runs
+        // the checkpoint is taken NOW, while the step waits — the snapshot AND its fold record, through the ONE resume a boot runs
         let (snap, fold) = node_a.checkpoint_for_test().expect("A exports its checkpoint");
         let mut resumed = testnet_node();
         assert!(resumed.resume_from_checkpoint_for_test(snap, fold), "the mid-batch checkpoint resumes");
@@ -386,6 +392,80 @@ mod tests {
         );
         assert_same_fold(&node_a, &node_b, &blocks, "the never-stopped party");
         assert_same_fold(&resumed, &node_b, &blocks, "the party resumed mid-batch");
+    }
+
+    /// ⛔⛔ FOLD OVERHAUL — A FOLD STEP IS ATOMIC (docs/FOLD-OVERHAUL-DEEP-AUDIT-20261126.md; BORROWED: Bitcoin Core's
+    /// ConnectBlock, Kaspa's chain-block acceptance). One chain block's batch applies whole or not at all: while the chain
+    /// block's record is missing, no member of its batch folds, the spine stays exactly the cursor's prefix, and once the
+    /// record arrives the whole step applies at the ordinals its peer gave it.
+    /// RED-FIRST (on main before the overhaul): the member folded and the spine stood one record past the cursor — the half
+    /// step that wedged the live testnet on 2026-11-25 (`[fold-order] ⛔ ordinal 4554 would append at leaf 1166080 …`).
+    #[test]
+    fn a_fold_step_is_atomic_no_member_folds_before_its_whole_batch_can() {
+        let mut node_a = testnet_node();
+        let mut node_b = testnet_node();
+        let t0 = genesis_ts(&node_a);
+        let mut blocks: Vec<Block> = Vec::new();
+        for k in 0..3u64 {
+            let ts = t0 + 60_000 * (k + 1);
+            let c = produce(&mut node_b, ts, &format!("at{k}"));
+            ingest(&mut node_a, &c, ts + 1_000, "A");
+            blocks.push(c);
+        }
+        // two siblings: whichever is not the merging block's selected parent is a MEMBER of its batch
+        let ts = t0 + 60_000 * 4;
+        let a1 = produce(&mut node_a, ts, "at-a1");
+        let b1 = produce(&mut node_b, ts + 7, "at-b1");
+        ingest(&mut node_a, &b1, ts + 1_000, "A");
+        ingest(&mut node_b, &a1, ts + 1_000, "B");
+        blocks.push(a1.clone());
+        blocks.push(b1.clone());
+        // the merging chain block carries a real note, so its record is wanted by id and never regenerated from its header
+        let mut note = Hash32::hash(b"fold-atomic-cm").as_bytes().to_vec();
+        let mut ctr = 0u64;
+        while note.len() < crate::cover::PQ_NOTE_BYTES {
+            note.extend_from_slice(Hash32::hash(&[&b"fold-atomic-ct"[..], &ctr.to_le_bytes()].concat()).as_bytes());
+            ctr += 1;
+        }
+        note.truncate(crate::cover::PQ_NOTE_BYTES);
+        let (c, _) = node_a.carry_notes_in_a_block_for_test(ts + 60_000, &note);
+        ingest(&mut node_b, &c, ts + 61_000, "B");
+        blocks.push(c.clone());
+        let member = match node_a.dag().get(&c.id()).and_then(|n| n.selected_parent) {
+            Some(sp) if sp == a1.id() => b1.id(),
+            Some(sp) if sp == b1.id() => a1.id(),
+            other => panic!("setup: the chain block's selected parent is one of the siblings, got {other:?}"),
+        };
+        assert!(node_a.withhold_block_record_for_test(&c.id()), "setup: A held the chain block's record");
+        for k in 0..5u64 {
+            let ts = t0 + 60_000 * (6 + k);
+            let d = produce(&mut node_b, ts, &format!("at-d{k}"));
+            ingest(&mut node_a, &d, ts + 1_000, "A");
+            blocks.push(d);
+        }
+        let _ = node_a.fold_canonical_records();
+        assert!(node_b.block_record_folded_for_test(&c.id()), "CONTROL: B, holding every record, folded the whole batch");
+        assert!(
+            !node_a.block_record_folded_for_test(&member),
+            "⛔ ATOMIC STEP: A folded the batch's member while the batch's chain block could not fold — a half-applied step"
+        );
+        assert!(!node_a.block_record_folded_for_test(&c.id()), "PRECONDITION: A's step waits on the chain block's record");
+        let cursor_ord = node_a.fold_cursor_row_for_test().unwrap_or(0);
+        assert_eq!(
+            node_a.note_frontier_count(),
+            cursor_ord * crate::cover::BLOCK_FIXED_NOTE_COUNT as u64,
+            "⛔ ATOMIC STEP: A's spine holds leaves past its fold cursor's prefix between passes"
+        );
+        // the record arrives by the production fetch path: the whole step applies, at the peer's ordinals
+        for _ in 0..3 {
+            let _ = node_a.deliver_wanted_records_for_test(&node_b);
+            let _ = node_a.fold_canonical_records();
+        }
+        assert!(node_a.block_record_folded_for_test(&c.id()), "the step applied once its chain block's record arrived");
+        let ord = |n: &Node, id: &crate::block::BlockId| n.da_record_ordinal(Node::da_record_id_for_block(id, 0));
+        assert_eq!(ord(&node_a, &member), ord(&node_b, &member), "the member takes the ordinal its peer gave it");
+        assert_eq!(ord(&node_a, &c.id()), ord(&node_b, &c.id()), "the chain block takes the ordinal its peer gave it");
+        assert_same_fold(&node_a, &node_b, &blocks, "the party whose step waited whole");
     }
 
     /// ⛔ G11c — A NODE STOPPED MID-BATCH NEVER SERVES A BUNDLE NO ADOPTER CAN TAKE (§9.6 (6): serve/adopt parity).
@@ -439,19 +519,16 @@ mod tests {
         let width = crate::cover::BLOCK_FIXED_NOTE_COUNT as u64;
         let (anchor, _) = node_a.fold_anchor().expect("A has a fold anchor");
         let anchor_pos = node_a.certified_fold_base_position(&anchor).expect("A's anchor holds its row");
-        assert!(
-            node_a.note_frontier_count() > anchor_pos * width,
-            "PRECONDITION: A's spine stands ABOVE its fold anchor mid-batch ({} leaves, anchor position {anchor_pos})",
-            node_a.note_frontier_count()
+        // ⛔ FOLD OVERHAUL (docs/FOLD-OVERHAUL-DEEP-AUDIT-20261126.md): this precondition used to read "A's spine stands ABOVE
+        // its fold anchor mid-batch" — the half step that made every served bundle unbindable (G11c's measured cause). A step
+        // is atomic now: while the step waits, the spine is EXACTLY the anchor's prefix, so what A serves binds by construction.
+        assert_eq!(
+            node_a.note_frontier_count(),
+            anchor_pos * width,
+            "⛔ ATOMIC STEP: while its step waits, A's spine is not its fold anchor's prefix (anchor position {anchor_pos})"
         );
-        let serve = |n: &mut Node| {
-            let f = crate::sync::FrontierSnapshot {
-                root: *n.note_frontier_root().as_bytes(),
-                height: n.note_frontier_count(),
-                peaks_hex: n.spend_frontier_peaks_hex(),
-            };
-            n.build_sync_bundle(vec![1u8; 4096], f)
-        };
+        // ⛔ A FIXTURE NEVER FALLS BEHIND THE DOOR: what A serves is what a real node serves (census S-DRAFT-ADOPT)
+        let serve = |n: &mut Node| n.serve_join_bundle().and_then(|w| crate::sync::SyncBundle::from_wire(&w));
         let adopts = |bundle: crate::sync::SyncBundle, what: &str| {
             assert!(
                 crate::sync::frontier_spine_binds(&bundle.frontier, bundle.anchor_ordinal),
@@ -472,7 +549,8 @@ mod tests {
         let _ = node_a.deliver_wanted_records_for_test(&node_b);
         let _ = node_a.fold_canonical_records();
         assert!(node_a.block_record_folded_for_test(&c.id()), "CONTROL: A's fold completed the batch");
-        let bundle = serve(&mut node_a).expect("CONTROL: A serves a bundle at its batch boundary");
+        // a served bundle needs its 32 vouching blocks above the anchor: A's chain grows until one is servable, as a real node's does
+        let bundle = bundle_of(&mut node_a);
         adopts(bundle, "at the batch boundary");
     }
 
@@ -503,16 +581,7 @@ mod tests {
             ingest(&mut node_a, &b, ts + 1_000, "A");
             ingest(&mut peer_b, &a, ts + 1_000, "B");
         }
-        let bundle = node_a
-            .build_sync_bundle(
-                vec![1u8; 4096],
-                FrontierSnapshot {
-                    root: *node_a.note_frontier_root().as_bytes(),
-                    height: node_a.note_frontier_count(),
-                    peaks_hex: node_a.spend_frontier_peaks_hex(),
-                },
-            )
-            .expect("A serves a bundle");
+        let bundle = bundle_of(&mut node_a); // the served bundle (census S-DRAFT-ADOPT)
         let anchor = Some(bundle.anchor_block.id());
         let certified = bundle.frontier.height / crate::cover::BLOCK_FIXED_NOTE_COUNT as u64;
         let a_anchor_ord = anchor.and_then(|id| node_a.da_record_ordinal(Node::da_record_id_for_block(&id, 0)));
@@ -565,16 +634,7 @@ mod tests {
             blocks.push(b);
         }
         assert_same_fold(&node_a, &node_b, &blocks, "setup: the producers agree");
-        let bundle = node_a
-            .build_sync_bundle(
-                vec![1u8; 4096],
-                FrontierSnapshot {
-                    root: *node_a.note_frontier_root().as_bytes(),
-                    height: node_a.note_frontier_count(),
-                    peaks_hex: node_a.spend_frontier_peaks_hex(),
-                },
-            )
-            .expect("A serves a bundle");
+        let bundle = bundle_of(&mut node_a); // the served bundle (census S-DRAFT-ADOPT)
         assert!(
             !bundle.fold_carry.unfolded.is_empty() && !bundle.fold_carry.ancestors.is_empty(),
             "setup: the bundle carries unfolded blocks ({}) and the folded parents they name ({})",
@@ -623,6 +683,12 @@ mod tests {
     /// The body of both residual-3 pins: `respend` = the carried block re-spends the note spent (and folded) before the
     /// bundle; otherwise it spends a different funded note.
     fn jump_with_a_carried_spend(respend: bool) {
+        // ⛔ THE PRE-SWITCH MODE, NAMED (2026-11-26): these spends prove their input with a MEMBER LEG, which the constant chain refuses
+        // ("a member leg under the constant chain", `member_carrier_verdict`: the absence wrapper is the membership), so under
+        // `params::CANON_LIVE` they never fold ("CALIBRATION: A folded the first spend" failed). DB-358's first-spender rule is
+        // pinned here in the pre-switch mode it was written for, on this thread with the switch off; under the switch the same
+        // rule is the respend verdict over the canonical chain.
+        crate::params::set_canon_live_for_test(Some(false));
         use crate::decider::{ConsensusVerifier, DeciderBundle};
         use crate::sync::{AdoptOutcome, FrontierSnapshot};
         use usdm_decider::poseidon2_compress::lanes_of;
@@ -702,16 +768,8 @@ mod tests {
             s2.output_notes.chunks(crate::cover::PQ_NOTE_BYTES).any(|n| n.len() >= 32 && n[..32] == out2),
             "CALIBRATION: the re-spend block carries the re-spend's output"
         );
-        let bundle = node_a
-            .build_sync_bundle(
-                vec![1u8; 4096],
-                FrontierSnapshot {
-                    root: *node_a.note_frontier_root().as_bytes(),
-                    height: node_a.note_frontier_count(),
-                    peaks_hex: node_a.spend_frontier_peaks_hex(),
-                },
-            )
-            .expect("A serves a bundle");
+        // ⛔ the bundle a real node serves (census S-DRAFT-ADOPT), never a draft beside the serve path
+        let bundle = bundle_of(&mut node_a);
         // G11b: the bundle is CONSTANT — it serves the fold anchor and carries no unfolded window, so the re-spend block
         // above the anchor reaches the joiner on the follow page (`page_above_anchor`), through the ordinary ingest door.
         assert!(
@@ -991,16 +1049,18 @@ mod tests {
     }
 
     /// A's certified bundle at this moment (its fold root as the anchor, the unfolded blocks as the carry).
+    /// ⛔ A FIXTURE NEVER FALLS BEHIND THE DOOR (user 2026-11-26: "make sure the fixtures can never fall behind our code again and
+    /// update automatically"). The bundle a pin hands a joiner is the one a real node SERVES: the node's own frozen bundle
+    /// through `serve_join_bundle`, which runs the joiner's own join door before it serves (`production_bundle_for_test`). So
+    /// whatever the door requires next, the fixture already carries it, because it IS the production bundle. Before, this built
+    /// a DRAFT beside the serve path (`build_sync_bundle`, an empty join proof), and from 11/10 on the door refused it
+    /// `AnchorArray`: 13 pins of this module stood red, and the joins, restarts and reorgs they cover went untested.
+    /// Census S-DRAFT-ADOPT (scratchpad/secure.py, every landing) refuses a test that hands a draft to a joiner's adopt.
+    /// The server may grow its chain until a bundle is servable (a freeze every 16 fold steps, 32 vouching blocks above it);
+    /// `page_above_anchor` then brings those blocks to the joiner the way the runtime's follow lane does.
     fn bundle_of(node: &mut Node) -> crate::sync::SyncBundle {
-        node.build_sync_bundle(
-            vec![1u8; 4096],
-            crate::sync::FrontierSnapshot {
-                root: *node.note_frontier_root().as_bytes(),
-                height: node.note_frontier_count(),
-                peaks_hex: node.spend_frontier_peaks_hex(),
-            },
-        )
-        .expect("the node serves a bundle")
+        let ts = genesis_ts(node);
+        node.production_bundle_for_test(ts, "fixture-served")
     }
 
     /// DB-223 / DB-274 P3 — NON-PROVING premise of the jumper pin below (seconds, debug profile): on a serving node the
@@ -1200,6 +1260,8 @@ mod tests {
         }
         assert!(matches!(node_c.instant_sync(bundle_of(&mut node_a)), AdoptOutcome::Adopted(_)), "C jumps by A's bundle");
         page_above_anchor(&mut node_c, &node_a);
+        // the served bundle may have grown A's chain past what B holds: B follows it by the same follow lane, as a real peer does
+        page_above_anchor(&mut node_b, &node_a);
         assert!(
             node_c.da_record_ordinal(p0).is_none(),
             "C's own claim for a record the certified spine does not contain is gone"
@@ -1364,12 +1426,21 @@ mod tests {
     /// what each HOLDS, field by field.
     #[test]
     fn a_fold_root_that_drops_below_the_fold_tip_leaves_the_node_where_a_never_folded_peer_stands() {
+        // ⛔ A FIXTURE NEVER FALLS BEHIND THE CODE (2026-11-26): the fold depth is DERIVED from the chain's own step since A-F60/A-F96
+        // (`dag::fold_depth_for(param, step) = clamp(ceil(FOLD_SETTLE_MS / step), FOLD_DEPTH_MIN, param)`), and a parameter above
+        // FOLD_DEPTH_MIN (2) at this pin's 60 s step folds at 2 whatever it is: depth 4 and depth 5 folded alike, so the calibration
+        // "A holds one record more than B" could not hold. Parameters at or below FOLD_DEPTH_MIN are used as given, so the pin
+        // states its two depths there: A at 1, B at 2.
+        let depth_of = |n: &mut Node, d: u64| {
+            let mut p = n.params().clone();
+            p.record_fold_depth = d;
+            n.set_params(p);
+        };
         let mut prod = testnet_node();
         let mut a = testnet_node();
         let mut b = testnet_node();
-        let mut pb = b.params().clone();
-        pb.record_fold_depth = 5;
-        b.set_params(pb);
+        depth_of(&mut a, 1);
+        depth_of(&mut b, 2);
         let t0 = genesis_ts(&prod);
         let n = Node::SPINE_RING_LEN as u64 + 12;
         for k in 0..n {
@@ -1378,11 +1449,9 @@ mod tests {
             ingest(&mut a, &blk, ts + 1_000, "A");
             ingest(&mut b, &blk, ts + 1_000, "B");
         }
-        assert_eq!(a.served_seq(), b.served_seq() + 1, "CALIBRATION: A (depth 4) holds one record more than B (depth 5)");
+        assert_eq!(a.served_seq(), b.served_seq() + 1, "CALIBRATION: A (depth 1) holds one record more than B (depth 2)");
         let reorgs = a.fold_reorgs_for_test();
-        let mut pa = a.params().clone();
-        pa.record_fold_depth = 5;
-        a.set_params(pa);
+        depth_of(&mut a, 2);
         let _ = a.fold_canonical_records();
         assert!(a.fold_reorgs_for_test() > reorgs, "CALIBRATION: A's fold root dropped below its fold tip (a fold reorg)");
         assert_eq!(a.served_seq(), b.served_seq(), "CALIBRATION: A and B now hold the same records");
@@ -1443,23 +1512,24 @@ mod tests {
                 true
             }
         }
-        let serve = |node: &mut Node| {
-            node.build_sync_bundle(
-                vec![1u8; 4096],
-                crate::sync::FrontierSnapshot {
-                    root: *node.note_frontier_root().as_bytes(),
-                    height: node.note_frontier_count(),
-                    peaks_hex: node.spend_frontier_peaks_hex(),
-                },
-            )
-        };
+        // ⛔ A FIXTURE NEVER FALLS BEHIND THE DOOR: what A serves is what a real node serves (`serve_join_bundle`, the frozen
+        // bundles checked by the joiner's own door), never a draft beside it (census S-DRAFT-ADOPT)
+        let serve = |node: &mut Node| node.serve_join_bundle().and_then(|w| crate::sync::SyncBundle::from_wire(&w));
         let adopt = |b: crate::sync::SyncBundle| {
             let mut v = testnet_node();
             v.set_decider_verifier(Box::new(AcceptAll));
             v.instant_sync(b)
         };
+        // the fold depth is derived from the chain's step (`dag::fold_depth_for`): above FOLD_DEPTH_MIN a 60 s step folds at 2
+        // whatever the parameter, so the pin's drop is stated where parameters are used as given: depth 1, then 2
+        let depth_of = |n: &mut Node, d: u64| {
+            let mut p = n.params().clone();
+            p.record_fold_depth = d;
+            n.set_params(p);
+        };
         let mut prod = testnet_node();
         let mut a = testnet_node();
+        depth_of(&mut a, 1);
         let t0 = genesis_ts(&prod);
         let n = Node::SPINE_RING_LEN as u64 + 12;
         for k in 0..n {
@@ -1467,12 +1537,10 @@ mod tests {
             let blk = produce(&mut prod, ts, &format!("cert{k}"));
             ingest(&mut a, &blk, ts + 1_000, "A");
         }
-        let first = serve(&mut a).expect("CALIBRATION: A serves a bundle at its depth-4 fold root");
+        let first = serve(&mut a).expect("CALIBRATION: A serves a bundle at its depth-1 fold root");
         assert!(matches!(adopt(first), AdoptOutcome::Adopted(_)), "CALIBRATION: a fresh node adopts A's first bundle");
         let reorgs = a.fold_reorgs_for_test();
-        let mut pa = a.params().clone();
-        pa.record_fold_depth = 5;
-        a.set_params(pa);
+        depth_of(&mut a, 2);
         let _ = a.fold_canonical_records();
         assert!(a.fold_reorgs_for_test() > reorgs, "CALIBRATION: A's fold root dropped below its fold tip (a fold reorg)");
         // at the lighter position: a serve may be declined, but a bundle served must be one an adopter accepts
@@ -1897,6 +1965,10 @@ mod tests {
     ///      whole use for it.
     #[test]
     fn two_nodes_that_accepted_the_same_blocks_commit_one_sparse_root_and_a_copath_folds_to_it() {
+        // ⛔ THE PRE-SWITCH MODE, NAMED (2026-11-26): this pin settles a spend as a band step with a held nullifier VIEW. Under the
+        // constant chain (`params::CANON_LIVE`, ON in every build) no node holds the spent set (A-F114 U1), so that mode is not what
+        // production runs; its code is still in the tree, and this pin keeps it correct on its own thread with the switch off.
+        crate::params::set_canon_live_for_test(Some(false));
         let mut a = testnet_node();
         let mut b = testnet_node();
         let t0 = genesis_ts(&a) + 60_000;

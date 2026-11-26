@@ -92,7 +92,17 @@ pub const RESERVE_THEFT_LOSS_MAX_SATS: u64 = 2_100_000_000_000_000;
 /// signature, so a certificate slashes exactly the validators it names and books exactly the loss custody attested.
 #[must_use]
 pub fn theft_msg(statement: &[u8], offenders: &[[u8; 32]], loss_sats: u64) -> Vec<u8> {
-    let mut m = crate::pqauth::node_statement(b"USDMD-PQFROST-THEFT-v3");
+    theft_msg_at(statement, offenders, loss_sats, None)
+}
+
+/// ⭐ A-F114 — the theft message at the ledger's THEFT COUNTER `seq` (from the network upgrade, `params::CANON_LIVE`; `None`
+/// is exactly the v3 bytes). A theft statement names a foreign reserve move and binds no chain state, so a booking was refused
+/// a second time only by its key in `liquidated` (a set that grows with every theft). Bound to the counter, which the fold
+/// steps at every theft it applies, a certificate is valid once: a replay's signatures cover a passed counter. BORROWED:
+/// Ethereum's account nonce, as the decoy batch and the bounty. cons: a certificate gathered at a counter another theft passes
+/// is gathered again.
+pub fn theft_msg_at(statement: &[u8], offenders: &[[u8; 32]], loss_sats: u64, seq: Option<u64>) -> Vec<u8> {
+    let mut m = crate::pqauth::node_statement(if seq.is_some() { b"USDMD-PQFROST-THEFT-v4" } else { b"USDMD-PQFROST-THEFT-v3" });
     m.extend_from_slice(&(statement.len() as u32).to_le_bytes());
     m.extend_from_slice(statement);
     m.extend_from_slice(&(offenders.len() as u32).to_le_bytes());
@@ -100,6 +110,9 @@ pub fn theft_msg(statement: &[u8], offenders: &[[u8; 32]], loss_sats: u64) -> Ve
         m.extend_from_slice(id);
     }
     m.extend_from_slice(&loss_sats.to_le_bytes());
+    if let Some(q) = seq {
+        m.extend_from_slice(&q.to_le_bytes());
+    }
     m
 }
 

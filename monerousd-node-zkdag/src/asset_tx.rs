@@ -338,6 +338,14 @@ impl AssetCreateTx {
         // different assets, and neither can mint into the other's.
         pre.extend_from_slice(&self.creator);
         pre.extend_from_slice(&self.bytecode);
+        // ⭐ A-F114 — UNIQUE BY CONSTRUCTION (from the network upgrade, `params::CANON_LIVE`): the id also hashes this
+        // creation's FEE NULLIFIER, a real note's and so unique by the note rule, so no two creations can ever share an id
+        // and no set is needed to refuse a second creation of one (the MMR registry, `dsol::DsolRegistry`, holds only its
+        // peaks and cannot). BORROWED: Ethereum's CREATE address, `hash(sender, nonce)`. Off, the id is unchanged.
+        if crate::params::canon_live() {
+            pre.extend_from_slice(b"FEE-NF");
+            pre.extend_from_slice(&self.fee.nullifier);
+        }
         *crate::hash::Hash32::hash(&pre).as_bytes()
     }
 

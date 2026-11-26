@@ -1875,13 +1875,67 @@ impl Node {
         // BORROWED: a node past the pruning point re-syncs from a snapshot (Kaspa's IBD); it never replays or hoards.
         // AI RESISTANT: (b) code; a peer gains nothing (the bundle it might serve passes the join door like any other).
         // cons: a node marked stale folds nothing until a bundle lands (it folded nothing already); 0 bytes.
-        if self.fold_wait_on.is_some() && !self.spine_stale && wait_outgrown(self.fold_wait_since_len, tip_blue) {
+        // ⛔ FOLD OVERHAUL F-5 (lane livewedge, 2026-11-26; docs/FOLD-OVERHAUL-DEEP-AUDIT-20261126.md) — A SHELL'S AGE IS A FACT OF
+        // THE CHAIN, NOT OF THIS WAIT. The wait's own clock (`fold_wait_since_len`) starts at the first pass that waits on the block,
+        // so it restarts at every boot and after every mark the prune drops (`Dag::prune_below_horizon` drops a withheld mark with
+        // its block; a re-arrived shell comes back unmarked). MEASURED (live 27780, 2026-11-25): the same shell a568aea7 withheld
+        // twice on one boot, each after a fresh 32-level wait. A body-less shell the fold needs whose OWN place on its selected chain
+        // stands past the reach behind the tip is outgrown the moment the fold waits on it: one function of the DAG, true after a
+        // restart, a prune and a re-arrival alike. Only a shell (no body held) is judged by its age: a held block whose record is
+        // late keeps the wait's own clock, so a late but whole block never triggers the stale re-anchor early.
+        let shell_age_outgrown = self.fold_wait_on.is_some_and(|(p, _)| {
+            !self.unfolded_blocks.iter().any(|x| x.id() == p && !x.pow_proof.is_empty())
+                && self.relay.dag().get(&p).is_some_and(|n| wait_outgrown(n.selected_chain_len, tip_blue))
+        });
+        if self.fold_wait_on.is_some()
+            && !self.spine_stale
+            && (wait_outgrown(self.fold_wait_since_len, tip_blue) || shell_age_outgrown)
+        {
             // DIGITAL-CASH-PRIVACY-REVIEWED: two public level counts and a fixed reason.
             eprintln!(
                 "[fold-outgrown] the fold has waited on one block while the chain grew {} levels (reach {UNFOLDED_BODY_REACH_LEVELS}): {why}",
                 tip_blue.saturating_sub(self.fold_wait_since_len)
             );
-            self.mark_spine_stale("the fold waited on one block while the chain outgrew its body reach");
+            // ⛔⛔ LIVE-FOLD W1 (lane livefold, 2026-11-25; docs/LIVE-FOLD-WEDGE-DEEP-AUDIT-20261125.md) — A SHELL NOBODY SERVED IS
+            // WITHHELD, AND THE HEAD LEAVES IT. When the block waited on is a SHELL (no body held here) the certified re-anchor cannot
+            // end the wait unless some peer folded past it; when every reachable peer waits on the same shell (MEASURED live
+            // 2026-11-25: the one peer's bundle certified 3785, the wait came back at 3786 after the adopt, fold 9,451 blocks
+            // behind, finality 0) it never ends. The block is marked withheld (`Dag::mark_withheld`): neither it nor any block built
+            // on it is head or merged, so this node builds from the heaviest available block and its fold and finality move. The
+            // shell-body lane keeps asking for the body; when it lands the mark clears (`fill_shell_body_preverified`) and fork choice
+            // returns to the heavier chain if it is heavier. The bundle is still asked for (the spine stays stale only when the
+            // wait is not on a body-less shell), so a peer that folded past the block still re-anchors this node.
+            // BORROWED: Kaspa (a block whose body is not validated is never a virtual parent), Bitcoin (never extend an unvalidated
+            // chain). S-WAIT: the wait's expiry DOES the work (the head moves), it never drops a block.
+            // AI RESISTANT: (b) code; withholding a body costs the withholder its block's place on the chain.
+            // SCALE: one children walk of the withheld block's held future, once; nothing grows.
+            // cons: none measured — a node that lacked a body every other node held builds a lighter branch for the time the body is
+            //   unserved (the reach, then until the body lands), the same exposure as a partition.
+            let shell_unheld = self.fold_wait_on.is_some_and(|(p, _)| {
+                !self.unfolded_blocks.iter().any(|x| x.id() == p && !x.pow_proof.is_empty())
+                    && self.relay.dag().get(&p).is_some()
+            });
+            if shell_unheld {
+                if let Some((p, _)) = self.fold_wait_on {
+                    // ⛔ W-FOLD-1b (docs/LIVE-FINALITY-AND-FOLD-WEDGE-DEEP-AUDIT-20261125.md): a shell ALREADY withheld ends the wait too —
+                    // MEASURED live 2026-11-25 15:06+: "[fold-outgrown] … grew 1058 levels" repeated with no "[fold-withheld]", because
+                    // the second firing found the mark set and left `fold_wait_on` in place: an expiry that did not do the work
+                    if !self.relay.dag_mut().mark_withheld(p) && self.relay.dag().is_withheld(&p) {
+                        self.fold_wait_on = None;
+                    } else if self.relay.dag().is_withheld(&p) {
+                        // DIGITAL-CASH-PRIVACY-REVIEWED: a public block-id prefix and a count — no tag, cm, amount, key or owner.
+                        eprintln!(
+                            "[fold-withheld] ⛔ W1: block {} is a shell no peer served past the body reach — marked WITHHELD ({} held); \
+                             the head leaves it and every block built on it, the fold moves on the available chain, its body is still asked for",
+                            &p.to_hex()[..8],
+                            self.relay.dag().withheld_count()
+                        );
+                        self.fold_wait_on = None;
+                    }
+                }
+            } else {
+                self.mark_spine_stale("the fold waited on one block while the chain outgrew its body reach");
+            }
         }
     }
 
@@ -2355,21 +2409,27 @@ impl Node {
         const TAG_REC: usize = 1 + crate::oli::K_BYTES;
         if !oli_tags.is_empty() && oli_tags.len() % TAG_REC == 0 {
             let mut merged = self.da_load_tags(rid);
-            let before = merged.len();
+            // ⛔ A-F118: the ONE merge rule (`da::merge_slot_tag`) — a REAL unit's slot takes the key that names it, a cover
+            // slot keeps its first; this path kept the first key in every slot, so a joiner that adopted the sidecar held a
+            // cover key in a real slot a replayer had replaced (MEASURED replica census main 56be6497, slot 1 of record 67)
+            let reals = self.da_load(rid).map_or(0, |r| r.len());
+            let mut changed = false;
             let mut off = 0usize;
             while off + TAG_REC <= oli_tags.len() {
                 let slot = oli_tags[off];
                 let mut k = [0u8; crate::oli::K_BYTES];
                 k.copy_from_slice(&oli_tags[off + 1..off + TAG_REC]);
-                if !merged.iter().any(|(s, _)| *s == slot) {
-                    merged.push((slot, k));
-                }
+                changed |= crate::node::da::merge_slot_tag(&mut merged, slot, k, (slot as usize) < reals) != crate::node::da::TagMerge::Kept;
                 off += TAG_REC;
             }
-            if merged.len() > before {
+            if changed {
                 self.da_store_tags(rid, &merged);
             }
         }
+        // ⛔ A-F118 (2026-11-23): NO refile here or at the joiner's bind of a stripped row. MEASURED: with them the launch sim's
+        // joiners held ~4,300 fewer tags below record 266 than node 0 (61,484 / 65,291 vs 65,797, main 61ea7b0d and e0d09110),
+        // where 0590db07 passed; a joiner's paged rows that miss their header root are not only stripped ones. The replayer-side
+        // paths (strip, restore, rewind, a grown row) keep the graft rule; the joiner's side is OPEN (audit).
         // ⛔ THE `nf_tags` COLUMN OF A SERVED PAGE WRITES NOTHING (D-41 class, 2026-09-11). It used to fill
         // `da_nf_mem` under the page's record id — a THIRD key space beside the two fold ordinals the
         // node's own writers used — and the only reader of a row filed here was the serve that echoed it
@@ -3582,6 +3642,16 @@ impl Node {
         &self,
         padded: &[[u8; 32]],
     ) -> (Vec<crate::nf_sparse::CompressedCopath>, Vec<crate::nf_sparse::NfAbsenceWitness>) {
+        // ⭐ A-F114 — THE ONE SITE EVERY NODE-BUILT SPEND TAKES ITS EVIDENCE FROM (a node-published object, a peg-out, a
+        // node's own spend): under the constant chain no node holds the spent set, so the evidence is the SPENDER's wrappers —
+        // the rpc call's own (`canon_chain::scope_spender_wrappers`), else the freshest one the spender handed this node for a
+        // claim it holds and publishes later (`Node::canon_held_wrappers`, a delayed publication such as a peg-out). With
+        // neither the spend carries none, and the pool door refuses it before any block carries it.
+        if crate::canon_chain::canon_live() {
+            let proof = crate::canon_chain::spender_wrappers()
+                .or_else(|| self.canon_held_wrappers.iter().find(|(nf, _)| padded.contains(nf)).map(|(_, w)| w.clone()));
+            return (Vec::new(), proof.map(|proof| crate::nf_sparse::NfAbsenceWitness { proof, ..Default::default() }).into_iter().collect());
+        }
         // one rule with the copath route: carry a copath only where this node's ADMIT authority judges it `Unspent` now
         // ⭐ PRIVATE SHARDING §2.2: a node holding part of the set carries nothing here; the block's evidence decides the spend.
         if self.nf_view_is_partial() {
@@ -3660,6 +3730,28 @@ impl Node {
             #[cfg(test)]
             crate::test_census::vacuity::record("Node::nullifier_witnesses_gate", true);
             return true; // cover / coinbase — nothing to gate
+        }
+        if crate::canon_chain::canon_live() {
+            if crate::chain_object::unframe(&tx.blob).is_some() {
+                return self.canon_object_absent(tx); // a framed object: its legs by their wrappers (`object_tag_roles`)
+            }
+            // ⭐ A-F114 2c — THE POOL READS THE FOLD'S RULE: the real input (the member tuple's binder) by its spend wrapper,
+            // every other tag (cover, `tag1`) by the window. A courtesy; the fold's verdict is the authority.
+            let Some((input_nf, input_lc)) = crate::canon_chain::canon_spend_input(tx) else { return false };
+            let ws = tx.nullifier_absence.first().map(crate::nf_sparse::canon_wrappers).unwrap_or_default();
+            let [w] = ws.as_slice() else { return false };
+            let mut real_seen = false;
+            for n in &tx.nullifiers {
+                if n.0 == input_nf {
+                    if self.canon_absence_refusal(&n.0, &input_lc, w).is_some() {
+                        return false;
+                    }
+                    real_seen = true;
+                } else if self.canon_recent.holds(&n.0) {
+                    return false;
+                }
+            }
+            return real_seen;
         }
         // ⛔⛔⛔ AT MOST ONE — NOT EXACTLY ONE. Requiring a batched absence witness made every spend depend on
         // the node's historical fold stream, and that stream is PROVABLY UNABLE to serve it:
@@ -4362,6 +4454,11 @@ impl Node {
             )
             // SAFE AT SCALE: a vault's reserve less a public foreign fee (`PegLedger::reserve_cost`, that vault's own quorum)
             && !matches!(crate::node::objects::reserve_cost_tx::apply_chain_reserve_cost(self, blob, &v), crate::reserve_cost_tx::CostApply::Refused(_))
+            // A-F114: a payout's release (`PegLedger::release_confirm`, the paying vault's quorum; the owed book)
+            && !matches!(
+                crate::node::objects::release_confirm_tx::apply_chain_release_confirm(self, blob, &v),
+                crate::node::objects::release_confirm_tx::ReleaseApply::Refused(_)
+            )
             // SAFE AT SCALE, stage three: a vault takes or retires a custody key (`PegLedger::vault_key_take` /
             // `vault_key_retire`, that vault's own quorum) — placed at the carrying block's chain tick (A-F60: the address
             // window and the retire wait are times)
@@ -4806,7 +4903,20 @@ impl Node {
         let Some(padded) = crate::cover::pad_tx_nullifiers_to_fixed(nfs, id.as_bytes()) else {
             return Err(crate::mempool::MempoolError::InvalidId); // a few real rows always fit the fixed width
         };
-        let (nullifier_witnesses, nullifier_absence) = self.spend_lane_evidence(&padded);
+        let (nullifier_witnesses, nullifier_absence) = if crate::canon_chain::canon_live() {
+            // ⭐ A-F114: no node holds the spent set, so the spender's own wrappers (`canon_chain::scope_spender_wrappers`)
+            // are the object's absence evidence. An object with a note leg and none is refused HERE, before any block
+            // carries it: refused at its fold it would burn the note it spends.
+            let has_leg = crate::chain_object::object_tag_roles(&blob)
+                .is_some_and(|r| r.iter().any(|(_, x)| matches!(x, crate::chain_object::TagRole::Leg(_))));
+            let ev = self.spend_lane_evidence(&padded);
+            if has_leg && ev.1.is_empty() {
+                return Err(crate::mempool::MempoolError::NullifierWitnessRejected);
+            }
+            ev
+        } else {
+            self.spend_lane_evidence(&padded)
+        };
         let tx = crate::mempool::PqTx {
             clock_ms: 0,
             id,
@@ -4961,10 +5071,12 @@ impl Node {
     /// ⭐ §BR-10 — the bounty's state verdict: ≥ 2/3 of THIS node's bonded custody weight signed its statement, the amount is
     /// within the constitutional cap of the surplus buffer, and the buffer covers it.
     pub(crate) fn bounty_payout_refusal(&self, t: &crate::bounty_payout_tx::BountyPayoutTx) -> Option<&'static str> {
-        if !t.signatures_and_carrier_verify() {
+        // A-F114: from the upgrade the signatures cover the ledger's bounty counter (`bounty_statement`)
+        let seq = self.bounty_statement_seq();
+        if !t.carrier_verifies() || !t.signatures_verify_at(seq) {
             return Some("a signature or the note's carrier does not verify");
         }
-        let Some(stmt) = t.statement() else {
+        let Some(stmt) = t.statement_at(seq) else {
             return Some("the bounty names no note");
         };
         if !crate::bond_tally::verify_threshold(&stmt, &t.cert(), &self.validators, &crate::pqauth::MlDsaVerifier) {
@@ -4980,7 +5092,17 @@ impl Node {
 
     /// The bounty's state move: the surplus buffer pays it (never below zero).
     pub(crate) fn bounty_payout_move(&mut self, amount: u64) -> bool {
-        self.peg.pay_bounty(amount)
+        let paid = self.peg.pay_bounty(amount);
+        if paid && crate::params::canon_live() {
+            self.canon_bounty_seq += 1; // A-F114: the counter steps with each bounty paid, so its statement is never valid twice
+        }
+        paid
+    }
+
+    /// A-F114: the bounty counter a bounty statement binds now (`None` before the network upgrade).
+    #[must_use]
+    pub fn bounty_statement_seq(&self) -> Option<u64> {
+        crate::params::canon_live().then_some(self.canon_bounty_seq)
     }
 
     /// The claim's state move: the accrual zeroed and the pool paid, together.
@@ -6146,7 +6268,13 @@ impl Node {
         // non-spend carries none. The producer states only spends that carry one, and every peer requires the same at
         // ingest, graft and the fold — this door is the honest path's half of that rule.
         let carries_member = !tx.member_carrier.is_empty() || !tx.member_tuple.is_empty();
-        match (Self::spend_tuple_of(&tx).is_some(), carries_member) {
+        // ⭐ A-F114 (B′): under the constant chain a spend carries NO member leg (its wrapper proves its input); the verdict
+        // refuses one that does (one encoding) and judges the wrapper for one that does not
+        // (FOUND by the DeFi covers switch pin: folding the switch into the second element made every NON-spend, every chain
+        // object, read `(false, true)` under the switch and be refused `MemberCarrierRequired`; a spend goes to the verdict
+        // under the switch, a non-spend is judged exactly as before)
+        let spend = Self::spend_tuple_of(&tx).is_some();
+        match (spend, carries_member || (spend && crate::canon_chain::canon_live())) {
             (true, true) => match self.member_carrier_verdict(&tx) {
                 MemberGate::Pass => {}
                 MemberGate::AnchorNotHeld => return Err(MempoolError::AnchorNotHeld),
@@ -6793,6 +6921,11 @@ impl Node {
         }
         if block.pow_proof.is_empty() {
             return false;
+        }
+        // W1: a withheld block's body landed — its chain is eligible again (fork choice returns to it if it is heavier)
+        if self.relay.dag_mut().clear_withheld(&id) {
+            // DIGITAL-CASH-PRIVACY-REVIEWED: a public block-id prefix.
+            eprintln!("[fold-withheld] W1: the body of withheld block {} landed — its chain is eligible again", &id.to_hex()[..8]);
         }
         let Some(slot) = self.unfolded_blocks.iter().position(|b| b.id() == id) else {
             // No entry: the shell's (seed-only) record already FOLDED and the fold dropped it from the
@@ -11103,6 +11236,7 @@ impl Node {
                     &tx.blob,
                     &crate::pqauth::MlDsaVerifier,
                     lane,
+                    tick,
                 ) {
                     crate::membership_bond_tx::MembershipApply::Seated => eprintln!(
                         "[bond-apply] membership seat LANDED from the block ({} seated)",

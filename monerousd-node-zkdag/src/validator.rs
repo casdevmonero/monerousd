@@ -175,6 +175,9 @@ pub struct ValidatorSet {
     /// Validators SLASHED for equivocation (double-signing finality votes). Their bond is FORFEITED
     /// (burned — never returned) and they can NEVER re-admit: a permanent, protocol-enforced penalty
     /// so a stake-based finality attack LOSES money, not merely fails. This is the economic teeth.
+    /// ⭐ A-F114: from the network upgrade an id leaves this set once it holds nothing else (`settled_slashed`, pruned at
+    /// the bond step): the forfeited bond stays burned, and only the SAME key could bond again, which a fresh key can do
+    /// anyway. Before the upgrade it is kept for ever (the census reads it as growth until then).
     slashed: HashSet<[u8; 32]>,
     /// Total bond burned by slashing (these units leave the bonded weight forever; observability).
     slashed_bond_burned: u128,
@@ -1352,6 +1355,41 @@ impl ValidatorSet {
     }
 
     /// Every validator id this set holds anything for (bonded, custody, KEM key or slashed), sorted.
+    /// ⭐ A-F114 — the slashed ids that hold NOTHING else: no seat, no bond or finality weight, no custody point or key,
+    /// no departed row, no delegated word and no accrual. For such an id the slashed mark only bars the SAME key from
+    /// bonding again, which a fresh key does anyway; the bond it forfeited stays burned. Read by
+    /// `Node::prune_settled_slashed` (from the network upgrade) so the set holds only slashed ids still referenced
+    /// somewhere: bounded by the seats and rows the set itself holds, never by every slashing ever.
+    #[must_use]
+    pub fn settled_slashed(&self) -> Vec<[u8; 32]> {
+        let mut v: Vec<[u8; 32]> = self
+            .slashed
+            .iter()
+            .filter(|id| {
+                let s = self.vid_state(id);
+                s.bond.is_none()
+                    && s.finality.is_none()
+                    && s.custody.is_none()
+                    && s.kem_ek.is_none()
+                    && s.departed_bond.is_none()
+                    && s.departed_finality.is_none()
+                    && s.custody_seat.is_none()
+                    && s.delegated.is_none_or(|d| d == 0)
+                    && s.own_yield.is_none()
+            })
+            .copied()
+            .collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Drop the slashed marks of ids that hold nothing else (`settled_slashed`).
+    pub fn forget_slashed(&mut self, ids: &[[u8; 32]]) {
+        for id in ids {
+            self.slashed.remove(id);
+        }
+    }
+
     pub fn every_vid(&self) -> Vec<[u8; 32]> {
         let mut v: Vec<[u8; 32]> = self
             .bonds

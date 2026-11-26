@@ -870,6 +870,15 @@ pub(crate) fn next_pace_milli(pace_milli: u64, rate_per_ks: u64, want_per_ks: u6
     if rate_per_ks.saturating_mul(1_000) > want_per_ks.saturating_mul(PACE_MD_SLACK_MILLI) {
         return (pace.saturating_mul(rate_per_ks) / want_per_ks.max(1)).max(min);
     }
+    // ⛔⛔ W-LIVE-7 (docs/LIVE-FINALITY-AND-FOLD-WEDGE-DEEP-AUDIT-20261125.md) — A STALLED MESH IS RESTORED AT ONCE, NEVER RAMPED INTO. Below
+    // PACE_STARVED_MILLI of the target the mesh is not a crowd this node competes with: it is standing still, and the additive ramp's
+    // steps come one per chain block — blocks only this slow node is making. MEASURED live (2026-11-25 21:47 restart, build d446f58d):
+    // 3 production slots in 15 minutes, height 6,565 → 6,567; the ramp from 32× needs ~97 chain blocks, ≈ 21 s × 100 × ln(1000/31)
+    // ≈ 2 h of self-limited recovery. BORROWED: TCP's fast recovery (a starved link returns to its window, never slow-starts again).
+    // A moving mesh is unchanged (the ramp spreads a joining crowd; the multiplicative decrease above cuts any overshoot).
+    if rate_per_ks.saturating_mul(1_000) < want_per_ks.saturating_mul(PACE_STARVED_MILLI) {
+        return 1_000; // the fair share
+    }
     // this node's rate as thousandths of its fair share, plus one step
     let rate_milli = 1_000_000 / pace + PACE_AIMD_STEP_MILLI;
     (1_000_000 / rate_milli.max(1)).max(min)
@@ -888,6 +897,30 @@ pub(crate) fn pace_min_milli(share_ms: u64, floor_ms: u64) -> u64 {
 
 /// [`next_pace_milli`]'s additive step: thousandths of a node's fair-share rate added per new chain block under the target.
 pub(crate) const PACE_AIMD_STEP_MILLI: u64 = 10;
+
+/// ⛔ W-LIVE-7 — below this many thousandths of the target rate the mesh is STALLED and a node returns to its fair share at once
+/// ([`next_pace_milli`]): a quarter of the target, far under any honest crowd's sawtooth (which rides at the target).
+pub(crate) const PACE_STARVED_MILLI: u64 = 250;
+
+#[cfg(test)]
+mod pace_recovery_tests {
+    use super::*;
+
+    /// ⛔ W-LIVE-7 PIN — A STALLED MESH IS RESTORED AT ONCE: a node slow-starting at 32× (pace 32,000) on a mesh producing 1/100 of its
+    /// target returns to its fair share (1,000) in ONE step; on a mesh at its target the additive ramp is unchanged (a joining crowd still
+    /// spreads); above 1.5× the multiplicative decrease is unchanged. RED before: the stalled mesh stepped 32,000 → 24,242, ~97 steps.
+    /// TWO-PARTY-REVIEWED: a pure pacing function of one node's own reading of the mesh rate; the mesh-wide effect (every party restored,
+    /// no crowd burst) is the netsim launch test's, run beside this pin before the gate.
+    #[test]
+    fn a_stalled_mesh_is_restored_at_once_and_a_moving_one_still_ramps() {
+        let want = 1_000; // per ks
+        assert_eq!(next_pace_milli(PACE_SLOW_START_MILLI, want / 100, want, 1), 1_000, "⛔ a stalled mesh ramped instead of restoring");
+        let moving = next_pace_milli(PACE_SLOW_START_MILLI, want, want, 1);
+        assert!(moving > 1_000 && moving < PACE_SLOW_START_MILLI, "⛔ a moving mesh no longer ramps: {moving}");
+        let over = next_pace_milli(1_000, 2 * want, want, 1);
+        assert_eq!(over, 2_000, "⛔ the multiplicative decrease above 1.5× changed: {over}");
+    }
+}
 
 /// ⭐ DB-412 — one exponential gap of mean `mean_ms` from a uniform `u` ∈ (0, 1] (inverse-CDF sampling): the gap between
 /// two of a node's production attempts (`NodeRuntime::production_due`). Pure, so its distribution is pinned directly.
@@ -1637,6 +1670,10 @@ pub(crate) fn bulk_answer_carries_nothing(req: &[u8], page: Option<&[u8]>) -> bo
     if crate::arti_transport::is_bundle_member_ask(req) {
         return page.len() == 8 + 34 && &page[..8] == crate::arti_transport::BUNDLE_MEMBER_TAG && page[8..] == req[1..];
     }
+    // A-F114 U2: a canonical window pull's `notfound` is its tag alone
+    if crate::canon_chain::parse_canon_page_ask(req).is_some() {
+        return page.len() == 8 && &page[..8] == crate::canon_chain::CANON_PAGE_TAG;
+    }
     // DB-454: a band step pull's `notfound` is its tag and the asked id alone
     if crate::arti_transport::is_band_step_ask(req) {
         return page.len() == 8 + 32 && &page[..8] == BAND_STEP_TAG && page[8..] == req[1..];
@@ -1957,6 +1994,8 @@ pub struct NodeRuntime<T: CellTransport> {
     /// ⭐ DB-353 §11.10 — when the relay last ran its ask round.
     last_nf_ask_ms: u64,
     last_band_ask_ms: u64,
+    /// ⭐ A-F114 U2 — when this node last asked for a run of the canonical window it is pulling (one ask in flight a round).
+    last_canon_ask_ms: u64,
     /// ⭐⭐ DB-454 — THE BAND STEP OFFERS: every step a peer announced (`BandInv`) that this door cannot serve yet, with the
     /// links that announced it (asked first-to-last; a `notfound`, a bad answer or a timed-out fetch drops one). The fetch
     /// tick pulls the steps the door WANTS from here. O1-FOOTPRINT-REVIEWED: ≤ 2 × the journal reach entries (oldest out),
@@ -2416,6 +2455,8 @@ pub struct NodeRuntime<T: CellTransport> {
     /// ambient env stays gated (never halts the CHAIN — it just doesn't fork it); DSYNC-adopt then converges it.
     /// Produce cycles skipped while gossiped blocks waited on missing parents (log sampling only).
     produce_deferrals: u64,
+    /// W7 (A-F138): when the re-anchor production gate first held in its current run (0 = not holding).
+    reanchor_wait_since_ms: u64,
     /// The orphan count observed at the previous deferral, and how many consecutive deferrals have failed
     /// to reduce it. A deferral that is making progress is healthy; one that is not is a halt.
     last_orphan_count: usize,
@@ -2790,6 +2831,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             band_inv_at: std::collections::BTreeMap::new(),
             last_nf_ask_ms: 0,
             last_band_ask_ms: 0,
+            last_canon_ask_ms: 0,
             band_offers: std::collections::VecDeque::new(),
             band_fetch_out: Vec::new(),
             sealed: crate::sealed_body::SealedBodies::new(),
@@ -2921,6 +2963,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             mesh_joined_how: "",
             boot_directive: ambient,
             produce_deferrals: 0,
+            reanchor_wait_since_ms: 0,
             last_orphan_count: 0,
             last_deferral_held: 0,
             stalled_deferrals: 0,
@@ -3287,7 +3330,7 @@ impl<T: CellTransport> NodeRuntime<T> {
         };
         match s {
             DecoySig::Batch { payout_txid, decoys, fee_usdm, pubkey, sig } => {
-                if !bonded(pubkey, &self.node) || !crate::pqauth::PqVerifier::verify(&v, pubkey, &DecoyBatchTx::statement(payout_txid, decoys, *fee_usdm), sig) {
+                if !bonded(pubkey, &self.node) || !crate::pqauth::PqVerifier::verify(&v, pubkey, &DecoyBatchTx::statement(payout_txid, decoys, *fee_usdm, self.node.decoy_statement_seq()), sig) {
                     return false;
                 }
                 if self.decoy_batch_book.len() >= crate::decoy_tx::DECOY_OPEN_MAX && !self.decoy_batch_book.contains_key(payout_txid) {
@@ -3314,7 +3357,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             DecoySig::Theft { txid, vout, pubkey, sig } => {
                 let key = crate::decoy_tx::decoy_key(txid, *vout);
                 let Some(d) = self.node.peg().open_decoys().into_iter().find(|d| crate::decoy_tx::decoy_key(&d.txid, d.vout) == key) else { return false };
-                let msg = crate::theft_tx::theft_msg(&crate::decoy_tx::decoy_theft_statement(txid, *vout), &[d.vid], d.sats);
+                let msg = crate::theft_tx::theft_msg_at(&crate::decoy_tx::decoy_theft_statement(txid, *vout), &[d.vid], d.sats, self.node.theft_statement_seq());
                 if !bonded(pubkey, &self.node) || !crate::pqauth::PqVerifier::verify(&v, pubkey, &msg, sig) {
                     return false;
                 }
@@ -3350,7 +3393,7 @@ impl<T: CellTransport> NodeRuntime<T> {
                 continue;
             }
             if let (true, Some((pk, sk))) = (bonded, signer.as_ref()) {
-                if let Some(sig) = crate::pqauth::ml_dsa_sign(&DecoyBatchTx::statement(&txid, &decoys, fee), sk) {
+                if let Some(sig) = crate::pqauth::ml_dsa_sign(&DecoyBatchTx::statement(&txid, &decoys, fee, self.node.decoy_statement_seq()), sk) {
                     out.push(DecoySig::Batch { payout_txid: txid, decoys: decoys.clone(), fee_usdm: fee, pubkey: pk.clone(), sig });
                 }
             }
@@ -3402,7 +3445,7 @@ impl<T: CellTransport> NodeRuntime<T> {
                     }
                 } else if tip_tick >= d.due_tick {
                     // (d) overdue: the validator kept a reserve coin — a theft certificate naming it
-                    let msg = crate::theft_tx::theft_msg(&crate::decoy_tx::decoy_theft_statement(&d.txid, d.vout), &[d.vid], d.sats);
+                    let msg = crate::theft_tx::theft_msg_at(&crate::decoy_tx::decoy_theft_statement(&d.txid, d.vout), &[d.vid], d.sats, self.node.theft_statement_seq());
                     if let Some(sig) = crate::pqauth::ml_dsa_sign(&msg, sk) {
                         out.push(DecoySig::Theft { txid: d.txid, vout: d.vout, pubkey: pk.clone(), sig });
                     }
@@ -3419,7 +3462,7 @@ impl<T: CellTransport> NodeRuntime<T> {
         let batches: Vec<([u8; 32], Vec<crate::decoy_tx::DecoyEntry>, u64, Vec<crate::psm::MintAttestor>)> =
             self.decoy_batch_book.iter().map(|(k, (d, f, a))| (*k, d.clone(), *f, a.clone())).collect();
         for (txid, decoys, fee, atts) in batches {
-            if thr(&atts, &DecoyBatchTx::statement(&txid, &decoys, fee), &self.node) {
+            if thr(&atts, &DecoyBatchTx::statement(&txid, &decoys, fee, self.node.decoy_statement_seq()), &self.node) {
                 let t = DecoyBatchTx { payout_txid: txid, decoys, fee_usdm: fee, attestors: atts.iter().map(|a| (a.pubkey.clone(), a.sig.clone())).collect() };
                 if self.publish_decoy_object(t.wire()) {
                     self.decoy_batch_book.remove(&txid);
@@ -3439,7 +3482,7 @@ impl<T: CellTransport> NodeRuntime<T> {
         let thefts: Vec<([u8; 32], crate::decoy_tx::OpenDecoy, Vec<crate::psm::MintAttestor>)> = self.decoy_theft_book.iter().map(|(k, (d, a))| (*k, *d, a.clone())).collect();
         for (key, d, atts) in thefts {
             let statement = crate::decoy_tx::decoy_theft_statement(&d.txid, d.vout);
-            if thr(&atts, &crate::theft_tx::theft_msg(&statement, &[d.vid], d.sats), &self.node) {
+            if thr(&atts, &crate::theft_tx::theft_msg_at(&statement, &[d.vid], d.sats, self.node.theft_statement_seq()), &self.node) {
                 let cert = crate::bond_tally::PqThresholdCert { attestors: atts };
                 if self.node.publish_reserve_theft(&statement, &cert, &[d.vid], d.sats) == crate::node::AssetSpendOutcome::Published {
                     // DIGITAL-CASH-PRIVACY-REVIEWED: a fixed line — the validator id and amount are on the object anyway
@@ -3458,6 +3501,11 @@ impl<T: CellTransport> NodeRuntime<T> {
     /// §BR-3 17.5 layer 1 — this node's wallet submits a pot buy: checked here, booked, relayed to custody.
     pub fn pot_buy_submit(&mut self, bytes: &[u8]) -> Result<(), &'static str> {
         let t = crate::pot_fill_tx::PotFillTx::decode(bytes).ok_or("not one well-formed pot buy")?;
+        // A-F114: the spender's FRESH wrapper travels whenever it re-posts its request, held or not (a request already held
+        // here is refused below, but custody still needs the wrapper that ends inside its window when it publishes)
+        if let Some(lc) = crate::spend_frontier::cm_bytes_to_root(&t.leaf_commit) {
+            self.relay_spender_wrappers(&[(t.nullifier, lc)]);
+        }
         if !self.node.pot_buy_ingest(&t) {
             return Err("the buy does not hold here (a burn that does not prove, a note already spent, or a price under the floor)");
         }
@@ -3465,9 +3513,48 @@ impl<T: CellTransport> NodeRuntime<T> {
         Ok(())
     }
 
+    /// ⭐ A-F114 — send the rpc call's spender wrappers (`canon_chain::spender_wrappers`) for a request this node relays to
+    /// custody, and keep them here too. Nothing before the network upgrade, or when the call carried none.
+    fn relay_spender_wrappers(&mut self, legs: &[([u8; 32], crate::spend_frontier::Digest4)]) {
+        let (true, Some(w), Some(first)) = (crate::params::canon_live(), crate::canon_chain::spender_wrappers(), legs.first()) else {
+            return;
+        };
+        self.node.canon_hold_wrappers(first.0, w.clone());
+        if let Ok(bytes) = postcard::to_allocvec(&(legs.to_vec(), w)) {
+            let _ = self.channel.queue_message(&WireMsg::CanonWrappers(bytes));
+        }
+    }
+
+    /// ⭐ A-F114 — a relayed request's wrappers: kept only when every wrapper verifies against this node's window for its
+    /// leg, and relayed once (a list already held is not sent on again). `true` when kept.
+    fn canon_wrappers_ingest(&mut self, bytes: &[u8]) -> bool {
+        if !crate::params::canon_live() {
+            return false;
+        }
+        let Ok((legs, w)) = postcard::from_bytes::<(Vec<([u8; 32], crate::spend_frontier::Digest4)>, Vec<u8>)>(bytes) else {
+            return false;
+        };
+        let ws: Vec<crate::nf_sparse::CanonAbsence> = postcard::from_bytes(&w).unwrap_or_default();
+        let Some(first) = legs.first() else { return false };
+        if legs.len() != ws.len() || legs.iter().zip(&ws).any(|((nf, lc), a)| self.node.canon_absence_refusal(nf, lc, a).is_some()) {
+            return false;
+        }
+        if self.node.canon_held_wrappers.iter().any(|(k, held)| *k == first.0 && *held == w) {
+            return false;
+        }
+        self.node.canon_hold_wrappers(first.0, w);
+        true
+    }
+
     /// ⭐ §BR-4 B4-3 — this node's wallet submits a unit close: checked here, booked, relayed to custody.
     pub fn unit_close_submit(&mut self, bytes: &[u8]) -> Result<(), &'static str> {
         let t = crate::unit_close_tx::UnitCloseTx::decode(bytes).ok_or("not one well-formed unit close")?;
+        // A-F114: both burns' fresh wrappers travel whenever the spender re-posts, held or not (unit, then debt)
+        if let (Some(u), Some(d)) =
+            (crate::spend_frontier::cm_bytes_to_root(&t.unit_leaf_commit), crate::spend_frontier::cm_bytes_to_root(&t.debt_leaf_commit))
+        {
+            self.relay_spender_wrappers(&[(t.unit_nullifier, u), (t.debt_nullifier, d)]);
+        }
         if !self.node.unit_close_ingest(&t) {
             return Err("the close does not hold here (a burn that does not prove, a note already spent, or a debt that is not today's)");
         }
@@ -3783,6 +3870,10 @@ impl<T: CellTransport> NodeRuntime<T> {
             lane.set_departed(departed);
             let mut host = crate::defi_lane::NodeHost { pair, node: &mut self.node, payout: &self.payout_lane };
             let out = lane.tick(&mut host, now_ms);
+            // ⭐ A-F114: the wrappers of the covers this lane proved for a batch, to every custodian
+            for bytes in std::mem::take(&mut lane.wrapper_relay) {
+                let _ = self.channel.queue_message(&WireMsg::CanonWrappers(bytes));
+            }
             for m in out {
                 if let Some(b) = m.encode() {
                     // §18.14: the first byte routes a lane message to its pair's lane
@@ -6323,6 +6414,11 @@ impl<T: CellTransport> NodeRuntime<T> {
             self.on_bundle_member(&page[8..]); // §14: one taken member's full body
         } else if page.len() >= 8 + 32 && &page[..8] == BAND_STEP_TAG {
             self.on_band_step_page(&page[8..]); // DB-454 door B
+        } else if page.len() >= 8 && &page[..8] == crate::canon_chain::CANON_PAGE_TAG {
+            // ⭐ A-F114 U2: a run of the canonical window this node is pulling (checked link by link; the tag alone = notfound)
+            if self.node.canon_page_take(&page[8..]) {
+                self.last_canon_ask_ms = 0; // moved: ask for the next run at once
+            }
         } else if page.len() >= 8 + 32 && &page[..8] == crate::sealed_body::SEALED_BODY_TAG {
             self.on_sealed_body_page(&page[8..]); // SPEED: a large lane message, pulled by id
         } else if page.len() >= 8 + 36 && &page[..8] == crate::release::RELEASE_CHUNK_TAG {
@@ -8604,6 +8700,10 @@ impl<T: CellTransport> NodeRuntime<T> {
 
     /// One tick of the warm job (see `drive_nf_pivot`); `true` iff this tick issued the warm's page ask, sent or refused.
     fn drive_nf_pivot_job(&mut self, now_ms: u64) -> bool {
+        if crate::canon_chain::canon_live() {
+            self.nf_pivot = None; // A-F114 U1: no spent set is warmed under the constant chain
+            return false;
+        }
         // ⭐ DB-353 landing 2: a job under way KEEPS its target while this node is viewless and that target stays placeable
         // in its band journal. The band moving is no reason to restart — the install door brings the tree forward over
         // the journal's admitted sets (`install_healed_pivot`); under P1 the old "the pivot must still be the accumulator
@@ -9178,6 +9278,31 @@ impl<T: CellTransport> NodeRuntime<T> {
     /// CHAIN-PUBLISH-REVIEWED: frames a `Class::ReserveCost` object through `Node::publish_reserve_cost`; every node,
     /// this one included, applies it only from a block.
     /// SAFE AT SCALE: one vault's costs, at most `COSTS_PENDING_MAX` in flight, one proof job at a time.
+    /// ⭐ A-F114 — THE RELEASE LANE, once a tick: this custodian signs the releases its own payout lane confirmed (and gossips
+    /// them), then any gathered release at its vault's threshold is framed and pooled. Nothing before the network upgrade.
+    fn release_tick(&mut self) {
+        if !crate::params::canon_live() {
+            return;
+        }
+        let verifier = crate::pqauth::MlDsaVerifier;
+        if let Some((pk, sk)) = self.bridge_signer.clone() {
+            for (ledger, txid, burns, swept) in std::mem::take(&mut self.node.release_own_pending) {
+                if let Some(s) = self.node.own_release_sig(&pk, &sk, ledger, &txid, &burns, &swept) {
+                    if self.node.release_sig_ingest(&s, &verifier) {
+                        let _ = self.channel.queue_message(&WireMsg::ReleaseSig(s.wire()));
+                    }
+                }
+            }
+        }
+        if let Some(t) = self.node.release_ready_to_frame(&verifier) {
+            match self.node.publish_release_confirm(&t) {
+                // DIGITAL-CASH-PRIVACY-REVIEWED: a ledger id and a count only.
+                Ok(_) => eprintln!("[release] framed a payout's release: ledger {:#x}, {} burn(s)", t.ledger, t.released.len()),
+                Err(e) => eprintln!("[release] ⛔ the pool refused the framed release: {e}"),
+            }
+        }
+    }
+
     fn reserve_cost_tick(&mut self, now_ms: u64, due: bool) {
         let verifier = crate::pqauth::MlDsaVerifier;
         if let Some((_, _, job)) = self.reserve_cost_job.as_mut() {
@@ -11436,6 +11561,8 @@ impl<T: CellTransport> NodeRuntime<T> {
                 WireMsg::LiquidationSig(_) => "LiquidationSig",
                 WireMsg::TheftRepaySig(_) => "TheftRepaySig",
                 WireMsg::PotBuy(_) => "PotBuy",
+                WireMsg::CanonWrappers(_) => "CanonWrappers",
+                WireMsg::ReleaseSig(_) => "ReleaseSig",
                 WireMsg::DecoySig(_) => "DecoySig",
                 WireMsg::PotFillSig(_) => "PotFillSig",
                 WireMsg::UnitClose(_) => "UnitClose",
@@ -12514,6 +12641,20 @@ impl<T: CellTransport> NodeRuntime<T> {
                         }
                     }
                 }
+                WireMsg::ReleaseSig(bytes) => {
+                    // ⭐ A-F114 — one custodian's release signature: gathered when it verifies here, re-gossiped when new
+                    if let Some(s) = crate::release_confirm_tx::ReleaseSig::decode(&bytes) {
+                        if self.node.release_sig_ingest(&s, &crate::pqauth::MlDsaVerifier) {
+                            let _ = self.channel.queue_message(&WireMsg::ReleaseSig(bytes));
+                        }
+                    }
+                }
+                WireMsg::CanonWrappers(bytes) => {
+                    // ⭐ A-F114 — a relayed request's spender wrappers: kept and relayed once when they verify here
+                    if self.canon_wrappers_ingest(&bytes) {
+                        let _ = self.channel.queue_message(&WireMsg::CanonWrappers(bytes));
+                    }
+                }
                 WireMsg::UnitClose(bytes) => {
                     // ⭐ §BR-4 B4-3 — a close request: kept and relayed once when its carriers, memberships and day hold here
                     if let Some(t) = crate::unit_close_tx::UnitCloseTx::decode(&bytes) {
@@ -13230,7 +13371,9 @@ impl<T: CellTransport> NodeRuntime<T> {
             return;
         }
         let cursor_t0 = std::time::Instant::now();
-        self.node.advance_note_backfill_cursor(pp.covered_upto);
+        // ⛔ A-F118 joiner side: the cursor moves only over records this node can now answer (`Node::backfill_cover_honest`)
+        let honest = self.node.backfill_cover_honest(pp.covered_upto);
+        self.node.advance_note_backfill_cursor(honest);
         // ⭐ DB-433: the answer to the outstanding by-record-id ask cleared the door — its wants retired (or stay owed and
         // ride the next ask), so the next drain may ask.
         self.end_record_ask(pp.ask_tag);
@@ -14629,6 +14772,12 @@ impl<T: CellTransport> NodeRuntime<T> {
         if crate::arti_transport::is_relay_faces_ask(&req) {
             return crate::pqmix::relay_faces_answer(byte_budget);
         }
+        // ⭐ A-F114 U2 — KIND 33, A RUN OF THE CANONICAL WINDOW: exactly 11 bytes `[33][from u64][count u16]`. Public chain
+        // data, the same answer for every asker (the tags every block carried and the ends every node derives); at most
+        // `CANON_PAGE_RECORDS` records an answer, the tag alone when this node does not hold the whole run.
+        if crate::canon_chain::parse_canon_page_ask(&req).is_some() {
+            return self.node.canon_page_serve(&req);
+        }
         // ⭐⭐ DB-454 — KIND 22, ONE BAND STEP BY ID: exactly 33 bytes `[22][id]` (`arti_transport::is_band_step_ask`).
         if crate::arti_transport::is_band_step_ask(&req) {
             return self.serve_band_step(&req);
@@ -15877,6 +16026,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             self.vault_key_tick();
         }
         self.reserve_cost_tick(now_ms, custody_due);
+        self.release_tick();
         self.vault_merge_tick(now_ms, custody_due);
         self.rebalance_tick(now_ms, custody_due);
         // ⭐ §BR-3 17.5 layer 1 — a pot fill this custodian holds ≥2/3 for is framed (its retire leg is one cheap carrier)
@@ -16039,6 +16189,15 @@ impl<T: CellTransport> NodeRuntime<T> {
             self.last_nf_ask_ms = now_ms;
             for ask in self.node.nf_asks_due() {
                 let _ = self.channel.queue_message(&WireMsg::NfAsk(ask));
+            }
+        }
+        // ⭐ A-F114 U2 — a joiner pulling its canonical window asks for the next run every 2 s until it is whole. The transport
+        // picks the host (`bulk_ask_left(_, None)`), so a host that cannot answer is passed over at the next round; an answer
+        // is checked link by link against the vouched end (`canon_page_take`). Bounded: one 11-byte ask, ≤ 64 records back.
+        if now_ms.saturating_sub(self.last_canon_ask_ms) >= 2_000 {
+            if let Some(req) = self.node.canon_fill_ask() {
+                self.last_canon_ask_ms = now_ms;
+                let _ = self.bulk_ask_left(&req, None);
             }
         }
         // ⭐⭐ DB-454 — every relay tick: pull the announced steps the door wants (the inv/getdata lane)
@@ -16512,7 +16671,38 @@ impl<T: CellTransport> NodeRuntime<T> {
         // payment waited 426 s and failed. Held only while a live peer's chain is STRICTLY heavier, so two equal nodes never
         // both wait and the chain itself never stops: the heavier side keeps producing. BORROWED: Kaspa and Bitcoin, a node in
         // initial sync builds no template.
-        if self.node.spine_is_stale() && peer_recent && self.best_peer_blue_score > self.node.tip_height() {
+        // ⛔⛔ LIVE-FOLD W7 (lane livefold, 2026-11-25; docs/LIVE-FOLD-WEDGE-DEEP-AUDIT-20261125.md W7) — THE WAIT IS BOUNDED AND ITS
+        // EXPIRY PRODUCES. Held without a bound, a heavier peer whose bundle can never re-anchor this node (MEASURED on the live
+        // origin after the W5b deploy, main 1734e6e9: the one live peer, the channel node on an older build, stood at 4,863 on a
+        // branch over the shell no node serves; the origin produced nothing for its whole boot, `ip_attempts` 0) stopped the
+        // chain. Past LIVE_CATCH_UP_STALL_MS (the horizon DB-292 already uses) of holding with no bundle landed, the node
+        // produces: the chain never stops (NO CHAIN HALTS; S-WAIT: the expiry does the work). Within the horizon the rule is as
+        // before, so two nodes that grew apart still settle by the bundle when it can land.
+        // ⭐⭐ SH5b — a node whose release does not implement an upgrade in force at its next height builds nothing (the fold stops
+        // there too, `fold.rs`): its blocks would be judged by rules it does not run. Ended by the operator's upgrade, never a peer.
+        let next_h = self.node.tip_height().saturating_add(1);
+        if self.node.peg().deployments().halted_at(next_h, self.node.params().reward_epoch_blocks).is_some() {
+            self.produce_deferrals = self.produce_deferrals.saturating_add(1); // horizon: the operator's upgrade (SH5b)
+            return None;
+        }
+        let reanchor_hold = self.node.spine_is_stale() && peer_recent && self.best_peer_blue_score > self.node.tip_height();
+        if !reanchor_hold {
+            self.reanchor_wait_since_ms = 0;
+        } else if self.reanchor_wait_since_ms == 0 {
+            self.reanchor_wait_since_ms = now_ms.max(1);
+        }
+        let reanchor_expired = reanchor_hold && now_ms.saturating_sub(self.reanchor_wait_since_ms) > LIVE_CATCH_UP_STALL_MS;
+        if reanchor_expired && now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
+            self.last_gate_log_ms = now_ms;
+            // DIGITAL-CASH-PRIVACY-REVIEWED: public chain heights and a duration.
+            crate::arti_transport::ilog(&format!(
+                "[produce] W7: the re-anchor wait passed its horizon ({} ms) with no bundle landed — producing (the chain never stops); peer {} against {}",
+                LIVE_CATCH_UP_STALL_MS,
+                self.best_peer_blue_score,
+                self.node.tip_height()
+            ));
+        }
+        if reanchor_hold && !reanchor_expired {
             if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
                 self.last_gate_log_ms = now_ms;
                 // DIGITAL-CASH-PRIVACY-REVIEWED: public chain heights only.
@@ -25389,17 +25579,11 @@ mod roots_run_tests {
     }
 
     fn jumper_of(node_a: &mut NodeRuntime<RecordingBulk>) -> (NodeRuntime<RecordingBulk>, std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
-        let bundle = node_a
-            .node
-            .build_sync_bundle(
-                vec![1u8; 4096],
-                FrontierSnapshot {
-                    root: *node_a.node.note_frontier_root().as_bytes(),
-                    height: node_a.node.note_frontier_count(),
-                    peaks_hex: node_a.node.spend_frontier_peaks_hex(),
-                },
-            )
-            .expect("A serves a bundle");
+        // ⛔ A FIXTURE NEVER FALLS BEHIND THE DOOR (census S-DRAFT-ADOPT, 2026-11-26): B adopts the bundle A SERVES (its frozen
+        // bundle through `serve_join_bundle`, the joiner's own door run first), never a draft the door refuses `AnchorArray`;
+        // A's chain grows until one is servable, as a real node's does.
+        let tip_ts = node_a.node.selected_tip().and_then(|t| node_a.node.dag().get(&t).map(|n| n.header.timestamp)).unwrap_or(0);
+        let bundle = node_a.node.production_bundle_for_test(tip_ts, "jumper-of");
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut node_b = NodeRuntime::new(Node::new(genesis()).unwrap(), RecordingBulk { reqs: seen.clone() });
         node_b.node.set_decider_verifier(Box::new(AcceptAll));

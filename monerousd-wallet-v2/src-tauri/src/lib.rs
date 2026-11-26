@@ -131,6 +131,7 @@ mod wedged_port_tests {
 
 #[cfg(test)]
 mod test_standard; // THE CROSS-NODE/CROSS-DEVICE STANDARD, ratcheted over this crate's own tests
+pub mod canon_carrier; // A-F114 phase 3: the one list carrier against the canonical tag chain (follow, join, spend wrapper)
 pub mod nf_carrier; // Fold-not-hold absence intake (brick C3) — the wallet half of the SOLE spend authority
 
 /// ⭐ DB-304b — ONE shape for every Tauri command that does blocking I/O: the `#[tauri::command]` is an `async fn` that
@@ -1477,7 +1478,9 @@ fn submit_asset_self_claim(agent: &ureq::Agent, d: u32) -> Result<serde_json::Va
     if leaf4_to_bytes(nf) != input_nf || leaf4_to_bytes(cms[0]) != cm0 || leaf4_to_bytes(cms[1]) != cm1 || tag1 != pq_spend::self_claim_tag(slot_key, u64::from(d)) {
         return Err("refusing: the claim does not match the notes it carries — no claim was sent".into());
     }
-    let cm_in = leaf4_to_bytes(wr::asset_note_cm(amount, asset, owner.opening()));
+    let in_leaf = wr::asset_note_cm(amount, asset, owner.opening());
+    let cm_in = leaf4_to_bytes(in_leaf);
+    let canon_absence_hex = object_canon_hex(&[(nf, in_leaf, lc_blind)], "slot claim")?;
     let (mem, tip) = membership_bind_for(agent, &cm_in, nf, lc_blind).ok_or("the note's membership cannot be proved yet — no claim was sent")?;
     let mut clue_recs: Vec<u8> = Vec::new();
     own_note_clue_record(&loc_sk, &cm0, &domain, 1, &mut clue_recs);
@@ -1496,6 +1499,7 @@ fn submit_asset_self_claim(agent: &ureq::Agent, d: u32) -> Result<serde_json::Va
         "tip_acc": hex::encode([0u8; 32]),
         "note_clues_hex": hex::encode(&clue_recs),
         "slot_tag": hex::encode(leaf4_to_bytes(tag1)),
+        "canon_absence_hex": canon_absence_hex,
     });
     let reply: serde_json::Value = agent
         .post(&format!("{}/submit_asset_spend", node_url()))
@@ -4219,6 +4223,12 @@ fn membership_bind_for(
     // DB-363: the SAME blinding the half was proven with, so the carrier commits the value the half welds.
     blind: Digest4,
 ) -> Option<(String, String)> {
+    // ⭐ A-F114 (B′): under the constant chain an object's note leg is proven by its absence wrapper (`object_canon_hex`),
+    // which states membership against the canonical chain; no member leg is built and none waits on finality (A-F25)
+    if usdmd_node::canon_chain::canon_live() {
+        let _ = (cm, binder, blind);
+        return Some((String::new(), String::new()));
+    }
     // ⭐ §19 (2026-10-28): THE RECORD-FREE MEMBER LEG. The one-step endpoint this built named the RECORD holding the note
     // (`Serve::order_book_membership_bind` / `PqTx::membership_tip`, filed open: a spend-to-receive join). The member leg
     // (DB-223 Q7 — the same path every send carries) proves the note under the NEWEST ring root the stream named,
@@ -12086,6 +12096,7 @@ fn wallet_balance_impl() -> Result<serde_json::Value, String> {
     // THE LADDER COVER: while a wallet shows a balance its staged rungs post at their heights (a restart resumes the queue).
     ensure_ladder_releaser();
     ensure_coin_swap_runner();
+    ensure_canon_follower();
     // audit F15: a paid directory entry held back until its fee note's anchor is final is handed over from here, the
     // read every open wallet makes all the time (nothing is opened or asked while nothing is kept)
     dir_entries_send_again();
@@ -15410,6 +15421,14 @@ fn spend_one_note_to(
         let submit_base = node_url();
         let evidence_agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(8)).build();
         let spend_evidence = || -> Result<(String, String), String> {
+            // ⭐ A-F114 (from the network upgrade, `canon_chain::CANON_LIVE`): the evidence IS this wallet's own proof — the
+            // spend wrapper over its one absence carrier, bound to THIS send's `lc_blind` (the blind its member leg and
+            // validity carrier commit with). Nothing is asked of a node about the nullifier.
+            if usdmd_node::canon_chain::canon_live() {
+                // the carrier this process holds may be none (a new process) or behind, and a just-received note waits for its span
+                canon_ready_for(&evidence_agent, &[(nf, my_leaf)])?;
+                return canon_carrier::absence_hex(nf, my_leaf, lc_blind).map(|a| (String::new(), a));
+            }
             // ⭐ PRIVATE SHARDING §2.1: a wallet never names a nullifier to ask about it. The carrier gathers evidence; the block carries it.
             let _ = (&evidence_agent, &submit_base);
             Ok((String::new(), String::new()))
@@ -15431,7 +15450,11 @@ fn spend_one_note_to(
         // commitments — the same bytes the node extracts from `output_notes_hex`.
         let send_out0: [u8; 32] = recip_note[..32].try_into().expect("a sealed note starts with its 32-byte commitment");
         let send_out1: [u8; 32] = change_note[..32].try_into().expect("a sealed note starts with its 32-byte commitment");
-        let member_leg: Option<(String, String)> = {
+        // ⭐ A-F114 (B′): under the constant chain the spend carries NO member leg (its absence wrapper, `absence_hex`
+        // above, is its membership): neither the leg nor its finality wait (A-F36) runs, so a send never waits on finality
+        let member_leg: Option<(String, String)> = if usdmd_node::canon_chain::canon_live() {
+            None
+        } else {
             let book_key = scan_scope_id(my_ek);
             if matches!(vault, VaultSend::Take { .. }) {
                 with_member_book(&book_key, |b| b.want_all([cm]));
@@ -17109,7 +17132,9 @@ fn stake_submit(
     if out0_note[..32] != cm0[..] || out1_note[..32] != cm1[..] || leaf4_to_bytes(o.nullifier) != input_nf || o.reward != reward {
         return Err("refusing: the stake carrier is not this stake's — nothing was sent".into());
     }
-    let cm_in = leaf4_to_bytes(stake_input_leaf(&w));
+    let in_leaf = stake_input_leaf(&w);
+    let cm_in = leaf4_to_bytes(in_leaf);
+    let canon_absence_hex = object_canon_hex(&[(o.nullifier, in_leaf, lc_blind)], "stake")?;
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(60)).build();
     let (membership_carrier_hex, membership_tip_hex) = membership_bind_for(&agent, &cm_in, o.nullifier, lc_blind)
         .ok_or("the note's membership cannot be proved yet (its member leg is not ready) — nothing was sent")?;
@@ -17120,6 +17145,7 @@ fn stake_submit(
     let reply: serde_json::Value = slow
         .post(&format!("{}/stake", node_url()))
         .send_json(serde_json::json!({
+            "canon_absence_hex": canon_absence_hex,
             "nullifier": hex::encode(input_nf),
             "e_now": e_now,
             "rate_bps": rate,
@@ -18414,7 +18440,10 @@ fn bond_sat_impl(weight: u64, only_seed: Option<Digest4>) -> Result<serde_json::
     if nfb != input_nf {
         return Err("refusing: the carrier's nullifier is not the input's — nothing was spent".into());
     }
-    let cm_in = leaf4_to_bytes(asset_note_cm(value_in, sat_tag, in_owner.opening()));
+    let in_leaf = asset_note_cm(value_in, sat_tag, in_owner.opening());
+    let cm_in = leaf4_to_bytes(in_leaf);
+    // A-F114: the fresh note's wrapper (a re-bond's locked note is not a member leg; the node reads it as unread, closed)
+    let canon_absence_hex = object_canon_hex(&[(nf, in_leaf, lc_blind)], "bond")?;
     if (&locked_note[..32], &change_note[..32]) != (&leaf4_to_bytes(cms[0])[..], &leaf4_to_bytes(cms[1])[..]) {
         return Err("refusing: the sealed notes are not the carrier's outputs — nothing was spent".into());
     }
@@ -18438,6 +18467,7 @@ fn bond_sat_impl(weight: u64, only_seed: Option<Digest4>) -> Result<serde_json::
         "note0": hex::encode(locked_note),
         "note1": hex::encode(change_note),
         "nullifier": hex::encode(nfb),
+        "canon_absence_hex": canon_absence_hex,
         "leaf_commit": hex::encode(leaf4_to_bytes(leaf_commit)),
         "validity_carrier": hex::encode(&carrier),
         "membership_carrier": membership_carrier_hex,
@@ -18683,7 +18713,9 @@ fn wallet_send_asset_atomic_blocking(to: &str, sat_tag: [u64; 3], amount: u64, l
     if (&recip_note[..32], &change_note[..32]) != (&leaf4_to_bytes(cms[0])[..], &leaf4_to_bytes(cms[1])[..]) {
         return Err("refusing: the sealed notes are not the carrier's outputs — nothing was sent".into());
     }
-    let cm_in = leaf4_to_bytes(asset_note_cm(value_in, sat_tag, in_owner.opening()));
+    let in_leaf = asset_note_cm(value_in, sat_tag, in_owner.opening());
+    let cm_in = leaf4_to_bytes(in_leaf);
+    let canon_absence_hex = object_canon_hex(&[(nf, in_leaf, lc_blind)], &format!("{label} transfer"))?;
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     // §19: the member leg (carrier + tuple) from this wallet's own book — no position ask, no record-naming one-step bind
     let Some((membership_carrier_hex, member_tuple_hex)) = membership_bind_for(&agent, &cm_in, nf, lc_blind) else {
@@ -18714,6 +18746,7 @@ fn wallet_send_asset_atomic_blocking(to: &str, sat_tag: [u64; 3], amount: u64, l
         "tip_acc": hex::encode([0u8; 32]),
         "note_clues_hex": hex::encode(&clue_recs),
         "slot_tag": hex::encode(leaf4_to_bytes(tag1)),
+        "canon_absence_hex": canon_absence_hex,
     });
     let reply: serde_json::Value = agent
         .post(&format!("{}/submit_asset_spend", node_url()))
@@ -18890,6 +18923,7 @@ fn publish_paid_dir_entry(kind: u8, key: &str, address: &str, name: &str, topic:
     };
     // one line of this wallet's ONE pending list (`dir_pending_keep`): the mark, the anchor's fold step, its root, the object
     let held = ["U".to_string(), ordinal.to_string(), hex::encode(leaf4_to_bytes(root)), hex::encode(t.wire())].join(":");
+    dir_leg_keep(burn.nf_bytes, burn.leg); // A-F114: its wrapper is built at each hand-over, from the running carrier
     burn.settle(Some(true)); // CACHE-ONLY: the note is reserved in this wallet's own store for the object held below
     let mut kept = dir_pending_list();
     kept.push(held);
@@ -18945,6 +18979,98 @@ fn fee_anchor_is_final(agent: &ureq::Agent, ordinal: u64, root: Digest4) -> bool
 }
 static DIR_SENT_AGAIN_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// ⭐ A-F114 — A REQUEST RELAYED TO CUSTODY, KEPT FOR ITS FRESH WRAPPER (DELAYED PUBLICATION, RELAYED). A pot buy or a unit
+/// close is published by a custodian on another node after it gathers its signatures; the wrapper sent with the request ends
+/// at the chain value it was built to, and must still be inside the publisher's window when the object is carried. So the
+/// wallet keeps the request and its legs `(nf, leaf, lc_blind)` (lane hex) in its own data folder (the protection its notes'
+/// seeds have), and once a minute re-posts the SAME request with a fresh wrapper; the node relays the wrapper whether or not
+/// it still holds the request (`NodeRuntime::pot_buy_submit`). A request leaves the list when the node answers that its note
+/// is already spent, or after `RELAYED_KEPT_MS`. At most `RELAYED_KEPT` requests. Written only under `CANON_LIVE`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct RelayedPending {
+    route: String,
+    request_hex: String,
+    legs: Vec<(String, String, String)>,
+    created_ms: u64,
+    /// passes in a row whose wrapper could not be built: the note left every carrier list (spent on the chain)
+    #[serde(default)]
+    unbuildable: u32,
+}
+const RELAYED_KEPT: usize = 8;
+const RELAYED_KEPT_MS: u64 = 6 * 3_600_000;
+static RELAYED_SENT_AT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn relayed_file() -> Option<PathBuf> {
+    dir_pending_file().map(|f| f.with_extension("relayed.json"))
+}
+
+fn relayed_list() -> Vec<RelayedPending> {
+    relayed_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn relayed_write(list: &[RelayedPending]) {
+    let Some(file) = relayed_file() else { return };
+    if list.is_empty() {
+        let _ = std::fs::remove_file(file);
+    } else if let Ok(body) = serde_json::to_string(list) {
+        let _ = std::fs::write(file, body);
+    }
+}
+
+fn relayed_keep(route: &str, request_hex: &str, legs: &[(Digest4, Digest4, Digest4)]) {
+    if !usdmd_node::canon_chain::canon_live() {
+        return;
+    }
+    let lanes = |d: &Digest4| hex::encode(usdmd_node::spend_frontier::digest_to_lane_bytes(d));
+    let mut list = relayed_list();
+    list.retain(|r| r.request_hex != request_hex);
+    list.push(RelayedPending {
+        route: route.to_string(),
+        request_hex: request_hex.to_string(),
+        legs: legs.iter().map(|(a, b, c)| (lanes(a), lanes(b), lanes(c))).collect(),
+        created_ms: now_ms(),
+        unbuildable: 0,
+    });
+    let n = list.len();
+    relayed_write(&list[n.saturating_sub(RELAYED_KEPT)..]);
+}
+
+/// One pass (at most once a minute) over the kept relayed requests: each re-posted with a fresh wrapper.
+fn relayed_send_again(agent: &ureq::Agent) {
+    let now = now_ms();
+    if !usdmd_node::canon_chain::canon_live() || now.saturating_sub(RELAYED_SENT_AT.load(std::sync::atomic::Ordering::Relaxed)) < 60_000 {
+        return;
+    }
+    RELAYED_SENT_AT.store(now, std::sync::atomic::Ordering::Relaxed);
+    let list = relayed_list();
+    if list.is_empty() {
+        return;
+    }
+    let d = |h: &str| hex::decode(h).ok().and_then(|b| usdmd_node::spend_frontier::digest_from_lane_bytes(&b));
+    let mut left = Vec::new();
+    for mut r in list {
+        if now.saturating_sub(r.created_ms) > RELAYED_KEPT_MS {
+            continue;
+        }
+        let legs: Option<Vec<(Digest4, Digest4, Digest4)>> = r.legs.iter().map(|(a, b, c)| Some((d(a)?, d(b)?, d(c)?))).collect();
+        let Some(Ok(fresh)) = legs.map(|l| object_canon_hex(&l, "relayed request")) else {
+            // no wrapper this pass: the note is still joining a list, or it left every list because the chain spent it.
+            // Ten passes in a row is the second: the object landed, and the request is done.
+            r.unbuildable += 1;
+            if r.unbuildable < 10 {
+                left.push(r);
+            }
+            continue;
+        };
+        r.unbuildable = 0;
+        // the node relays the fresh wrapper whether or not it still holds the request (its refusal text names several
+        // causes at once, so it never ends the request here; the carrier above does)
+        let _ = agent.post(&format!("{}{}", node_url(), r.route)).send_json(serde_json::json!({ "request_hex": r.request_hex, "canon_absence_hex": fresh }));
+        left.push(r);
+    }
+    relayed_write(&left);
+}
+
 fn dir_pending_file() -> Option<PathBuf> {
     let kid = current_key_id_hex()?;
     let cid = current_chain_id();
@@ -18957,8 +19083,61 @@ fn dir_pending_list() -> Vec<String> {
     std::fs::read_to_string(file).ok().and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()).unwrap_or_default()
 }
 
+/// ⭐ A-F114 — A KEPT ENTRY'S FEE LEG (DELAYED PUBLICATION, docs/SPENT-SET-GROWTH-DEEP-AUDIT-20261122.md). An entry is
+/// handed to the node a finality lag (or, resent, minutes) after it is built, and under the constant chain its fee spend
+/// needs a wrapper that ends inside the node's window when it is carried. So the leg `(nf, leaf, lc_blind)` is kept beside
+/// the entry, in this wallet's own data folder (the same protection as the notes' seeds it holds), and a fresh wrapper is
+/// built from the running carrier at EVERY hand-over (`dir_entries_send_again`). One file a seed and chain, pruned with the
+/// pending list: at most `DIR_PENDING_KEPT` legs. Written only from the network upgrade (`canon_chain::CANON_LIVE`).
+fn dir_legs_file() -> Option<PathBuf> {
+    dir_pending_file().map(|f| f.with_extension("legs.json"))
+}
+
+type DirLeg = ([u8; 32], Digest4, Digest4, Digest4);
+
+fn dir_legs() -> Vec<DirLeg> {
+    let Some(file) = dir_legs_file() else { return Vec::new() };
+    std::fs::read_to_string(file).ok().and_then(|s| serde_json::from_str::<Vec<DirLeg>>(&s).ok()).unwrap_or_default()
+}
+
+fn dir_legs_write(legs: &[DirLeg]) {
+    let Some(file) = dir_legs_file() else { return };
+    if legs.is_empty() {
+        let _ = std::fs::remove_file(file);
+    } else if let Ok(body) = serde_json::to_string(legs) {
+        let _ = std::fs::write(file, body);
+    }
+}
+
+fn dir_leg_keep(nf: [u8; 32], leg: (Digest4, Digest4, Digest4)) {
+    if !usdmd_node::canon_chain::canon_live() {
+        return;
+    }
+    let mut legs: Vec<DirLeg> = dir_legs().into_iter().filter(|l| l.0 != nf).collect();
+    legs.push((nf, leg.0, leg.1, leg.2));
+    dir_legs_write(&legs);
+}
+
+/// The leg kept for the entry whose fee nullifier is `nf`.
+fn dir_leg_of(nf: &[u8; 32]) -> Option<(Digest4, Digest4, Digest4)> {
+    dir_legs().into_iter().find(|l| l.0 == *nf).map(|l| (l.1, l.2, l.3))
+}
+
+/// A kept item's object bytes (hex): a posted one is the object itself; a held one is `U:<step>:<root>:<object>`.
+fn dir_item_object(item: &str) -> &str {
+    item.strip_prefix("U:").and_then(|r| r.splitn(3, ':').nth(2)).unwrap_or(item)
+}
+
 fn dir_pending_keep(list: &[String]) {
     DIR_PENDING_ANY.store(!list.is_empty(), std::sync::atomic::Ordering::Relaxed);
+    // A-F114: the legs follow the list (an entry that left it takes its leg with it)
+    if usdmd_node::canon_chain::canon_live() {
+        let live: Vec<[u8; 32]> = list.iter().rev().take(DIR_PENDING_KEPT).filter_map(|x| dir_object_fee_nullifier(dir_item_object(x))).collect();
+        let legs = dir_legs();
+        if legs.iter().any(|l| !live.contains(&l.0)) {
+            dir_legs_write(&legs.into_iter().filter(|l| live.contains(&l.0)).collect::<Vec<_>>());
+        }
+    }
     let Some(file) = dir_pending_file() else { return };
     if list.is_empty() {
         let _ = std::fs::remove_file(file);
@@ -19023,7 +19202,19 @@ fn dir_entries_send_again() {
             dead.push(object_hex);
             continue;
         }
-        match agent.post(&format!("{}/dir/submit", node_url())).send_json(serde_json::json!({ "object_hex": object_hex })) {
+        // A-F114: a fresh wrapper of its fee note at every hand-over (empty before the upgrade); a note the carrier cannot
+        // prove yet keeps the entry for the next pass
+        let canon_absence_hex = match dir_object_fee_nullifier(&object_hex).and_then(|nf| dir_leg_of(&nf)) {
+            Some(leg) => match object_canon_hex(&[leg], "directory entry") {
+                Ok(h) => h,
+                Err(_) => {
+                    left.push(object_hex);
+                    continue;
+                }
+            },
+            None => String::new(),
+        };
+        match agent.post(&format!("{}/dir/submit", node_url())).send_json(serde_json::json!({ "object_hex": object_hex, "canon_absence_hex": canon_absence_hex })) {
             Err(ureq::Error::Status(422, r)) => {
                 let why = r.into_string().unwrap_or_default();
                 if why.contains("already spent") || why.contains("would not apply") {
@@ -19894,6 +20085,7 @@ fn wallet_coin_swap_blocking(from: String, to: String, usdm_amount: f64, payout_
     let units = (out_usdm * 1e8).max(0.0) as u128 * scale / price.max(1);
     let receive = units as f64 / if to == "XMR" { 1e12 } else { 1e8 };
     ensure_coin_swap_runner();
+    ensure_canon_follower();
     // ⭐ Auto-OPSEC (on by default, for every coin the bridge holds): a deposit on a chain that shows it is made private by
     // the entry mix before it mints — a swap never skips it. Decided by the coin's own row (`deposit_mixed_first`), never by
     // a ticker: a new public coin cannot arrive without it (user 2026-11-12).
@@ -20144,6 +20336,10 @@ struct CashPiece {
     escrow_cm_hex: String,
     #[serde(default)]
     escrow_nf_hex: String,
+    /// A-F114: the claim's DB-363 blind (lane bytes, hex), kept beside the escrow seed (the same protection) once the claim
+    /// is relayed, so every poll can hand the node a fresh absence wrapper for the claim it publishes later.
+    #[serde(default)]
+    escrow_blind_hex: String,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -20755,7 +20951,9 @@ fn sat_delegation_submit(
     if nfb != input_nf || change_note[..32] != leaf4_to_bytes(cms[1])[..] {
         return Err("refusing: the burn's nullifier or change is not this conversion's — nothing was spent".into());
     }
-    let cm_in = leaf4_to_bytes(asset_note_cm(value_in, tag_in, in_owner.opening()));
+    let in_leaf = asset_note_cm(value_in, tag_in, in_owner.opening());
+    let cm_in = leaf4_to_bytes(in_leaf);
+    let canon_absence_hex = object_canon_hex(&[(nf, in_leaf, lc_blind)], "conversion")?;
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let (membership_carrier_hex, membership_tip_hex) = membership_bind_for(&agent, &cm_in, nf, lc_blind)
         .ok_or("the note's membership cannot be proved yet (its member leg is not ready) — nothing was spent")?;
@@ -20812,7 +21010,7 @@ fn sat_delegation_submit(
     }
     let reply: serde_json::Value = agent
         .post(&format!("{}/submit_sat_delegation", node_url()))
-        .send_json(serde_json::json!({ "object_hex": hex::encode(probe.encode()) }))
+        .send_json(serde_json::json!({ "object_hex": hex::encode(probe.encode()), "canon_absence_hex": canon_absence_hex }))
         .map_err(|e| format!("the node refused the conversion: {}", node_refusal(e)))
         .and_then(|r| r.into_json().map_err(|e| format!("conversion reply json: {e}")))?;
     let published = reply.get("verdict").and_then(|v| v.as_str()) == Some("PUBLISHED");
@@ -20956,13 +21154,19 @@ fn wallet_pot_buy_blocking(usdm: f64) -> Result<serde_json::Value, String> {
     }
     let reply: serde_json::Value = agent
         .post(&format!("{}/pot_buy", node_url()))
-        .send_json(serde_json::json!({ "request_hex": hex::encode(req.encode()) }))
+        .send_json(serde_json::json!({
+            "request_hex": hex::encode(req.encode()),
+            // A-F114: the burned note's absence wrapper; the node relays it to the custodian that publishes
+            "canon_absence_hex": object_canon_hex(&[(nf, wr::asset_note_cm(value_in, [0, 0, 0], in_owner.opening()), lc_blind)], "pot buy")?,
+        }))
         .map_err(|e| format!("the node refused the buy: {}", node_refusal(e)))
         .and_then(|r| r.into_json().map_err(|e| format!("buy reply json: {e}")))?;
     if reply.get("relayed").and_then(|v| v.as_bool()) != Some(true) {
         return Err(reply.get("reason").and_then(|v| v.as_str()).unwrap_or("the node did not relay the buy").to_string());
     }
     reservation.commit(input_nf);
+    // A-F114: kept so its fresh wrapper is re-sent while custody gathers (`relayed_send_again`)
+    relayed_keep("/pot_buy", &hex::encode(req.encode()), &[(nf, wr::asset_note_cm(value_in, [0, 0, 0], in_owner.opening()), lc_blind)]);
     Ok(serde_json::json!({ "relayed": true, "usdm": x as f64 / 1e8, "sat": s_out as f64 / 1e8 }))
 }
 off_ui_thread_approved!(wallet_pot_buy => wallet_pot_buy_blocking(usdm: f64) ; format!("Buy SAT from the repayment pot with {usdm} USDm at the floor price"));
@@ -21965,6 +22169,7 @@ fn plan_cash_out(usdm_amount: f64, asset: &str, payout_to: &str, fast: bool) -> 
             escrow_seed_hex: String::new(),
             escrow_cm_hex: String::new(),
             escrow_nf_hex: String::new(),
+            escrow_blind_hex: String::new(),
         });
     }
     let fees_total = fee * pieces.len() as u128;
@@ -22010,6 +22215,12 @@ fn advance_cash_out(plan: &mut CashOutPlan) {
             // one-time key
             "pending" => match stage_pay_piece(&plan.plan_id, i, &c) {
                 Ok((value, seed, cm, nf)) => {
+                    // A-F114: the escrow note joins this wallet's absence carrier BEFORE the record that makes it
+                    if let (true, Ok(key), Some(nfd)) =
+                        (usdmd_node::canon_chain::canon_live(), stage_key_for(&plan.plan_id, i), usdmd_node::spend_frontier::cm_bytes_to_root(&nf))
+                    {
+                        canon_carrier::register(usdmd_node::cashout_ticket::escrow_cm(&key, value, &seed), nfd);
+                    }
                     let p = &mut plan.pieces[i];
                     p.escrow_value = value;
                     p.escrow_seed_hex = hex::encode(usdmd_node::spend_frontier::digest_to_lane_bytes(&seed));
@@ -22028,14 +22239,17 @@ fn advance_cash_out(plan: &mut CashOutPlan) {
             },
             // CLAIM: the staged note folded under an epoch anchor — prove and relay its anonymous claim (NOT_YET until then)
             "staged" => match claim_piece(&plan.plan_id, i, &c) {
-                Ok(true) => plan.pieces[i].status = "claimed".into(),
-                Ok(false) => {}
+                Ok(Some(blind)) => {
+                    plan.pieces[i].escrow_blind_hex = hex::encode(usdmd_node::spend_frontier::digest_to_lane_bytes(&blind));
+                    plan.pieces[i].status = "claimed".into();
+                }
+                Ok(None) => {}
                 Err(why) => plan.pieces[i].status = format!("failed:{why}"),
             },
             // custody burns it at its batch; a node that forgot the claim (a restart) gets it again, from the same note
             "claimed" => match piece_burned(&c.escrow_nf_hex) {
                 Some(true) => plan.pieces[i].status = "redeemed".into(),
-                Some(false) if claim_held(&c.escrow_nf_hex) == Some(false) => plan.pieces[i].status = "staged".into(),
+                Some(false) if claim_held(&c.escrow_nf_hex, &piece_canon_hex(&plan.plan_id, i, &c)) == Some(false) => plan.pieces[i].status = "staged".into(),
                 _ => continue,
             },
             _ => continue,
@@ -22102,7 +22316,7 @@ fn stage_pay_piece(plan_id: &str, i: usize, c: &CashPiece) -> Result<(u64, Diges
 /// node, which relays it to custody. Custody holds it until the piece's batch, then burns it exactly as built — the proof
 /// binds the destination — and pays the batch. Custody never learns the note, the wallet or the staging time; the device may
 /// be off from here on. `Ok(false)` while the note is not under an anchor yet or the chain has no final custody key.
-fn claim_piece(plan_id: &str, i: usize, c: &CashPiece) -> Result<bool, String> {
+fn claim_piece(plan_id: &str, i: usize, c: &CashPiece) -> Result<Option<Digest4>, String> {
     let key = stage_key_for(plan_id, i)?;
     let seed = hex::decode(&c.escrow_seed_hex)
         .ok()
@@ -22143,7 +22357,7 @@ fn claim_piece(plan_id: &str, i: usize, c: &CashPiece) -> Result<bool, String> {
         }),
     )?;
     let (Some(mem_carrier), Some(mem_tip)) = (field(&leg, "membership_carrier_hex"), field(&leg, "membership_tip_hex")) else {
-        return Ok(false); // NOT_YET: the next epoch anchor (≤ 10 min) holds the note (a fast piece: its record has not folded yet)
+        return Ok(None); // NOT_YET: the next epoch anchor (≤ 10 min) holds the note (a fast piece: its record has not folded yet)
     };
     // the change (zero) is a fresh note to this wallet under its own clue at a reserved index — no ownerless credit
     let (change_note, change_opening) =
@@ -22154,7 +22368,7 @@ fn claim_piece(plan_id: &str, i: usize, c: &CashPiece) -> Result<bool, String> {
     let clue = recs.get(34..).filter(|c| !c.is_empty()).map(<[u8]>::to_vec).ok_or("the change clue could not be derived")?;
     let (ticketed_commit, ticket_parts_hex, leg_blind) = match cashout_ticket_for(&nullifier, c.payout_to.trim(), c.pay_after, atomic, &clue) {
         Ok(t) => t,
-        Err(why) if why.contains("custody key for this payout's hour is not ready") => return Ok(false),
+        Err(why) if why.contains("custody key for this payout's hour is not ready") => return Ok(None),
         Err(why) => return Err(why),
     };
     // CHAIN-OBJECT: the claim's burn is PROVEN here and carried by the PegOut object; it applies only at the fold, from the block.
@@ -22171,9 +22385,16 @@ fn claim_piece(plan_id: &str, i: usize, c: &CashPiece) -> Result<bool, String> {
     {
         return Err("the claim did not verify against its own binding — nothing was relayed".into());
     }
+    // A-F114: the escrow note's absence wrapper (empty before the upgrade); every later poll refreshes it (`piece_canon_hex`)
+    let escrow_leaf = usdmd_node::cashout_ticket::escrow_cm(&key, value, &seed);
+    let canon_absence_hex = match usdmd_node::spend_frontier::cm_bytes_to_root(&nullifier) {
+        Some(nfd) => object_canon_hex(&[(nfd, escrow_leaf, lc_blind)], "cash-out claim")?,
+        None => String::new(),
+    };
     let r = post(
         "/peg_out_execute",
         serde_json::json!({
+            "canon_absence_hex": canon_absence_hex,
             "usdm_nullifier": hex::encode(nullifier),
             "out0_cm": hex::encode(leaf4_to_bytes(cms[0])),
             "out1_cm": hex::encode(change_cm_pre),
@@ -22197,7 +22418,7 @@ fn claim_piece(plan_id: &str, i: usize, c: &CashPiece) -> Result<bool, String> {
         || r.get("gathering").and_then(|b| b.as_bool()) == Some(true);
     if held {
         reservation.commit(nullifier);
-        return Ok(true);
+        return Ok(Some(lc_blind));
     }
     match r.get("outcome").and_then(|s| s.as_str()) {
         Some(outcome) => Err(format!("the node refused the claim: {outcome}")),
@@ -22226,12 +22447,30 @@ fn claim_relay_moment_ms(pay_after: u64, chain_now: u64, rng: &mut impl rand::Rn
 
 /// ⭐ §19.4 — does this wallet's node still hold the claim of `nf_hex` (relaying it to custody until its batch), or has the
 /// chain burned it? `Some(false)` = neither: a restarted node forgot it, and the wallet relays it again.
-fn claim_held(nf_hex: &str) -> Option<bool> {
+/// ⭐ A-F114 — a claimed piece's FRESH absence wrapper (empty before the network upgrade, or when the piece kept no blind):
+/// the node relays the claim to custody and publishes it later (DELAYED PUBLICATION), so each poll hands it one that
+/// ends inside its window now (`Node::canon_held_wrappers`).
+fn piece_canon_hex(plan_id: &str, i: usize, c: &CashPiece) -> String {
+    if !usdmd_node::canon_chain::canon_live() {
+        return String::new();
+    }
+    let lanes = |h: &str| hex::decode(h).ok().and_then(|b| usdmd_node::spend_frontier::digest_from_lane_bytes(&b));
+    let (Ok(key), Some(seed), Some(blind)) = (stage_key_for(plan_id, i), lanes(&c.escrow_seed_hex), lanes(&c.escrow_blind_hex)) else {
+        return String::new();
+    };
+    let leaf = usdmd_node::cashout_ticket::escrow_cm(&key, c.escrow_value, &seed);
+    let Some(nf) = hex::decode(&c.escrow_nf_hex).ok().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()).and_then(|b| usdmd_node::spend_frontier::cm_bytes_to_root(&b)) else {
+        return String::new();
+    };
+    object_canon_hex(&[(nf, leaf, blind)], "cash-out claim").unwrap_or_default()
+}
+
+fn claim_held(nf_hex: &str, canon_absence_hex: &str) -> Option<bool> {
     let v: serde_json::Value = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(8))
         .build()
         .post(&format!("{}/peg_out_execute", node_url()))
-        .send_json(serde_json::json!({ "usdm_nullifier": nf_hex }))
+        .send_json(serde_json::json!({ "usdm_nullifier": nf_hex, "canon_absence_hex": canon_absence_hex }))
         .ok()?
         .into_json()
         .ok()?;
@@ -25769,6 +26008,13 @@ struct CreationFeeBurn {
     change_cm: [u8; 32],
     spent: (u64, Digest4),
     reservation: ChgReservation,
+    /// A-F114: the object's absence wrapper of its paying note (`canon_carrier::object_wrappers_hex`), for the object route's
+    /// `canon_absence_hex`; empty before the network upgrade.
+    canon_absence_hex: String,
+    /// A-F114: the paying note's leg `(nullifier, input leaf, lc_blind)`, from which a wrapper is built again for an object
+    /// handed over later (a kept directory entry, `dir_leg_keep`). The blind is the spend's secret: held in RAM with the
+    /// burn, and written only to this wallet's own store beside the object it pays for.
+    leg: (Digest4, Digest4, Digest4),
     /// The ring root this burn's member leg was proven under and the fold step it stands at (`LEG_ANCHOR`), when the
     /// member book named one: a caller that holds its object back until that step is final reads it here.
     anchor: Option<(u64, Digest4)>,
@@ -25846,17 +26092,13 @@ fn hold_object_change_in_flight(input: (u64, Digest4), change: &[u8]) -> bool {
     }
 }
 
-fn creation_fee_burn(price: u64, burn_opening: Digest4) -> Result<CreationFeeBurn, String> {
-    fee_spend_out0(price, |_nf| Ok(burn_opening), "creation fee")
-}
-
 /// The same burn under the name its user reads for it (a directory entry's price is not a "creation fee": MEASURED on
 /// real nodes 2026-11-10, an empty wallet publishing a profile was told "the creation fee needs one USDm note").
 fn named_fee_burn(price: u64, burn_opening: Digest4, what: &str) -> Result<CreationFeeBurn, String> {
     fee_spend_out0(price, |_nf| Ok(burn_opening), what)
 }
 
-/// ⭐ §BR-12 F13 — ONE FEE SPEND WITH A NAMED `out0`: [`creation_fee_burn`]'s body, the `out0` opening a FUNCTION of the
+/// ⭐ §BR-12 F13 — ONE FEE SPEND WITH A NAMED `out0`: [`named_fee_burn`]'s body, the `out0` opening a FUNCTION of the
 /// spent note's nullifier. A DSOL call pays its publisher into `owner_opening(publisher_spk, seed(cid, tx_hash))` with
 /// `tx_hash = H(fee nullifier)` (door rule A2), so that opening exists only once the paying note is chosen: the note is
 /// picked, its nullifier derived from the note's own leaf and `nk`, the opening computed, then the carrier proven — and
@@ -25886,6 +26128,22 @@ fn land_in_flight_change_once() {
             eprintln!("[in-flight] the landing pass before this spend did not run ({e}); the selection reads the last scan");
         }
     }
+}
+
+/// ⭐ A-F114 — AN OBJECT'S ABSENCE WRAPPERS, for its route's `canon_absence_hex` (from the network upgrade,
+/// `canon_chain::CANON_LIVE`; empty before it, when the node reads its own view): one per note leg the object spends,
+/// `(nullifier, input leaf, the spend's lc_blind)` in the order the node reads the object's legs
+/// (`chain_object::object_tag_roles`). Built from this wallet's own carrier right before the post; a note the carrier does
+/// not hold yet refuses here, before anything is sent.
+fn object_canon_hex(legs: &[(Digest4, Digest4, Digest4)], what: &str) -> Result<String, String> {
+    if !usdmd_node::canon_chain::canon_live() {
+        return Ok(String::new());
+    }
+    // the carrier this process holds may be none (a new process) or behind, and a just-received note waits for its span
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
+    let notes: Vec<(Digest4, Digest4)> = legs.iter().map(|(nf, leaf, _)| (*nf, *leaf)).collect();
+    canon_ready_for(&agent, &notes).map_err(|e| format!("the {what}'s note cannot prove it is unspent yet ({e})"))?;
+    canon_carrier::object_wrappers_hex(legs).map_err(|e| format!("the {what}'s note cannot prove it is unspent yet ({e}); nothing was sent"))
 }
 
 fn fee_spend_out0(
@@ -25930,6 +26188,10 @@ fn fee_spend_out0(
     if nf != nf_named {
         return Err(format!("the {what}'s carrier lays a nullifier that is not the paying note's — nothing was built"));
     }
+    // ⭐ A-F114 (from the network upgrade, `canon_chain::CANON_LIVE`): the object's absence evidence is this wallet's own
+    // wrapper of the paying note, bound to this spend's `lc_blind`; built before anything is reserved, so a note the
+    // carrier does not hold yet costs nothing. Empty before the upgrade (the node then reads its own view).
+    let canon_absence_hex = object_canon_hex(&[(nf, my_leaf, lc_blind)], what)?;
     let cm = usdmd_node::spend_frontier::leaf_to_cm_bytes(my_leaf);
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).build();
     let (membership_carrier_hex, membership_tip_hex) = membership_bind_for(&agent, &cm, nf, lc_blind)
@@ -25961,6 +26223,8 @@ fn fee_spend_out0(
         change_cm,
         spent: (note_amt, note_seed),
         reservation,
+        canon_absence_hex,
+        leg: (nf, my_leaf, lc_blind),
     })
 }
 
@@ -26066,15 +26330,27 @@ fn art_digest(art: &[u8]) -> Result<[u8; 32], String> {
     Ok(*usdmd_node::hash::Hash32::hash(art).as_bytes())
 }
 
-fn asset_card_encode(kind: &str, symbol: &str, name: &str, logo: &[u8; 32], creator: &[u8; 32]) -> String {
-    let body = serde_json::json!({ "k": kind, "s": symbol, "n": name, "l": hex::encode(logo), "c": hex::encode(creator) });
+/// The facts a card carries. ⭐ A-F114: from the network upgrade (`params::CANON_LIVE`) an asset's id also hashes its
+/// creation's FEE NULLIFIER (`AssetCreateTx::derived_id`), so the card carries it as the sixth fact `f`, or a reader could
+/// not recompute the id. It reveals nothing new: the nullifier is public in the creation object, which names the asset id
+/// itself. Before the upgrade `f` is not written and a card is byte-identical to before.
+fn asset_card_facts(kind: &str, symbol: &str, name: &str, logo: &[u8; 32], creator: &[u8; 32], fee_nf: Option<&[u8; 32]>) -> serde_json::Value {
+    let mut body = serde_json::json!({ "k": kind, "s": symbol, "n": name, "l": hex::encode(logo), "c": hex::encode(creator) });
+    if let (true, Some(nf), Some(o)) = (usdmd_node::params::canon_live(), fee_nf, body.as_object_mut()) {
+        o.insert("f".into(), serde_json::json!(hex::encode(nf)));
+    }
+    body
+}
+
+fn asset_card_encode(kind: &str, symbol: &str, name: &str, logo: &[u8; 32], creator: &[u8; 32], fee_nf: Option<&[u8; 32]>) -> String {
+    let body = asset_card_facts(kind, symbol, name, logo, creator, fee_nf);
     format!("{ASSET_CARD_PREFIX}{}", hex::encode(body.to_string()))
 }
 
 /// The card of an asset made with artwork: `[facts length, 2 bytes][the facts][the picture]`, in hex.
-fn asset_card_encode_art(kind: &str, symbol: &str, name: &str, creator: &[u8; 32], art: &[u8]) -> Result<String, String> {
+fn asset_card_encode_art(kind: &str, symbol: &str, name: &str, creator: &[u8; 32], art: &[u8], fee_nf: Option<&[u8; 32]>) -> Result<String, String> {
     let logo = art_digest(art)?;
-    let facts = serde_json::json!({ "k": kind, "s": symbol, "n": name, "l": hex::encode(logo), "c": hex::encode(creator) }).to_string();
+    let facts = asset_card_facts(kind, symbol, name, &logo, creator, fee_nf).to_string();
     let mut frame = Vec::with_capacity(2 + facts.len() + art.len());
     frame.extend_from_slice(&(u16::try_from(facts.len()).map_err(|_| "the name is too long for a card".to_string())?).to_le_bytes());
     frame.extend_from_slice(facts.as_bytes());
@@ -26109,6 +26385,10 @@ fn asset_card_read(card: &str) -> Result<serde_json::Value, String> {
         hex::decode(text(k)?).ok().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()).ok_or_else(damaged)
     };
     let (kind, symbol, name, logo, creator) = (text("k")?, text("s")?, text("n")?, word("l")?, word("c")?);
+    // A-F114: the creation's fee nullifier, which the id hashes from the network upgrade (`asset_card_facts`); a card
+    // without it names a FINAL id only before the upgrade
+    let fee_nf: Option<[u8; 32]> = if v.get("f").is_some() { Some(word("f")?) } else { None };
+    let id_final = !usdmd_node::params::canon_live() || fee_nf.is_some();
     // the chain's own creation rule (`AssetCreateTx::decode`): no asset with any other shape can exist
     if symbol.trim().is_empty() || symbol.len() > 32 || name.len() > 128 || !symbol.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err("that asset card names a symbol the chain would never have accepted".into());
@@ -26126,7 +26406,7 @@ fn asset_card_read(card: &str) -> Result<serde_json::Value, String> {
         bytecode: usdmd_node::dsol::compile(dsol_kind, &symbol, &name).bytecode,
         creator,
         asset_id: [0u8; 32],
-        fee: usdmd_node::asset_tx::CreationFee::default(),
+        fee: usdmd_node::asset_tx::CreationFee { nullifier: fee_nf.unwrap_or_default(), ..Default::default() },
         art: Vec::new(),
         supply: None,
     };
@@ -26139,6 +26419,10 @@ fn asset_card_read(card: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "tag_hex": asset_tag_hex(&c.asset_tag()),
         "asset_id": hex::encode(c.asset_id),
+        // A-F114: false when the card lacks the fee nullifier the id hashes from the upgrade: the id above is then not
+        // any created asset's, and a wallet must not file notes under it
+        "id_final": id_final,
+        "fee_nullifier": fee_nf.map(hex::encode),
         "kind": kind,
         "symbol": symbol,
         "name": name,
@@ -26146,7 +26430,7 @@ fn asset_card_read(card: &str) -> Result<serde_json::Value, String> {
         "creator": hex::encode(creator),
         "art_hex": if art.is_empty() { serde_json::Value::Null } else { serde_json::json!(hex::encode(&art)) },
         "art_mime": art_mime(&art),
-        "card": if art.is_empty() { asset_card_encode(&kind, &symbol, &name, &logo, &creator) } else { asset_card_encode_art(&kind, &symbol, &name, &creator, &art)? },
+        "card": if art.is_empty() { asset_card_encode(&kind, &symbol, &name, &logo, &creator, fee_nf.as_ref()) } else { asset_card_encode_art(&kind, &symbol, &name, &creator, &art, fee_nf.as_ref())? },
     }))
 }
 
@@ -26177,9 +26461,17 @@ fn dapp_provider_card_for_blocking(params: serde_json::Value) -> Result<serde_js
         let g = WALLET.lock().unwrap_or_else(|e| e.into_inner());
         usdmd_node::pqauth::pubkey_id(&g.as_ref().ok_or_else(|| "no wallet open".to_string())?.spend_pk)
     };
+    // A-F114: the creation's fee nullifier, when the app kept it (a made asset's card answers it as `fee_nullifier`); from
+    // the network upgrade the id hashes it, and without it the answer says `id_final: false`
+    let fee_nf: Option<[u8; 32]> = match params.get("feeNullifierHex").and_then(serde_json::Value::as_str) {
+        None | Some("") => None,
+        Some(h) => Some(
+            hex::decode(h).ok().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()).ok_or("cardFor: `feeNullifierHex` is not 32 bytes of hex")?,
+        ),
+    };
     let card = match art_param(&params)? {
-        Some(art) => asset_card_encode_art(&kind, &symbol, &name, &creator, &art)?,
-        None => asset_card_encode(&kind, &symbol, &name, &[0u8; 32], &creator),
+        Some(art) => asset_card_encode_art(&kind, &symbol, &name, &creator, &art, fee_nf.as_ref())?,
+        None => asset_card_encode(&kind, &symbol, &name, &[0u8; 32], &creator, fee_nf.as_ref()),
     };
     asset_card_read(&card)
 }
@@ -26505,13 +26797,13 @@ mod asset_card_tests {
         };
         c.asset_id = c.derived_id();
         let want = super::asset_tag_hex(&c.asset_tag());
-        let card = asset_card_encode("token", "MOON", "Moon Coin", &logo, &creator);
+        let card = asset_card_encode("token", "MOON", "Moon Coin", &logo, &creator, None);
         let read = asset_card_read(&card).expect("an honest card reads");
         assert_eq!(read["tag_hex"], want, "the card names the tag the chain derives");
         assert_eq!(read["symbol"], "MOON");
         assert_eq!(read["card"], card, "one asset has one card");
         // every altered fact is a different asset, never the same tag under a new name
-        let tag_of = |k: &str, s: &str, n: &str, l: &[u8; 32], who: &[u8; 32]| asset_card_read(&asset_card_encode(k, s, n, l, who)).map(|v| v["tag_hex"].clone());
+        let tag_of = |k: &str, s: &str, n: &str, l: &[u8; 32], who: &[u8; 32]| asset_card_read(&asset_card_encode(k, s, n, l, who, None)).map(|v| v["tag_hex"].clone());
         assert_ne!(tag_of("token", "MOON", "Moon Coin!", &logo, &creator).unwrap(), want);
         assert_ne!(tag_of("token", "MOOM", "Moon Coin", &logo, &creator).unwrap(), want);
         assert_ne!(tag_of("nft", "MOON", "Moon Coin", &logo, &creator).unwrap(), want);
@@ -26534,28 +26826,28 @@ mod asset_card_tests {
         let creator = [9u8; 32];
         let png = |fill: u8| -> Vec<u8> { [vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A], vec![fill; 300]].concat() };
         let (mine, other) = (png(1), png(2));
-        let card = asset_card_encode_art("nft", "OWL001", "Night Owl #1", &creator, &mine).expect("a picture card");
+        let card = asset_card_encode_art("nft", "OWL001", "Night Owl #1", &creator, &mine, None).expect("a picture card");
         let read = asset_card_read(&card).expect("an honest picture card reads");
         assert_eq!(read["art_hex"], hex::encode(&mine));
         assert_eq!(read["art_mime"], "image/png");
         assert_eq!(read["logo_hex"], hex::encode(art_digest(&mine).unwrap()), "the asset's identity holds this picture's digest");
         assert_eq!(read["card"], card);
         // the same facts with no picture name the SAME asset: the picture adds nothing to the identity but its digest
-        let bare = asset_card_encode("nft", "OWL001", "Night Owl #1", &art_digest(&mine).unwrap(), &creator);
+        let bare = asset_card_encode("nft", "OWL001", "Night Owl #1", &art_digest(&mine).unwrap(), &creator, None);
         assert_eq!(asset_card_read(&bare).unwrap()["tag_hex"], read["tag_hex"]);
         // the picture swapped inside the card: refused, never shown
         let swapped = card.replace(&hex::encode(&mine), &hex::encode(&other));
         assert_ne!(swapped, card);
         assert!(asset_card_read(&swapped).unwrap_err().contains("not this asset's own"));
         // another picture makes another asset
-        let theirs = asset_card_read(&asset_card_encode_art("nft", "OWL001", "Night Owl #1", &creator, &other).unwrap()).unwrap();
+        let theirs = asset_card_read(&asset_card_encode_art("nft", "OWL001", "Night Owl #1", &creator, &other, None).unwrap()).unwrap();
         assert_ne!(theirs["tag_hex"], read["tag_hex"]);
         // not a picture, an empty one, one past the size a card carries
-        assert!(asset_card_encode_art("nft", "OWL001", "x", &creator, b"<svg onload=alert(1)>").is_err());
-        assert!(asset_card_encode_art("nft", "OWL001", "x", &creator, &[]).is_err());
+        assert!(asset_card_encode_art("nft", "OWL001", "x", &creator, b"<svg onload=alert(1)>", None).is_err());
+        assert!(asset_card_encode_art("nft", "OWL001", "x", &creator, &[], None).is_err());
         let mut big = png(3);
         big.resize(ASSET_ART_MAX_BYTES + 1, 7);
-        assert!(asset_card_encode_art("nft", "OWL001", "x", &creator, &big).is_err());
+        assert!(asset_card_encode_art("nft", "OWL001", "x", &creator, &big, None).is_err());
     }
 }
 
@@ -26658,8 +26950,6 @@ fn wallet_token_create_blocking(
         art,
         supply: None,
     };
-    c.asset_id = c.derived_id();
-    let id_hex = hex::encode(c.asset_id);
     // the chain files a piece under a collection only when the collection exists and its owner is this wallet's key
     // (the mint below says which, under this wallet's signature); a mint naming any other would file the piece under
     // none, so it is refused here before anything is paid
@@ -26668,6 +26958,30 @@ fn wallet_token_create_blocking(
             "the collection {collection} is not on the chain as this wallet's yet; nothing was created. A new collection is usable a moment after it is published."
         ));
     }
+    // ⭐ A-F114 — THE ID NAMES ITS FEE NULLIFIER (from the network upgrade, `params::CANON_LIVE`: `AssetCreateTx::derived_id`
+    // hashes `fee.nullifier`, Ethereum's CREATE shape). The fee builder picks the paying note and derives its nullifier
+    // BEFORE it proves the burn (`fee_spend_out0`'s `out0_opening` receives it), so the id is derived THERE, from that
+    // nullifier, and the burn is bound to that id; the supply, its tag and the creator's signature all read the id and are
+    // built after it. Nothing is paid by building: the burn travels only in the one object below, and every failure
+    // before the send settles it as refused (its change index and locator return, the note is not marked spent).
+    // Before the upgrade the id ignores the nullifier and this order yields the same id as before.
+    // the chain's price for this KIND, from the creation itself: the one function the gate reads (kind and picture only)
+    let price = c.creation_price();
+    let burn = fee_spend_out0(
+        price,
+        |nf| {
+            c.fee.nullifier = *nf;
+            c.asset_id = c.derived_id();
+            Ok(usdmd_node::asset_tx::creation_burn_opening(&c.asset_id))
+        },
+        "creation fee",
+    )?;
+    c.fee = burn.fee.clone();
+    if c.derived_id() != c.asset_id {
+        burn.settle(Some(false));
+        return Err("the creation fee's carrier names a nullifier other than the one its id was derived from; nothing was created".into());
+    }
+    let id_hex = hex::encode(c.asset_id);
     // ⭐ FINDING A-F34 — THE WHOLE SUPPLY IS MINTED BY THE CREATION ITSELF, IN ONE OBJECT (`asset_tx::CreationSupply`).
     // This wallet used to send the creation and then a separate mint. A separate mint must prove the asset exists with a
     // path in the token registry, which this wallet never built, so the chain refused the mint of about every second
@@ -26675,20 +26989,31 @@ fn wallet_token_create_blocking(
     // nothing can come between an asset and its supply.
     // The supply note, sealed to this wallet's own key (DB-395); the mint carrier binds the note's opening.
     let tag = c.asset_tag();
-    let (note, note_opening) =
-        pq::seal_note_full_asset(&scan_ek, &my_spk, supply, tag).ok_or("could not seal the supply note; nothing was created")?;
-    let (mint_carrier, cm) = usdm_decider::whir_rec_block::prove_asset_mint_validity_bytes(supply, tag, &note_opening)
-        .ok_or("the supply's carrier did not prove; nothing was created")?;
+    let Some((note, note_opening)) = pq::seal_note_full_asset(&scan_ek, &my_spk, supply, tag) else {
+        burn.settle(Some(false));
+        return Err("could not seal the supply note; nothing was created".into());
+    };
+    let Some((mint_carrier, cm)) = usdm_decider::whir_rec_block::prove_asset_mint_validity_bytes(supply, tag, &note_opening) else {
+        burn.settle(Some(false));
+        return Err("the supply's carrier did not prove; nothing was created".into());
+    };
     let cm_bytes = usdmd_node::spend_frontier::leaf_to_cm_bytes(cm);
     if cm_bytes[..] != note[..32] {
+        burn.settle(Some(false));
         return Err("the supply's carrier and the sealed note name different commitments; nothing was created".into());
     }
     // ⭐ DB-273 §19.6 L3 — THE SUPPLY NOTE'S OWNER is its OLI clue at a fresh RESERVED `chg` index (the one self-note
     // derivation), never this wallet's static address: the creator signs the clue's digest, so every node files the note
     // from the object and a seed-only restore finds it. The index is committed under the asset id — which no spend ever
     // names — once the node has the creation, and freed if the node refuses it.
-    let (owner_clue, reservation) = fresh_self_note_clue(&loc_sk, &note)?;
-    let creator_sig = usdmd_node::pqauth::ml_dsa_sign(
+    let (owner_clue, reservation) = match fresh_self_note_clue(&loc_sk, &note) {
+        Ok(v) => v,
+        Err(e) => {
+            burn.settle(Some(false));
+            return Err(e);
+        }
+    };
+    let Some(creator_sig) = usdmd_node::pqauth::ml_dsa_sign(
         &usdmd_node::asset_tx::creation_supply_msg(
             &c.asset_id,
             supply,
@@ -26700,8 +27025,12 @@ fn wallet_token_create_blocking(
             c.art.len(),
         ),
         spend_sk.as_slice(),
-    )
-    .ok_or("the creator key could not sign the supply; nothing was created")?;
+    ) else {
+        drop(reservation);
+        release_own_note_locators(&[cm_bytes]);
+        burn.settle(Some(false));
+        return Err("the creator key could not sign the supply; nothing was created".into());
+    };
     c.supply = Some(usdmd_node::asset_tx::CreationSupply {
         amount: supply,
         note: note.to_vec(),
@@ -26715,20 +27044,9 @@ fn wallet_token_create_blocking(
     if !c.supply_authorised(&usdmd_node::pqauth::MlDsaVerifier) {
         drop(reservation);
         release_own_note_locators(&[cm_bytes]);
+        burn.settle(Some(false));
         return Err("refusing: the supply this wallet built does not verify under its own key; nothing was created".into());
     }
-    // ⭐ §BR-14: the creation PAYS — a real burn of the symbol's price, bound to this creation's id.
-    // the chain's price for this KIND, from the creation itself: the one function the gate reads
-    let price = c.creation_price();
-    let burn = match creation_fee_burn(price, usdmd_node::asset_tx::creation_burn_opening(&c.asset_id)) {
-        Ok(b) => b,
-        Err(e) => {
-            drop(reservation);
-            release_own_note_locators(&[cm_bytes]);
-            return Err(e);
-        }
-    };
-    c.fee = burn.fee.clone();
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(20)).build();
     // THE ONE OBJECT: the creation, its fee burn and its whole supply.
     let sent = agent.post(&format!("{}/submit_asset_create", node_url())).send_json(serde_json::json!({
@@ -26745,6 +27063,8 @@ fn wallet_token_create_blocking(
         "fee_membership_tip_hex": hex::encode(&c.fee.membership_tip),
         "fee_change_note_hex": hex::encode(&c.fee.change_note),
         "fee_change_clue_hex": hex::encode(&c.fee.change_clue),
+        // A-F114: the fee note's absence wrapper (empty before the network upgrade)
+        "canon_absence_hex": burn.canon_absence_hex.clone(),
         // A-F34: the supply, minted by this same object
         "supply_amount": supply,
         "supply_note_hex": hex::encode(note),
@@ -26807,7 +27127,7 @@ fn wallet_token_create_blocking(
         "symbol": symbol,
         "name": name,
         // what the creator shares so any other wallet can name this asset and verify the name (`asset_card_read`)
-        "card": asset_card_encode(kind, symbol, name, &logo, &c.creator),
+        "card": asset_card_encode(kind, symbol, name, &logo, &c.creator, Some(&c.fee.nullifier)),
         "supply_atomic": supply,
         // §BR-14: what the creation cost, in atomic USDm (price into the pools + the network fee)
         "creation_fee_atomic": price,
@@ -26854,14 +27174,15 @@ async fn dapp_provider_create_token(params: serde_json::Value) -> Result<serde_j
         let mut made = wallet_token_create_blocking(kind, &symbol, &name, &max_supply, decimals, logo.as_deref(), art.as_deref(), &collection)?;
         // the card the creator shares carries the asset's own picture
         if let Some(a) = art {
-            let creator = made
-                .get("card")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|c| asset_card_read(c).ok())
-                .and_then(|v| v["creator"].as_str().and_then(|h| hex::decode(h).ok()))
-                .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+            let read = made.get("card").and_then(serde_json::Value::as_str).and_then(|c| asset_card_read(c).ok());
+            let word = |k: &str| {
+                read.as_ref()
+                    .and_then(|v| v[k].as_str().and_then(|h| hex::decode(h).ok()))
+                    .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
+            };
+            let (creator, fee_nf) = (word("creator"), word("fee_nullifier"));
             if let (Some(who), Some(obj)) = (creator, made.as_object_mut()) {
-                if let Ok(card) = asset_card_encode_art(kind, &symbol, &name, &who, &a) {
+                if let Ok(card) = asset_card_encode_art(kind, &symbol, &name, &who, &a, fee_nf.as_ref()) {
                     obj.insert("card".into(), serde_json::json!(card));
                 }
             }
@@ -27066,7 +27387,7 @@ fn wallet_dsol_deploy_blocking(code_hex: &str, height_class: u64, name: &str, pu
         burn.settle(Some(false));
         return Err("the deploy does not verify against itself — nothing was submitted".into());
     }
-    let sent = agent.post(&format!("{}/submit_dsol_deploy", node_url())).send_json(serde_json::json!({ "object_hex": hex::encode(d.wire()) }));
+    let sent = agent.post(&format!("{}/submit_dsol_deploy", node_url())).send_json(serde_json::json!({ "object_hex": hex::encode(d.wire()), "canon_absence_hex": burn.canon_absence_hex.clone() }));
     let submitted: serde_json::Value = match sent {
         Ok(r) => {
             burn.settle(Some(true));
@@ -27325,7 +27646,7 @@ fn dapp_provider_dsol_call_blocking(params: serde_json::Value) -> Result<serde_j
         spend.settle(Some(false));
         return Err(format!("the call is not self-authorised ({why}) — nothing was paid"));
     }
-    let sent = agent.post(&format!("{}/submit_dsol_call", node_url())).send_json(serde_json::json!({ "object_hex": hex::encode(t.wire()) }));
+    let sent = agent.post(&format!("{}/submit_dsol_call", node_url())).send_json(serde_json::json!({ "object_hex": hex::encode(t.wire()), "canon_absence_hex": spend.canon_absence_hex.clone() }));
     let submitted: serde_json::Value = match sent {
         Ok(r) => {
             spend.settle(Some(true));
@@ -28300,6 +28621,144 @@ fn ensure_coin_swap_runner() {
         });
     });
 }
+static CANON_FOLLOWER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+/// ⭐ A-F114 — THE ABSENCE CARRIER'S FOLLOWER (from the network upgrade, `canon_chain::CANON_LIVE`; off, it never starts):
+/// while a wallet is open, every five seconds it registers the wallet's owned notes (leaf `note_leaf_of(cm)`, nullifier
+/// `cm_bytes_to_root(nf)`, the values the send binds), follows the node's `/canon/records` into the one carrier only as
+/// far as the scan has read (`ScanState::cursor`, a blue score), and saves it beside the note store. A send then proves its wrapper from a carrier already at the chain's end.
+/// COST: one leaf and one merge a record followed (MEASURED usdm-agg u3: ~341 KB, 2^15 rows each); one file rewritten
+/// whole (one carrier and a fixed 16-slot list: f(fixed constants)).
+fn ensure_canon_follower() {
+    if !usdmd_node::canon_chain::canon_live() {
+        return;
+    }
+    CANON_FOLLOWER.get_or_init(|| {
+        std::thread::spawn(|| {
+            let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
+            loop {
+                std::thread::sleep(Duration::from_secs(5));
+                // A-F114: relayed requests waiting on custody get a fresh wrapper once a minute
+                relayed_send_again(&agent);
+                if let Err(e) = canon_follow_once(&agent) {
+                    // DIGITAL-CASH-PRIVACY-REVIEWED: a reason string only — no note, nullifier, key or amount.
+                    eprintln!("[canon] the carrier did not follow: {e}");
+                }
+            }
+        });
+    });
+}
+
+/// ⭐ A-F114 — A SEND WAITS FOR ITS NOTES' SPAN, never refuses it. A note joins a carrier slot only when the 16-record span
+/// that made it is absorbed (`CanonCarrier::absorb_span`), so a note received a moment ago is PENDING for up to one span.
+/// MEASURED 2026-11-22 (two-node rig, e1859d68 + the carrier census): the payer's send went through, the payee's send of what
+/// it had just received was refused "this note is not in a carrier's list yet" — `PENDING (its making record not absorbed
+/// yet)`, its span 32..47 open. So the send follows until every note it spends stands in a slot. It is bounded by
+/// `CANON_SPAN_WAIT` (one span on a slow chain, with margin), and its expiry returns the refusal. A note in no list at all
+/// fails at once.
+/// cons: a send of a note received less than one span ago waits for that span (~16 records); B1 shortens it.
+/// ⛔ MEASURED 2026-11-22 (rig speed5-b0, round 2): the wait ran 41 passes at "scan below blue score 30" while the tip stood
+/// at 48 — the follow never runs ahead of the scan and nothing in the wait moved the scan, so the span never closed. Each
+/// wait pass after the first therefore runs the DELTA detection pass (`wallet_detect_impl`: from the scan's own cursor,
+/// forward only, the blocks since the last pass — never a history walk), deduplicated with the background pass by
+/// `DETECT_RUNNING` (when one runs, it is what moves the cursor), and the carrier follows as far as that scan read.
+fn canon_ready_for(agent: &ureq::Agent, legs: &[(Digest4, Digest4)]) -> Result<(), String> {
+    const CANON_SPAN_WAIT: Duration = Duration::from_secs(300);
+    let began = Instant::now();
+    let mut first = true;
+    loop {
+        if !first && !DETECT_RUNNING.swap(true, Ordering::SeqCst) {
+            let r = wallet_detect_impl();
+            DETECT_RUNNING.store(false, Ordering::SeqCst);
+            if let Err(e) = r {
+                eprintln!("[canon] the delta detection pass in the send's wait did not run ({e})");
+            }
+        }
+        first = false;
+        if let Err(e) = canon_follow_once(agent) {
+            // DIGITAL-CASH-PRIVACY-REVIEWED: a reason string only.
+            eprintln!("[canon] before the send the carrier did not follow: {e}");
+        }
+        let st: Vec<canon_carrier::Standing> = legs.iter().map(|(nf, leaf)| canon_carrier::standing(*nf, *leaf)).collect();
+        if st.iter().all(|s| *s == canon_carrier::Standing::Slot) {
+            return Ok(());
+        }
+        if st.iter().any(|s| *s == canon_carrier::Standing::Absent) {
+            return Err("this note is in no carrier list (it was never registered): nothing was sent".into());
+        }
+        if began.elapsed() >= CANON_SPAN_WAIT {
+            return Err(format!("this note's span did not close within {} s: nothing was sent", CANON_SPAN_WAIT.as_secs()));
+        }
+        std::thread::sleep(Duration::from_secs(3));
+    }
+}
+
+/// The wallet whose carrier the process holds in memory (`canon_carrier::CANON`), so a key change reloads it.
+static CANON_LOADED_FOR: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+/// ⭐ A-F114 — ONE PASS OF THE CARRIER: load this wallet's saved carrier if the process does not hold it yet, register its
+/// owned notes, follow the node's records as far as the scan has read, save. Run by the follower every five seconds AND by
+/// every send before it builds its wrapper. ⛔ MEASURED 2026-11-22 (the testnet gate on af833a45: `pay`, `change` FAIL, "the
+/// absence carrier is not started"): the follower thread saved the carrier to disk, but a send in a NEW process (the
+/// harness runs one process per command; the app after a restart) never loaded it, so it held no carrier at all; and a
+/// send must prove to a recent end, so it follows first. `Ok(records absorbed)`; `Err` with no wallet open.
+fn canon_follow_once(agent: &ureq::Agent) -> Result<u64, String> {
+    let key_id = {
+        let g = WALLET.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_ref() {
+            Some(w) => scan_scope_id(&w.scan_ek),
+            None => return Err("no wallet is open".into()),
+        }
+    };
+    let store = note_store::store_path(&node_data_dir(), &key_id, &current_chain_id());
+    let stem = store.file_stem().and_then(|s| s.to_str()).unwrap_or("notes").to_string();
+    let path = store.with_file_name(format!("{stem}.canon-carrier"));
+    {
+        let mut loaded_for = CANON_LOADED_FOR.lock().unwrap_or_else(|e| e.into_inner());
+        if *loaded_for != Some(key_id) {
+            canon_carrier::reset();
+            canon_carrier::load(&path);
+            *loaded_for = Some(key_id);
+        }
+    }
+    // start the carrier BEFORE the notes register: `register` drops a note while no carrier exists (`canon_carrier::start`)
+    canon_carrier::start(agent, &node_url())?;
+    {
+        {
+            {
+                let (notes, scanned_below): (Vec<(Digest4, Digest4)>, u64) = {
+                    let s = SCAN.lock().unwrap_or_else(|e| e.into_inner());
+                    s.as_ref().map_or_else(|| (Vec::new(), 0), |st| {
+                        let n = st.owned
+                            .iter()
+                            .filter_map(|n| {
+                                let cm: [u8; 32] = n.note.get(..32)?.try_into().ok()?;
+                                let nf = usdmd_node::spend_frontier::cm_bytes_to_root(&n.nf)?;
+                                Some((usdmd_node::spend_frontier::note_leaf_of(&cm), nf))
+                            })
+                            .collect();
+                        (n, st.cursor)
+                    })
+                };
+                let registered = notes.len();
+                for (leaf, nf) in notes {
+                    canon_carrier::register(leaf, nf);
+                }
+                // A-F114: never past a settlement of a batch this wallet's open DeFi order waits on (`defi_buy::DEFI_FOLLOW_CAP`)
+                let scanned_below = scanned_below.min(defi_buy::defi_follow_bound());
+                let n = canon_carrier::follow(agent, &node_url(), scanned_below)?;
+                let (lists, held, pending, next) = canon_carrier::census();
+                // DIGITAL-CASH-PRIVACY-REVIEWED: counts and chain coordinates only — no leaf, nullifier or amount.
+                eprintln!("[canon] pass: {registered} owned note(s) registered, {n} record(s) absorbed (scan below blue score {scanned_below}); carrier: {lists} list(s), {held} slot(s) held, {pending} pending, next record {next}");
+                if n > 0 {
+                    if let Err(e) = canon_carrier::save(&path) {
+                        eprintln!("[canon] the carrier was not saved: {e}");
+                    }
+                }
+                Ok(n)
+            }
+        }
+    }
+}
 static LADDER_RELEASER: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 /// The one releaser thread: while this wallet process lives, staged rungs post at their heights (one tip read per tick).
 fn ensure_ladder_releaser() {
@@ -28457,6 +28916,7 @@ fn dapp_provider_ladder_post_blocking(
         write_staged_rungs(&all);
         ensure_ladder_releaser();
     ensure_coin_swap_runner();
+    ensure_canon_follower();
     }
     Ok(serde_json::json!({
         "resting_rungs": resting,

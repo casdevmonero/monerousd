@@ -106,8 +106,13 @@ fn bounded_attestors(a: &[(Vec<u8>, Vec<u8>)]) -> bool {
 impl DecoyBatchTx {
     /// The statement custody signs: the payout, every decoy, the fee.
     #[must_use]
-    pub fn statement(payout_txid: &[u8; 32], decoys: &[DecoyEntry], fee_usdm: u64) -> Vec<u8> {
-        let mut m = crate::pqauth::node_statement(b"musdm.peg.decoy-batch.v1");
+    /// ⭐ A-F114 — `seq`: the ledger's DECOY BATCH COUNTER the statement binds (from the network upgrade,
+    /// `params::CANON_LIVE`; `None` before it, giving exactly the v1 bytes). A batch is booked only at the counter's current
+    /// value, which then steps, so a RE-CARRIED batch's signatures are over a counter already passed and no quorum signed the
+    /// statement the door rebuilds: a replay is refused by state, with no set (it would otherwise pay `fee_usdm` from the fee
+    /// pool again). BORROWED: Ethereum's account nonce. Signers read the counter from their own node's chain state.
+    pub fn statement(payout_txid: &[u8; 32], decoys: &[DecoyEntry], fee_usdm: u64, seq: Option<u64>) -> Vec<u8> {
+        let mut m = crate::pqauth::node_statement(if seq.is_some() { b"musdm.peg.decoy-batch.v2" } else { b"musdm.peg.decoy-batch.v1" });
         m.extend_from_slice(payout_txid);
         m.extend_from_slice(&(decoys.len() as u32).to_le_bytes());
         for d in decoys {
@@ -116,6 +121,9 @@ impl DecoyBatchTx {
             m.extend_from_slice(&d.vout.to_le_bytes());
         }
         m.extend_from_slice(&fee_usdm.to_le_bytes());
+        if let Some(q) = seq {
+            m.extend_from_slice(&q.to_le_bytes());
+        }
         m
     }
     #[must_use]

@@ -652,6 +652,14 @@ impl XmrPayoutLane {
             // rule reads it) until the part's slot closes
             // (read from this lane's own book: a leg that is no obligation it holds and no burn the chain owes)
             let rebalance = legs.len() == 1 && !self.book.obligations.contains_key(&legs[0]) && !node.peg().release_pending(&legs[0]);
+            // ⭐ A-F114: from the network upgrade the release is a CHAIN object (`Class::ReleaseConfirm`): this custodian
+            // queues its signature over the burns this payout paid, as its own wallet watched it confirm. Keyed by the
+            // payout's own id (one release per payout, however many transactions it spans). NOT CONFIRMED: which vault a
+            // chain of several vaults maps the Monero ledger to (`ledger_vault`); on a one-vault chain it is the one vault.
+            if !rebalance {
+                let ledger = node.ledger_here(crate::peg::COIN_XMR_ASSET_ID);
+                node.queue_own_release(ledger, id, legs.clone(), Vec::new());
+            }
             for nf in legs.iter().filter(|_| !rebalance) {
                 // CACHE-ONLY: the release recorded here mirrors a payout THIS node's own wallet watched confirm;
                 // the burn was applied from `Class::PegOut` long before.

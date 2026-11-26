@@ -8187,18 +8187,22 @@ mod journey_tests {
         // judged after at most LAUNCH_SETTLE_MS more (default 120 s simulated), the time it took printed; a gap that stays fails.
         let settle_ms = knob("LAUNCH_SETTLE_MS", 120_000);
         let settle_from = sim.now;
-        let whole = |s: &NetSim| {
+        // ⭐⭐⭐ FINALITY BY WORK (lane livewedge, 2026-11-25): finality is each node's own count of blue work above its final block, so
+        // a joiner that caught up at the run's last tick has not yet seen FINAL_DEPTH more blocks; its finality is judged inside the
+        // same bounded settle as the index and the state (MEASURED main 93fe50e0: n5 caught at 634 s, the run's end, final 175 vs
+        // node 0's 177 at that instant). The claim is unchanged: every joiner passes node 0's finality at the moment it caught.
+        let whole = |s: &NetSim, caught: &[Option<u64>], fin0: &[u64]| {
             (seeds..n).all(|k| {
                 let m = s.rt(0).node().served_seq().min(s.rt(k).node().served_seq()).saturating_sub(8);
-                tags_below(s, k, m) >= tags_below(s, 0, m)
+                tags_below(s, k, m) >= tags_below(s, 0, m) && (caught[k].is_none() || s.rt(k).node().user_final_height() >= fin0[k])
             }) && s.state_divergence().is_none()
         };
-        while sim.now < settle_from + settle_ms && !whole(&sim) {
+        while sim.now < settle_from + settle_ms && !whole(&sim, &caught, &fin0_at_catch) {
             tick(&mut sim, &mut caught, &mut fin0_at_catch, n);
         }
         eprintln!(
-            "[launch] index and state {} {} s after the last joiner's arrival window closed",
-            if whole(&sim) { "whole and agreed" } else { "NOT whole or NOT agreed" },
+            "[launch] index, state and finality {} {} s after the last joiner's arrival window closed",
+            if whole(&sim, &caught, &fin0_at_catch) { "whole and agreed" } else { "NOT whole or NOT agreed" },
             (sim.now - settle_from) / 1000
         );
         let mut bad: Vec<String> = Vec::new();

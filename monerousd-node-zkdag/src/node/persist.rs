@@ -199,7 +199,12 @@ impl Node {
             dir_fold_journal: std::collections::VecDeque::new(),
             dir_open_step: None,
             dir_journal_floor: 0,
-            band_door: crate::nf_sparse::BandDoor::new(Self::SPINE_RING_LEN),
+            // W5: fixed-root from the first instant under the constant chain (a boot never starts in proof mode)
+            band_door: {
+                let mut d = crate::nf_sparse::BandDoor::new(Self::SPINE_RING_LEN);
+                d.set_fixed_root(crate::canon_chain::canon_live());
+                d
+            },
             #[cfg(test)]
             band_autoprove_for_test: false,
             mesh_size_override_for_test: None,
@@ -248,7 +253,7 @@ impl Node {
             nf_shard_fetch: std::collections::HashMap::new(),
             nf_band_gathered: std::collections::HashMap::new(),
             nf_band_wants: Vec::new(),
-            sparse_work: Some(crate::nf_sparse::RefSparseNf::initial_view()), // re-built under the shard policy by `new_sparse_work` once the identity is set
+            sparse_work: (!crate::canon_chain::canon_live()).then(crate::nf_sparse::RefSparseNf::initial_view), // A-F114 U1: no spent set under the constant chain; // re-built under the shard policy by `new_sparse_work` once the identity is set
             nf_blocks: 0, // genesis has applied no nullifier blocks
             nf_leaves: 0,
             // ⭐⭐⭐ A_TIP GENESIS = f(NETWORK), DOMAIN-SEPARATED — never the all-zero seed.
@@ -272,6 +277,23 @@ impl Node {
             //
             // Same shape as `unspent_note_root` below, which already seeds from `process_network_id()`.
             nf_unspent_acc: Self::nf_unspent_acc_genesis(),
+            canon_c: crate::canon_chain::genesis(),
+            canon_recent: crate::canon_chain::CanonRecent::default(),
+            canon_missing: 0,
+            canon_index: 0,
+            canon_decoy_seq: 0,
+            canon_fill: None,
+            canon_rewind: std::collections::VecDeque::new(),
+            canon_saved_top: std::sync::Arc::new(crate::canon_chain::CanonSaved::default()),
+            canon_resume_rewind: None,
+            work_final: None,
+            floor_final: None,
+            db471_failed_top: u64::MAX,
+            canon_bounty_seq: 0,
+            canon_theft_seq: 0,
+            canon_held_wrappers: Vec::new(),
+            release_book: std::collections::BTreeMap::new(),
+            release_own_pending: Vec::new(),
 
             // Deterministic genesis seed for the confidential real-spend-blob accumulator (same on every node).
             // Early-chain residual: until the first real spend folds in, this is a known constant, so a zero-spend
@@ -701,6 +723,9 @@ impl Node {
     /// an overlay ON the view — is never left describing a tree that is gone (a stale cursor yields proofs every door
     /// refuses). The band drain's incremental advance is not wholesale and does not come here.
     pub(super) fn set_sparse_work(&mut self, view: Option<crate::nf_sparse::RefSparseNf>) {
+        // ⭐ A-F114 U1 — under the constant chain no node holds the spent set: every wholesale write installs nothing, so no
+        // warm, restore, adopt or rebuild can bring the O(spent) tree back (docs/SPENT-SET-GROWTH-DEEP-AUDIT-20261122.md U1).
+        let view = if crate::canon_chain::canon_live() { None } else { view };
         // DIGITAL-CASH-PRIVACY-REVIEWED: shard counts of this node's own view; no tag, root, amount or owner.
         eprintln!("[nf-share] view installed: {:?} (shard bits, shards held)", view.as_ref().map(crate::nf_sparse::RefSparseNf::shard_policy));
         self.sparse_work = view;
@@ -1367,6 +1392,26 @@ impl Node {
         if resumed {
             report.swept = self.sweep_unreferenced_record_bytes();
             report.window = self.block_window_census();
+            // ⭐ A RESUME IS NOT A CHAIN AUTHORITY (A-F115, lane speed5r, 2026-11-22). The resume re-installs this node's OWN
+            // checkpoint tip through the one anchor door (`restore_snapshot` → `Dag::add_anchor`), which makes it the
+            // fork-choice floor (`Dag::finality_admits`: a tip whose SELECTED chain does not pass through the floor never
+            // ranks as head). With two producers that tip is often this node's own last block, which the network's
+            // heavier chain MERGES as a member rather than taking as its selected parent: the resumed node then refused
+            // every heavier tip for ever and folded its own fork alone. MEASURED (testnet gate, main f1c02f5f, `restart`
+            // FAIL): node 1's fold stood at 215 with 26 blocks unfolded while node 0's reached 238, both DAGs holding the
+            // same 96 recent blocks, the payment node 0 applied never reaching node 1's wallet. The window below the anchor
+            // is re-entered with its selected-parent links (`[block-window] … re-entered`), so the resumed DAG weighs
+            // every branch by itself: the floor this node's own disk installed is released, and only a CERTIFIED adopt
+            // (the join door's verified work and vouchers) or a 2/3 quorum floors the fork choice. BORROWED: Bitcoin
+            // Core's restart — a node's own chainstate is a cache, the heaviest valid chain decides
+            // (`ActivateBestChain` after load). AI RESISTANT: (b) ordinary fork choice, the same rule on every node; a
+            // peer gains nothing it could not gain by producing the heavier chain, which every node follows anyway.
+            // cons: none on the wire or in state; a restarted node may now reorg below its own checkpoint, which is what
+            // the fold rewind exists for.
+            let released = self.relay.dag_mut().release_resume_floor();
+            if released {
+                eprintln!("[resume] the checkpoint's own tip is no longer a fork-choice floor: the heaviest chain decides");
+            }
         }
         // MonerousD Veil: where this node's site store would live (one file beside where the names file was). Nothing is opened
         // or created here; the store opens when a site is first hosted or browsed.
@@ -1544,6 +1589,7 @@ impl Node {
             let _ = self.restore_window_index(&path); // T1.7: every window folded before the stop, bound to the spine
             let anchor = crate::persist::load_window_anchor(&path);
             let _ = self.rebuild_windows_from_records(anchor); // the witness windows a wallet needs, from the records held
+            self.restore_canon(&path); // A-F114 phase 1: the canonical accumulator and the record MMR
         }
         // ⛔⛔⛔ CORRUPT-LOAD REFUSES, NEVER WIPES (the no-regenesis cardinal, enforced at the exact
         // site it was violated). A snapshot FILE exists but no decode door accepted it ⇒ this binary
@@ -2251,13 +2297,13 @@ impl Node {
             // DIGITAL-CASH-PRIVACY-REVIEWED: the node's own locator tags read back from its own datadir; nothing logged.
             for (rid, tags) in std::mem::take(&mut snap.unwindowed_tags) {
                 let mut merged = self.da_load_tags(rid);
-                let before = merged.len();
+                // ⛔ A-F118: the ONE merge rule (`da::merge_slot_tag`), as every tag filer
+                let reals = self.da_load(rid).map_or(0, |r| r.len());
+                let mut changed = false;
                 for (slot, k) in tags {
-                    if !merged.iter().any(|(s, _)| *s == slot) {
-                        merged.push((slot, k));
-                    }
+                    changed |= crate::node::da::merge_slot_tag(&mut merged, slot, k, (slot as usize) < reals) != crate::node::da::TagMerge::Kept;
                 }
-                if merged.len() > before {
+                if changed {
                     self.da_store_tags(rid, &merged);
                 }
             }
@@ -3134,6 +3180,61 @@ impl Node {
         self.persist_mined_tx_nfs(snapshot); // G1: the graft's per-tx nullifier record, chain-bound on resume
         self.persist_window_anchor(snapshot);
         self.persist_window_index(snapshot);
+        self.persist_canon(snapshot);
+    }
+
+    /// A-F114 phase 2: the canonical tag chain and its recent window beside the snapshot, in the same capture.
+    pub(crate) fn persist_canon(&self, snapshot: &std::path::PathBuf) {
+        if !crate::canon_chain::canon_live() {
+            return; // off until the network upgrade: nothing written on today's chain
+        }
+        // W8: never a ring for a snapshot the rollback rule refused (the weight `export_snapshot` writes: the selected tip's)
+        // O1-INFINITY-REVIEWED: one read of the in-memory watermark; the ring written (or not) is the same one ring file.
+        let weight = self.selected_tip().and_then(|t| self.relay.dag().get(&t)).map(|n| (n.blue_score, n.selected_chain_len));
+        if weight.is_some_and(|(b, h)| crate::persist::save_would_be_refused(snapshot, b, h)) {
+            eprintln!("[persist] W8: the snapshot was refused as a rollback — the canonical ring is not written past it either");
+            return;
+        }
+        // A-F114 U5: the same ring file every checkpoint writes (the slots since the last write, then the head)
+        if let Some((head, slots, saved, epoch, top)) = self.capture_canon_ring() {
+            match crate::persist::save_canon_ring(snapshot, &head, &slots) {
+                Ok(()) => saved.landed(epoch, top), // A-F139: never undoes a rewind that landed during the write
+                Err(_) => eprintln!("[persist] ⛔ the canonical chain was not written beside the snapshot"),
+            }
+        }
+    }
+
+    /// A-F114 phase 2: resume the canonical tag chain and its window from their sidecar.
+    pub(crate) fn restore_canon(&mut self, snapshot: &std::path::PathBuf) {
+        if !crate::canon_chain::canon_live() {
+            return;
+        }
+        if self.restore_canon_ring(snapshot) {
+            return; // A-F114 U5: the ring file every checkpoint writes
+        }
+        match crate::persist::load_canon(snapshot) {
+            Some((_, _, _, _, _, Some(fill), _)) => {
+                // A-F114 U2: the pull was under way — it resumes from the vouched state it was pulling toward
+                self.adopt_certified_canon(fill);
+                eprintln!("[resume] canonical tag chain: a window pull to record {} resumes", fill.index);
+            }
+            Some((index, c, recent, missing, (decoy_seq, bounty_seq, theft_seq), None, rewind)) => {
+                self.canon_rewind = rewind.into_iter().take(Self::REWIND_RETAIN).collect();
+                self.canon_theft_seq = theft_seq;
+                self.canon_index = index;
+                self.canon_decoy_seq = decoy_seq;
+                self.canon_bounty_seq = bounty_seq;
+                self.canon_c = c;
+                self.canon_recent = crate::canon_chain::CanonRecent::default();
+                for (i, e, tags, leaves, score) in recent {
+                    self.canon_recent.push(i, e, std::sync::Arc::new(tags), std::sync::Arc::new(leaves), score);
+                }
+                self.canon_missing = missing;
+                // DIGITAL-CASH-PRIVACY-REVIEWED: counts and the chain's own record index only.
+                eprintln!("[resume] canonical tag chain at record index {index} ({} recent records, {missing} missing)", self.canon_recent.len());
+            }
+            None => eprintln!("[resume] canonical tag chain: no sidecar — it starts at the upgrade height (a header commitment adopts it later)"),
+        }
     }
 
     pub(crate) fn persist_mined_tx_nfs(&self, snapshot: &std::path::PathBuf) {
@@ -3267,6 +3368,11 @@ impl Node {
     /// ⭐⭐⭐ DB-397 fix A — on resume, re-insert the cached tags through the TRUSTLESS rebuild: installed only when the
     /// rebuilt root equals the resumed O(1) acc root (chain-bound, C1); otherwise ignored and the peer warm runs as before.
     pub(crate) fn restore_nf_view(&mut self, snapshot: &std::path::PathBuf) -> bool {
+        // ⭐ A-F114 U1 — under the constant chain this whole path returns before any file is opened: no spent set is held.
+        // O1-INFINITY-REVIEWED: this line REMOVES a read — under the switch the boot reads nothing here and holds nothing (zero bytes at any height).
+        if crate::canon_chain::canon_live() {
+            return false;
+        }
         if self.sparse_work.is_some() {
             return false;
         }

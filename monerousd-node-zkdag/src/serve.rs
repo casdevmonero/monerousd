@@ -1360,10 +1360,29 @@ pub fn serve_node_over_onion_mesh(node: Node, port: u16) -> std::io::Result<()> 
             // (MEASURED 2026-11-10 04:53, `locks.py`: 0 of the stake locked a payment that sat in the pool for 60 s).
             // cons: at most 9,437,192 B on disk for the table at any height (65,536 rows of 72 B, compacted), f(fixed constants).
             let mut lock_guard = crate::spend_lock::LockGuard::for_node_vote_key();
+            // ⛔⛔ LIVE-FIN F1 (lane selfheal, 2026-11-25; docs/LIVE-FOLD-WEDGE-DEEP-AUDIT-20261125.md F1) — THE SEAT REQUEST IS
+            // RE-SIGNED ON THIS PATH TOO. Under the constant chain a seat request expires (`SEAT_REQUEST_TTL_MS`, 600 s) and a node
+            // that is not seated signs a fresh one (A-F114) — but that loop lived only in `main.rs`'s `run_node_runtime`, which the
+            // default build (`arti-onion`) never runs: it serves through THIS function. MEASURED on the live testnet after the
+            // regenesis (main d8922319): the origin's one request was "refused: an expired seat request", no re-sign was ever
+            // printed, the founding seat (whose key no live node holds) stayed the only validator, finalized 0 at height 873.
+            // Here, beside the votes and the locks the same key signs: once a minute at most, only while unseated and stale.
+            // SCALE: one stale check a minute, one signature an expiry. AI RESISTANT (b): the seat door still checks the request.
+            let mut last_seat_check = std::time::Instant::now();
+            // the same gate as the daemon's other path: only a node that chose to bond (MONEROUSD_VALIDATOR_BOND > 0) re-signs
+            let bonds = std::env::var("MONEROUSD_VALIDATOR_BOND").ok().and_then(|s| s.trim().parse::<u128>().ok()).is_some_and(|b| b > 0);
             loop {
                 std::thread::sleep(Duration::from_millis(200));
                 let _ = crate::vote_guard::vote_tick(&rt, &mut guard, &pk, &sk);
                 let _ = crate::spend_lock::lock_tick(&rt, &mut lock_guard, &pk, &sk);
+                if bonds && crate::params::canon_live() && last_seat_check.elapsed() >= Duration::from_secs(60) {
+                    last_seat_check = std::time::Instant::now();
+                    let mut g = rt.lock().unwrap_or_else(|e| e.into_inner());
+                    if g.node().own_seat_request_stale(&pk) {
+                        let seat = g.node_mut().request_own_seat_at_boot(&pk, &sk);
+                        eprintln!("[validator] the seat request expired; signed again: {seat}"); // status only, no key bytes
+                    }
+                }
             }
         });
     }

@@ -451,6 +451,28 @@ impl Node {
     pub fn publish_defi_slots(&mut self, t: &crate::defi_batch::DefiSlotsTx) -> Result<Hash32, crate::mempool::MempoolError> {
         let blob = t.wire().ok_or(crate::mempool::MempoolError::InvalidProof)?;
         let notes: Vec<u8> = t.notes().concat();
+        // ⭐ A-F114: under the constant chain every slot is a note leg (`chain_object::object_tag_roles`, orders then claims),
+        // and its absence evidence is the wrapper its holder relayed (a real slot) or its committee member proved (a cover),
+        // held in `canon_held_wrappers` by its nullifier. The object carries them in role order (`scope_spender_wrappers`,
+        // the same carriage an rpc-built object uses). A slot with none refuses the publication here, before any block
+        // carries it (refused at its fold it would burn the slots' notes): the batch waits for its slots.
+        if crate::canon_chain::canon_live() {
+            let mut list: Vec<crate::nf_sparse::CanonAbsence> = Vec::with_capacity(t.orders.len() + t.claims.len());
+            for nf in t.orders.iter().map(|o| o.nullifier).chain(t.claims.iter().map(|c| c.nullifier)) {
+                let k = crate::spend_frontier::leaf_to_cm_bytes(nf);
+                let Some((_, held)) = self.canon_held_wrappers.iter().find(|(x, _)| *x == k) else {
+                    return Err(crate::mempool::MempoolError::NullifierWitnessRejected);
+                };
+                let ws: Vec<crate::nf_sparse::CanonAbsence> = postcard::from_bytes(held).unwrap_or_default();
+                let Some(w) = ws.into_iter().next() else {
+                    return Err(crate::mempool::MempoolError::NullifierWitnessRejected);
+                };
+                list.push(w);
+            }
+            let bytes = postcard::to_allocvec(&list).map_err(|_| crate::mempool::MempoolError::InvalidProof)?;
+            let _scope = crate::canon_chain::scope_spender_wrappers(Some(bytes));
+            return self.publish_spending_object_nfs(blob, &t.nullifiers(), notes);
+        }
         self.publish_spending_object_nfs(blob, &t.nullifiers(), notes)
     }
     /// §BR-15 — publish a batch settlement (spends nothing; its claim leaves ride the object).
@@ -2826,7 +2848,11 @@ impl Node {
             out
         };
         block.header.letter_set_root = crate::block::da_sidecar_root_of(&block.letter_set);
-        block.tag_evidence = self.tag_evidence_for(&block.nullifier_proof.padded_tags, &real_tags_for_evidence);
+        block.tag_evidence = if crate::canon_chain::canon_live() {
+            self.canon_tag_evidence_for(&block.nullifier_proof.padded_tags, &sel_txs) // A-F114 2c: the constant chain's evidence
+        } else {
+            self.tag_evidence_for(&block.nullifier_proof.padded_tags, &real_tags_for_evidence)
+        };
         block.header.tag_evidence_root = crate::block::da_sidecar_root_of(&block.tag_evidence);
         self.stamp_join_fields(&mut block.header);
         // ⛔ §RF-3 (2026-10-24): THE CONSTANT-WIDTH HALF, INLINE TOO. `complete_produce_job` lays it for a live node; the
@@ -3051,7 +3077,7 @@ impl Node {
             return AssetSpendOutcome::Refused("the evidence is not one canonical, bounded theft object");
         };
         if !crate::bond_tally::verify_threshold(
-            &crate::theft_tx::theft_msg(statement, &offenders, loss_sats),
+            &crate::theft_tx::theft_msg_at(statement, &offenders, loss_sats, self.theft_statement_seq()),
             theft_attestation,
             &self.validators,
             &crate::pqauth::MlDsaVerifier,

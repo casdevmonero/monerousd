@@ -182,6 +182,11 @@ pub(crate) struct CoinPayout {
     /// the burn in flight: its note's nullifier and rung
     #[serde(default)]
     pub burning: Option<(String, u64)>,
+    /// A-F114: the burn in flight's leg `(nullifier, input leaf, lc_blind)` as lane bytes in hex, kept beside the escrow
+    /// facts this file already holds, so every poll can hand the node a fresh absence wrapper (DELAYED PUBLICATION: the
+    /// node relays the burn to custody and publishes it later). Empty before the network upgrade.
+    #[serde(default)]
+    pub burning_leg: Option<(String, String, String)>,
     pub created_ms: u64,
     /// ⭐ AUTO-OPSEC (user 2026-11-10), the wallet's one privacy setting as it stood when this payout started. On: every rung
     /// is paid to an address of its own where the coin's chain is public (this wallet's Bitcoin vault) and each in its own
@@ -1138,7 +1143,22 @@ fn claim_order_leg(o: &DefiOrder, outcome: Option<(i64, u64, bool)>, leg: u8) ->
         let w = g.as_ref().ok_or_else(|| "no wallet open".to_string())?;
         (w.scan_ek.clone(), w.loc_sk, w.out_sk, w.note_keys())
     };
-    let a_blind = amount_blind_for(&out_sk, o.nonce);
+    let mut cw = claim_witness(o, outcome, leg, &out_sk)?;
+    cw.out_blind = wr::fresh_lc_blind().ok_or("no entropy for the claim")?;
+    cw.lc_blind = wr::fresh_lc_blind().ok_or("no entropy for the claim")?;
+    // what the claim relation pays at this leaf, by its own native rule
+    cw.out = cw.paid().ok_or("the fill does not fit")?;
+    let out = cw.out;
+    let (nf, lc, oc, pays_y) = cw.publics();
+    let leaf = cw.leaf();
+    claim_order_tail(o, cw, out, nf, lc, oc, pays_y, leaf, my_ek, loc_sk, out_sk, keys)
+}
+
+/// ⭐ ONE claim's witness, the one construction both the claim (`claim_order_leg`) and the carrier registration
+/// (`claim_entry`) read, so the leaf the wallet registers is the leaf it claims. Its blinds are zero here; the claim draws
+/// fresh ones (neither the leaf nor the claim nullifier reads them: `ClaimWitness::leaf`, `publics`).
+fn claim_witness(o: &DefiOrder, outcome: Option<(i64, u64, bool)>, leg: u8, out_sk: &[u8; 32]) -> Result<ba::ClaimWitness, String> {
+    let a_blind = amount_blind_for(out_sk, o.nonce);
     let (p_num, p_den, j_min, s_num, s_den, extra) = leaf_terms(o, outcome);
     let withdraw = o.kind == "withdraw";
     // ⭐ EARN STEP 3 — the order's two indices, as its limit commitment names them: a deposit's entry is its batch's opening
@@ -1166,14 +1186,55 @@ fn claim_order_leg(o: &DefiOrder, outcome: Option<(i64, u64, bool)>, leg: u8) ->
         s_num,
         s_den,
         out: 0,
-        out_blind: wr::fresh_lc_blind().ok_or("no entropy for the claim")?,
-        lc_blind: wr::fresh_lc_blind().ok_or("no entropy for the claim")?,
+        out_blind: [0; 8],
+        lc_blind: [0; 8],
     };
-    // what the claim relation pays at this leaf, by its own native rule
-    cw.out = cw.paid().ok_or("the fill does not fit")?;
-    let out = cw.out;
-    let (nf, lc, oc, pays_y) = cw.publics();
-    let leaf = cw.leaf();
+    Ok(cw)
+}
+
+/// ⭐ A-F114 — a claim's carrier entry `(leaf, claim nullifier)`, registered the moment its batch's outcome is known, so the
+/// wallet's absence carrier holds it BEFORE it absorbs the settlement record that makes the leaf (`DEFI_FOLLOW_CAP`).
+fn claim_entry(o: &DefiOrder, outcome: Option<(i64, u64, bool)>, leg: u8, out_sk: &[u8; 32]) -> Option<(Digest4, Digest4)> {
+    let cw = claim_witness(o, outcome, leg, out_sk).ok()?;
+    Some((cw.leaf(), cw.publics().0))
+}
+
+/// ⭐ A-F114 — the blue score below which the wallet's absence carrier may absorb records while this wallet holds a DeFi
+/// order whose batch has not settled (its claim leaf is not registered yet): the score the book stood at when it last showed
+/// that batch still open, so the settlement record is above it. `u64::MAX` with no such order. Set by every pass of the
+/// claim loop; read by the carrier follower (`ensure_canon_follower`).
+pub(crate) static DEFI_FOLLOW_CAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+/// Whether a claim pass has set [`DEFI_FOLLOW_CAP`] since this process started.
+static DEFI_CAP_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The follower's DeFi bound now: the last claim pass's cap; before any pass, `0` while this wallet holds an open order (a
+/// settlement may have folded while it was away, and its leaf is registered only by that first pass), else no bound.
+pub(crate) fn defi_follow_bound() -> u64 {
+    use std::sync::atomic::Ordering::Relaxed;
+    if !usdmd_node::canon_chain::canon_live() {
+        return u64::MAX; // before the upgrade no wrapper is built from the carrier, so nothing waits on it
+    }
+    if DEFI_CAP_READY.load(Relaxed) {
+        return DEFI_FOLLOW_CAP.load(Relaxed);
+    }
+    if read_defi().orders.iter().any(|o| o.status == "open") { 0 } else { u64::MAX }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn claim_order_tail(
+    o: &DefiOrder,
+    mut cw: ba::ClaimWitness,
+    out: u64,
+    nf: [u64; 8],
+    lc: [u64; 8],
+    oc: [u64; 8],
+    pays_y: bool,
+    leaf: [u64; 8],
+    my_ek: Vec<u8>,
+    loc_sk: [u8; 32],
+    out_sk: [u8; 32],
+    keys: pq::NoteKeys,
+) -> Result<Option<(String, String)>, String> {
     let leg = post(
         "/defi_claim_member_leg",
         serde_json::json!({
@@ -1231,7 +1292,7 @@ fn claim_order_leg(o: &DefiOrder, outcome: Option<(i64, u64, bool)>, leg: u8) ->
 
 /// ⭐ §18.14 ONE RUNG OF A SELL'S PAYOUT: the committed burn of `rung` atoms from the smallest coin note that covers it, naming `to` under its ticket, sealed to the key custody already holds (§18.14), change back to this wallet.
 /// `Ok(Some(nullifier))` the node holds the burn; `Ok(None)` not yet (no spendable note, or its member leg or the key is not ready). Nothing moves until the burn folds.
-fn burn_coin_rung(pair: u8, to: &str, rung: u64, pay_after: u64) -> Result<Option<String>, String> {
+fn burn_coin_rung(pair: u8, to: &str, rung: u64, pay_after: u64) -> Result<Option<(String, Option<(String, String, String)>)>, String> {
     // CHAIN-OBJECT: the `Class::PegOut` object this builds and posts to the node's pool. The coin note is spent when a block
     // carries that object and every node applies it at the fold; this wallet only builds it and records what the node said.
     if slot_status() != note_store::SlotStatus::Decided {
@@ -1290,12 +1351,18 @@ fn burn_coin_rung(pair: u8, to: &str, rung: u64, pay_after: u64) -> Result<Optio
     {
         return Err("the burn did not verify against its own binding — nothing was relayed".into());
     }
-    let cm_in = leaf4_to_bytes(wr::asset_note_cm(value_in, tag, in_owner.opening()));
+    let in_leaf = wr::asset_note_cm(value_in, tag, in_owner.opening());
+    let cm_in = leaf4_to_bytes(in_leaf);
+    // A-F114: the burned note's absence wrapper (empty before the upgrade); every later poll refreshes it (`burn_leg_canon_hex`)
+    let canon_absence_hex = object_canon_hex(&[(nf, in_leaf, lc_blind)], "payout burn")?;
+    let lanes = |d: &Digest4| hex::encode(usdmd_node::spend_frontier::digest_to_lane_bytes(d));
+    let leg = usdmd_node::canon_chain::canon_live().then(|| (lanes(&nf), lanes(&in_leaf), lanes(&lc_blind)));
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build();
     let Some((mem, tip)) = membership_bind_for(&agent, &cm_in, nf, lc_blind) else { return Ok(None) };
     let r = post(
         "/peg_out_execute",
         serde_json::json!({
+            "canon_absence_hex": canon_absence_hex,
             "coin": 1,
             "usdm_nullifier": hex::encode(nullifier),
             "out0_cm": hex::encode(leaf4_to_bytes(cms[0])),
@@ -1320,7 +1387,17 @@ fn burn_coin_rung(pair: u8, to: &str, rung: u64, pay_after: u64) -> Result<Optio
         return Err(format!("the node refused the burn: {}", r["outcome"].as_str().unwrap_or("no reason named")));
     }
     reservation.commit(nullifier);
-    Ok(Some(hex::encode(nullifier)))
+    Ok(Some((hex::encode(nullifier), leg)))
+}
+
+/// ⭐ A-F114 — a burn in flight's FRESH absence wrapper from its kept leg (empty before the upgrade or with no leg kept).
+fn burn_leg_canon_hex(leg: Option<&(String, String, String)>) -> String {
+    let Some((nf, leaf, blind)) = leg else { return String::new() };
+    let d = |h: &str| hex::decode(h).ok().and_then(|b| usdmd_node::spend_frontier::digest_from_lane_bytes(&b));
+    match (d(nf), d(leaf), d(blind)) {
+        (Some(nf), Some(leaf), Some(blind)) => object_canon_hex(&[(nf, leaf, blind)], "payout burn").unwrap_or_default(),
+        _ => String::new(),
+    }
 }
 
 /// ⭐ §18.14 — each sell's payout, one rung per note at a time: a burn in flight ends when its note is spent on the chain (the next rung takes its change), or is built again if this wallet's node forgot it. What is below the coin's smallest rung stays a coin note here.
@@ -1346,6 +1423,7 @@ fn advance_payouts(f: &mut DefiFile) {
                 p.left = p.left.saturating_sub(rung);
                 p.sent = p.sent.saturating_add(rung);
                 p.burning = None;
+                p.burning_leg = None; // A-F114: the burn folded; its blind is no longer needed
                 // that rung is custody's to pay now: its address is this wallet's coin for good, its slot stays taken
                 if let (Some(index), Some(address)) = (p.next_vault, p.next_to.clone()) {
                     paid_to_vault.push(VaultRung { index, address, amount: rung, pay_after: p.next_pay_after, created_ms: now_ms() });
@@ -1354,8 +1432,10 @@ fn advance_payouts(f: &mut DefiFile) {
                     p.handed_after.push(p.next_pay_after);
                 }
                 (p.next_to, p.next_pay_after, p.next_vault) = (None, 0, None);
-            } else if claim_held(&nf_hex) == Some(false) {
+            // A-F114: every poll hands the node a fresh wrapper for the burn it holds (`burn_leg_canon_hex`)
+            } else if claim_held(&nf_hex, &burn_leg_canon_hex(p.burning_leg.as_ref())) == Some(false) {
                 p.burning = None; // built again below, to the SAME address and delay
+                p.burning_leg = None;
             } else {
                 continue;
             }
@@ -1385,7 +1465,10 @@ fn advance_payouts(f: &mut DefiFile) {
         // CHAIN-OBJECT: the rung leaves as a `Class::PegOut` object a block carries (`burn_coin_rung`); `p.burning` below is
         // CACHE-ONLY, this wallet's note of what it posted, cleared when the chain shows the object folded.
         match burn_coin_rung(p.pair, &to, rung, p.next_pay_after) {
-            Ok(Some(nf)) => p.burning = Some((nf, rung)),
+            Ok(Some((nf, leg))) => {
+                p.burning = Some((nf, rung));
+                p.burning_leg = leg;
+            }
             Ok(None) => {}
             Err(why) => eprintln!("[defi] a payout rung was not taken yet: {why}"),
         }
@@ -1499,6 +1582,8 @@ pub(crate) fn defi_progress_blocking() -> Result<serde_json::Value, String> {
     };
     let mut claimed = Vec::new();
     let mut in_flight = Vec::with_capacity(f.orders.len());
+    // A-F114: the follower's bound this pass (`DEFI_FOLLOW_CAP`): lowered by every order whose batch the book still shows open
+    let mut follow_cap = u64::MAX;
     for mut o in std::mem::take(&mut f.orders) {
         let book = &books[usize::from(o.pair)];
         if o.batch == u64::MAX {
@@ -1584,6 +1669,7 @@ pub(crate) fn defi_progress_blocking() -> Result<serde_json::Value, String> {
                         left: o.out,
                         sent: 0,
                         burning: None,
+                        burning_leg: None,
                         created_ms: now_ms(),
                         opsec: crate::auto_opsec_on(),
                         next_to: None,
@@ -1688,6 +1774,8 @@ pub(crate) fn defi_progress_blocking() -> Result<serde_json::Value, String> {
                     t
                 }
                 None => {
+                    // A-F114: its batch is still open at the book's score, so its settlement record lies above it
+                    follow_cap = follow_cap.min(book["score"].as_u64().unwrap_or(0));
                     in_flight.push(o);
                     continue;
                 }
@@ -1695,6 +1783,14 @@ pub(crate) fn defi_progress_blocking() -> Result<serde_json::Value, String> {
         } else {
             o.tick.map(|tk| (tk, o.j_min, o.sells))
         };
+        // A-F114: the claim's leaf joins the absence carrier before the follower may pass its settlement record
+        if usdmd_node::canon_chain::canon_live() {
+            for leg in if o.kind == "withdraw" { 0..2u8 } else { 0..1u8 } {
+                if let Some((leaf, nf)) = claim_entry(&o, outcome, leg, &out_sk) {
+                    canon_carrier::register(leaf, nf);
+                }
+            }
+        }
         // ⭐ EARN — a paid withdrawal's second claim, its coin leg, built beside its first
         if o.kind == "withdraw" && o.claim2_cm.is_none() {
             match claim_order_leg(&o, outcome, 1) {
@@ -1725,6 +1821,8 @@ pub(crate) fn defi_progress_blocking() -> Result<serde_json::Value, String> {
         }
     }
     f.orders = in_flight;
+    DEFI_FOLLOW_CAP.store(follow_cap, std::sync::atomic::Ordering::Relaxed);
+    DEFI_CAP_READY.store(true, std::sync::atomic::Ordering::Relaxed);
     advance_payouts(&mut f);
     write_defi(&f)?;
     let orders: Vec<serde_json::Value> = f

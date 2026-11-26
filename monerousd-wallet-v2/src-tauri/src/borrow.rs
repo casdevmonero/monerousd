@@ -367,7 +367,18 @@ pub(crate) fn borrow_close_blocking(swap_id: String, payout_to: String) -> Resul
     }
     let reply: serde_json::Value = agent
         .post(&format!("{}/unit_close", node_url()))
-        .send_json(serde_json::json!({ "request_hex": hex::encode(req.encode().ok_or("the close does not encode")?) }))
+        .send_json(serde_json::json!({
+            "request_hex": hex::encode(req.encode().ok_or("the close does not encode")?),
+            // A-F114: both burns' absence wrappers, unit then debt (the order the node reads the close's legs); the node
+            // relays them to the custodian that publishes (empty before the network upgrade)
+            "canon_absence_hex": object_canon_hex(
+                &[
+                    (unf, wr::asset_note_cm(u, terms.tag(), unit_owner.opening()), ulc_blind),
+                    (dnf, wr::asset_note_cm(value_in, [0, 0, 0], in_owner.opening()), dlc_blind),
+                ],
+                "unit close",
+            )?,
+        }))
         .map_err(|e| format!("the node refused the close: {}", node_refusal(e)))
         .and_then(|r| r.into_json().map_err(|e| format!("close reply json: {e}")))?;
     if reply.get("relayed").and_then(|v| v.as_bool()) != Some(true) {
@@ -379,6 +390,15 @@ pub(crate) fn borrow_close_blocking(swap_id: String, payout_to: String) -> Resul
     reservation.commit(input_nf);
     list[idx].unit = Some(UnitSwap { close_nf: Some(unit_nf), ..unit });
     write_swaps(&list);
+    // A-F114: kept so both burns' fresh wrappers are re-sent while custody gathers (`relayed_send_again`)
+    relayed_keep(
+        "/unit_close",
+        &hex::encode(req.encode().ok_or("the close does not encode")?),
+        &[
+            (unf, wr::asset_note_cm(u, terms.tag(), unit_owner.opening()), ulc_blind),
+            (dnf, wr::asset_note_cm(value_in, [0, 0, 0], in_owner.opening()), dlc_blind),
+        ],
+    );
     Ok(serde_json::json!({
         "relayed": true,
         "debt_usdm": debt as f64 / 1e8,

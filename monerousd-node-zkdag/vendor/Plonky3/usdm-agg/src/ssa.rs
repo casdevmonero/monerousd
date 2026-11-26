@@ -202,6 +202,19 @@ pub fn ext_w() -> Fa4 {
     <Fa4 as BinomiallyExtendable<4>>::W
 }
 
+/// ⭐ PERFECT-CHAIN B1 — ONE MERKLE LEVEL NATIVELY, exactly what [`Builder::comp`] constrains: the first [`RATE`] lanes of the
+/// width-16 permutation over `left ‖ right`. One definition, so a tree built here and a path checked in circuit cannot drift.
+#[must_use]
+pub fn comp_native(left: &[Fa4; RATE], right: &[Fa4; RATE]) -> [Fa4; RATE] {
+    let mut st = [Fa4::ZERO; WIDTH];
+    st[..RATE].copy_from_slice(left);
+    st[RATE..].copy_from_slice(right);
+    perm16().permute_mut(&mut st);
+    let mut out = [Fa4::ZERO; RATE];
+    out.copy_from_slice(&st[..RATE]);
+    out
+}
+
 fn perm16() -> &'static usdm_decider::hiding_decider::Perm16 {
     static P: std::sync::OnceLock<usdm_decider::hiding_decider::Perm16> = std::sync::OnceLock::new();
     P.get_or_init(|| {
@@ -555,6 +568,25 @@ pub struct Program {
     pub public: Vec<(Addr, Fa4, u64)>,
     /// The statement's addresses, in order (`Builder::statement`).
     pub statement: Vec<Addr>,
+    /// ⭐ A-F114 — a BLINDED program's placement ([`place_row`]): every laid row in the quarter whose first AND last row bits are 0,
+    /// every other row free for randomness. `false`: every program the door has always laid.
+    pub quarter: bool,
+}
+
+/// ⭐ A-F114 — WHERE LAID ROW `li` SITS. Plain: [`row_at`] (bit-reversed over the table). QUARTER (a blinded program, the
+/// published spend wrapper): bit-reversed over `nvars − 2` bits, then shifted up one, so the row's position has its FIRST
+/// bit 0 (the half the zerocheck binds first, `air_zerocheck` folds the high variable: its first round pairs every real row
+/// with a random one) AND its LAST bit 0 (the GKR's bottom layer adds leaves `2j`, `2j + 1`: every bottom pair holds a random
+/// leaf). READ why both (2026-11-22): the half-table blinding put randomness only on the last bit, which masked the GKR and
+/// left the zerocheck's first n − 1 rounds summing real rows alone; the spend carrier's §BE-1 split masks the first bit only
+/// because the light decider has no GKR.
+#[must_use]
+pub fn place_row(li: usize, nvars: usize, quarter: bool) -> usize {
+    if quarter && nvars >= 2 {
+        row_at(li, nvars - 2) << 1
+    } else {
+        row_at(li, nvars)
+    }
 }
 
 /// The smallest trace the committed door proves (its folding floor).
@@ -583,6 +615,53 @@ fn dst_slot(d: Dst) -> Option<(Addr, i8)> {
 /// Lay `b`'s operations into rows (a function of the operation list alone, never of values) and count every
 /// address's reads. `Err` if a program reads an address nobody writes.
 pub fn lay(b: &Builder) -> Result<(Vec<RowPlan>, Program), String> {
+    lay_min(b, MIN_NVARS)
+}
+
+/// ⭐ A-F114 — `lay` at no fewer than `2^min_nvars` rows. A function of the operation list alone, like `lay`.
+pub fn lay_at(b: &Builder, min_nvars: usize) -> Result<(Vec<RowPlan>, Program), String> {
+    lay_min(b, min_nvars.max(MIN_NVARS))
+}
+
+/// ⭐ A-F114 — a BLINDED program's lay: at no fewer than `2^min_nvars` rows and at least four times its laid rows, every
+/// laid row placed in the quarter [`place_row`] names. A function of the operation list alone, like `lay`.
+pub fn lay_at_quarter(b: &Builder, min_nvars: usize) -> Result<(Vec<RowPlan>, Program), String> {
+    lay_min_placed(b, min_nvars.max(MIN_NVARS), true)
+}
+
+/// The first address a padding public entry takes (above any builder's count, below the field's modulus).
+pub const PAD_ADDR_BASE: u32 = 2_000_000_000;
+
+/// ⭐ A-F114 — THE UNIFORM LAY of a universal program's child (`absence_ssa`): `lay`, at least `2^min_nvars` rows, with the
+/// public list in CANONICAL order (the statement's entries first, in statement order, then the rest in builder order) and
+/// padded to exactly `pub_len` entries with ones nothing reads (multiplicity zero, value zero, addresses from
+/// [`PAD_ADDR_BASE`]). Prover and verifier both read `Program.public`, so the order is the program's own; a padded entry
+/// adds a zero bus term and a zero observed value. `Err` if the program's own list is longer than `pub_len`.
+pub fn lay_uniform(b: &Builder, min_nvars: usize, pub_len: usize) -> Result<(Vec<RowPlan>, Program), String> {
+    let (rows, mut prog) = lay_min(b, min_nvars.max(MIN_NVARS))?;
+    let mut out: Vec<(Addr, Fa4, u64)> = Vec::with_capacity(prog.public.len());
+    for a in &prog.statement {
+        let e = prog.public.iter().find(|p| p.0 == *a).ok_or("a statement address is not public")?;
+        out.push(*e);
+    }
+    out.extend(prog.public.iter().filter(|p| !prog.statement.contains(&p.0)).copied());
+    if out.len() > pub_len {
+        return Err(format!("the program has {} public entries, more than the uniform {pub_len}", out.len()));
+    }
+    let mut i = 0u32;
+    while out.len() < pub_len {
+        out.push((PAD_ADDR_BASE + i, Fa4::ZERO, 0));
+        i += 1;
+    }
+    prog.public = out;
+    Ok((rows, prog))
+}
+
+fn lay_min(b: &Builder, min_nvars: usize) -> Result<(Vec<RowPlan>, Program), String> {
+    lay_min_placed(b, min_nvars, false)
+}
+
+fn lay_min_placed(b: &Builder, min_nvars: usize, quarter: bool) -> Result<(Vec<RowPlan>, Program), String> {
     let mut rows: Vec<RowPlan> = Vec::new();
     // 1. permutations and Merkle levels: one a row, in order
     for (i, op) in b.ops.iter().enumerate() {
@@ -689,11 +768,11 @@ pub fn lay(b: &Builder) -> Result<(Vec<RowPlan>, Program), String> {
         }
     }
     let nrows = rows.len();
-    let t = (nrows).max(1 << MIN_NVARS).next_power_of_two();
+    let t = (if quarter { 4 * nrows } else { nrows }).max(1 << min_nvars).next_power_of_two();
     let nvars = t.trailing_zeros() as usize;
     let mut fixed = vec![vec![Fa4::ZERO; t]; NFIXED];
     for (li, r) in rows.iter().enumerate() {
-        let ri = row_at(li, nvars);
+        let ri = place_row(li, nvars, quarter);
         if let Some(i) = r.perm {
             fixed[S_PERM][ri] = Fa4::ONE;
             if let Op::Comp { g, .. } = b.ops[i] {
@@ -730,7 +809,7 @@ pub fn lay(b: &Builder) -> Result<(Vec<RowPlan>, Program), String> {
         }
     }
     let public = b.public.iter().map(|&(a, v)| (a, v, reads.get(&a).copied().unwrap_or(0))).collect();
-    Ok((rows, Program { rows: nrows, nvars, fixed, public, statement: b.statement.clone() }))
+    Ok((rows, Program { rows: nrows, nvars, fixed, public, statement: b.statement.clone(), quarter }))
 }
 
 /// The committed columns of a laid program from the builder's values: `committed[c][row]`.
@@ -803,7 +882,7 @@ pub fn execute(b: &Builder, rows: &[RowPlan], prog: &Program) -> Result<Vec<Vec<
                 row[33] = p2 * bit(29) * bit(30);
             }
         }
-        let at = row_at(ri, prog.nvars);
+        let at = place_row(ri, prog.nvars, prog.quarter);
         for (c, v) in row.iter().enumerate() {
             cols[c][at] = *v;
         }

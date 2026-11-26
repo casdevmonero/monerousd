@@ -687,6 +687,14 @@ pub struct BandDoor {
     /// drops and re-warms the view. Never a tag.
     pub held_rewind_misses: u64,
     pub copies_refused: u64,
+    /// ⭐ A-F114 UPGRADE (U1, docs/SPENT-SET-GROWTH-DEEP-AUDIT-20261122.md) — FIXED-ROOT under the constant chain
+    /// (`params::canon_live()`): no node holds the spent set, so no band step can be proven, and the fold judges every tag by
+    /// the canonical window instead (`Node::respend_decide_at_fold`'s `canon_live` arm). Every noted step with a known
+    /// admitted set applies at the drain with NO proof and NO root change, so the door never goes stale, the join chain names
+    /// step 0 alone, and the tag journal and history keep their bounds. A relayed proof is refused and none is wanted;
+    /// `spent_since` / `admitted_since` place no root (every step's post is the same root, so a placement would mean nothing).
+    /// SCALE: no term — the same journal bound (`lag_cap`). AI RESISTANT: (b) ordinary code; no verdict under the switch reads it.
+    fixed_root: bool,
     /// ⛔ TEST BUILDS ONLY — this door verifies the BOUND band-step double (`usdm_decider::nf_sparse_air::band_bound`)
     /// instead of real carriers: a whole hub of nodes is armed together, so the two forms never mix. A node binary has no
     /// such field.
@@ -780,6 +788,7 @@ impl BandDoor {
             stale_from: None,
             held_rewind_misses: 0,
             copies_refused: 0,
+            fixed_root: false,
             #[cfg(test)]
             bound_double: false,
             #[cfg(test)]
@@ -791,6 +800,16 @@ impl BandDoor {
     #[must_use]
     pub fn band_root(&self) -> Digest4 {
         self.root
+    }
+
+    /// ⭐ A-F114 U1 — run FIXED-ROOT (see the field). The node sets it from `params::canon_live()` before every drain.
+    pub fn set_fixed_root(&mut self, on: bool) {
+        self.fixed_root = on;
+    }
+
+    #[must_use]
+    pub fn fixed_root(&self) -> bool {
+        self.fixed_root
     }
 
     /// Set the slice count (production: [`band_relay_k`], the default — the node never needs this; the k-measurement pin
@@ -825,6 +844,9 @@ impl BandDoor {
     /// solicited window has room. The relay asks this before it sends a getdata.
     #[must_use]
     pub fn wants(&self, block: &[u8; 32]) -> bool { // NOT-A-TAG: a block id
+        if self.fixed_root {
+            return false; // A-F114 U1: no step is proven or fetched under the constant chain
+        }
         let awaits = self.awaiting.values().any(|(b, a)| b == block && a.as_ref().is_some_and(|a| !a.is_empty()));
         awaits
             && !self.verified.contains_key(block)
@@ -1065,6 +1087,9 @@ impl BandDoor {
     /// SCALE: one ring scan (bounded by the ring) and at most `EVIDENCE_WINDOW_STEPS` history entries; no new state, nothing grows.
     /// cons: none on state; a warm answered from history carries up to one evidence window more of admitted tags in its tail.
     fn place_root(&self, root: &Digest4) -> Option<(Vec<(u64, &Vec<[u8; 32]>)>, usize)> {
+        if self.fixed_root {
+            return None; // A-F114 U1: every post is one root under the switch, so no root places a step
+        }
         if let Some(i) = self.journal.iter().rposition(|s| s.post == *root) {
             return Some((Vec::new(), i + 1));
         }
@@ -1576,6 +1601,9 @@ impl BandDoor {
     /// "window full", each reset the cursor and was proven again: 428 jobs for 304 steps).
     #[must_use]
     pub fn wants_own(&self, block: &[u8; 32]) -> bool { // NOT-A-TAG: a block id
+        if self.fixed_root {
+            return false;
+        }
         let awaits = self.awaiting.values().any(|(b, a)| b == block && a.as_ref().is_some_and(|a| !a.is_empty()));
         awaits
             && !self.verified.contains_key(block)
@@ -1586,6 +1614,9 @@ impl BandDoor {
     /// The one admission (see [`Self::offer_step`]); `own` = this node proved it (its hold counts against the own-ahead
     /// budget, never against the pulled window).
     fn offer_step_as(&mut self, t: BandTransition, solicited: bool, own: bool) -> BandReceipt {
+        if self.fixed_root {
+            return BandReceipt::Refused("the band is fixed-root under the constant chain: no step is proven");
+        }
         let cover = usdm_decider::nf_sparse_air::PRODUCTION_BLOCK_COVER;
         let k = self.chain_k;
         if t.k as usize != k {
@@ -1692,8 +1723,20 @@ impl BandDoor {
                 break;
             };
             let block = *block;
-            let Some(admitted) = admitted.clone() else {
-                break;
+            // ⛔⛔ LIVE-FOLD W5 (lane livefold, 2026-11-25; docs/LIVE-FOLD-WEDGE-DEEP-AUDIT-20261125.md W5) — UNDER THE FIXED ROOT AN
+            // UNKNOWN STEP NEVER HOLDS THE BAND. A step noted with no admitted set (a shell at its fold) stopped the pointer until
+            // its body came; under the constant chain no proof is made (A-F114 U1), so nothing but the body could move it, the
+            // band sat at its lag cap and the fold waited on it (DB-396) for ever — MEASURED on the live origin after the W1
+            // restart (main fed3687b): 530 `[fold-wait] DB-396 … 64 step(s)` lines, `[band-worker] idle`, the fold at 3865.
+            // Read why it is safe: under the fixed root every journal post is the one root, so `place_root` lands on the LAST
+            // step and `spent_since` scans no journal entry's admitted set (nothing reads them); a double spend under the
+            // constant chain is refused by the canonical chain's first-wins in the proven span fold, never by the band. The
+            // step applies as idle (it moves nothing). Outside the fixed root the pointer still waits for the body.
+            // AI RESISTANT (b); SCALE: O(1) a step.
+            let admitted = match admitted.clone() {
+                Some(a) => a,
+                None if self.fixed_root => Vec::new(),
+                None => break,
             };
             // A-F56 MEASUREMENT: the pointer only ever takes the next step, so a step applied after a step that is not its
             // predecessor means a step this door never noted, or forgot, is skipped here while every peer applies it.
@@ -1723,6 +1766,13 @@ impl BandDoor {
             }
             // §11.12 — the step applies from its VERIFIED relayed copy (checked at `offer_step` against exactly this
             // pre and band: the pointer's root and the applied band); none yet → the pointer WAITS, never skips
+            if self.fixed_root {
+                // A-F114 U1: no proof, no root change; the journal keeps the step's admitted tags for its reach
+                self.journal.push_back(BandStep { ordinal, block, before: Vec::new(), admitted: ordered, post: self.root });
+                self.finish_step(ordinal, ring_len);
+                out.push(BandApplied { ordinal, block, touched: 0, holder_disagreed: Vec::new() });
+                continue;
+            }
             let Some(v) = self.verified.remove(&block) else {
                 break;
             };
@@ -4598,6 +4648,25 @@ pub struct NfAbsenceWitness {
     // was first REACHED — different quantities, so requiring them equal rejected honest spends. An unbound
     // field is worse than no field: the boundary tamper flips its last byte and the gate admits a corrupted
     // witness. `base_acc` alone is enough, and it IS checked against this chain's own index.
+}
+
+/// The spend wrappers a tx's absence witness carries (empty when it carries none or they do not decode).
+#[must_use]
+pub fn canon_wrappers(w: &NfAbsenceWitness) -> Vec<CanonAbsence> {
+    postcard::from_bytes(&w.proof).unwrap_or_default()
+}
+
+/// ⭐ A-F114 2c — a spend wrapper and the chain end it was built to (a chain value the node's window holds). From the network
+/// upgrade that switches `canon_chain::CANON_LIVE` on, a tx's ONE `NfAbsenceWitness` carries `postcard(Vec<CanonAbsence>)` in
+/// its `proof` bytes, one per member tuple in tuple order ([`canon_wrappers`]). No struct field changes, so today's wire
+/// (where a wallet's base-state witness carries an EMPTY proof) decodes exactly as before.
+/// O1-FOOTPRINT-REVIEWED: per-witness bytes (a constant-size proof, ≤ usdm_agg::absence_ssa::ABS_MAX_BYTES), never a store.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CanonAbsence {
+    /// `usdm_agg::absence_ssa::AbsProof`, postcard.
+    pub proof: Vec<u8>,
+    /// The canonical tag chain's value the carrier ends at.
+    pub end: crate::spend_frontier::Digest4,
 }
 
 /// ⭐⭐⭐ OWNED COVER — a wallet's CONSTANT-WIDTH bundle of maintained witnesses: its real spend PLUS the per-tx

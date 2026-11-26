@@ -1584,7 +1584,7 @@ impl Node {
         if slots.is_empty() {
             return;
         }
-        self.da_tags_mem.insert(seq, slots.to_vec());
+        self.da_tags_mem.insert(seq, canonical_tag_order(slots.to_vec()));
     }
 
     // ⛔ `da_store_fold_inputs` DELETED 2026-08-15 — it read/wrote a PER-BLOCK store (`da_fold_mem`/`da_nf_mem`),
@@ -1680,8 +1680,9 @@ impl Node {
     /// One past the fold position of the validators' finalized block (0 when it has none here). A wallet reads a note below it as
     /// final rather than only spendable. Two lookups; nothing stored.
     pub fn da_final_record_top(&self) -> u64 {
-        self.finality
-            .finalized_block()
+        // ⭐⭐⭐ FINALITY BY WORK (A-F140's second reader, found by the testnet gate's double-spend check 2026-11-25: the wallet's
+        // "final" balance reads this, and it read the vote tally, so a paid note never turned final): the work-final block
+        self.user_final_block()
             .and_then(|b| self.da_ord_mem.get(&Self::da_record_id_for_block(&b, 0)))
             .map_or(0, |o| o + 1)
     }
@@ -2079,7 +2080,14 @@ impl Node {
                     // view, so the warm started over and the node re-anchored again: MEASURED verifier rig (main b213c710) node 1,
                     // 2,418 blind waits with 'view held false', 8 view drops against 2 full installs, 7 adopts. A warm that stops
                     // landing shards still lets the repair fire, so A-F63's bound on a fold that waits holds.
-                    if landed && self.fold_wait_on.is_some() {
+                    // ⛔ W-FOLD-3 (docs/LIVE-FINALITY-AND-FOLD-WEDGE-DEEP-AUDIT-20261125.md): only a wait on a block whose BODY is held (the
+                    // blind fold A-F82 names) restarts here. A wait on a shell or on data not held is not helped by a shard landing, and
+                    // restarting it kept the outgrown verdict from ever firing while the view warmed (live, 2026-11-25 18:55–19:04: 256+
+                    // passes on one shell, no "[fold-outgrown]", the view's warm still running) — W1's withhold never came
+                    let waits_on_held_body = self.fold_wait_on.is_some_and(|(p, _)| {
+                        self.unfolded_blocks.iter().any(|x| x.id() == p && !x.pow_proof.is_empty())
+                    });
+                    if landed && waits_on_held_body {
                         self.fold_wait_since_len = // A-F96: chain length, the coordinate the reach is defined in
                             self.relay.dag().selected_tip().and_then(|t| self.relay.dag().get(&t)).map_or(0, |n| n.selected_chain_len);
                     }
@@ -2460,4 +2468,42 @@ impl Node {
             && plan.iter().collect::<std::collections::BTreeSet<_>>().len() == plan.len()
     }
 
+}
+
+/// ⛔ A-F118 (lane speed5r, 2026-11-22) — A RECORD'S LOCATOR TAGS IN ONE ORDER: by slot, then by tag. The two writers of
+/// `da_tags_mem` (`da_store_tags`, in the order a record's tags arrived, and `da_tags_replace`, the fold's strip and restore,
+/// which sorts by slot) stored the same tags in two orders, so two replayed nodes held one record's list differently —
+/// MEASURED (replica census, main bb4b7d46): `da_tags_mem` ORDER-ONLY between the two replayers at record 56131534439088564.
+/// Every reader takes a tag by its slot; the order is now a function of the tags alone.
+#[must_use]
+pub(crate) fn canonical_tag_order(mut tags: Vec<(u8, [u8; crate::oli::K_BYTES])>) -> Vec<(u8, [u8; crate::oli::K_BYTES])> {
+    tags.sort();
+    tags
+}
+
+/// What [`merge_slot_tag`] did to a record's tag list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TagMerge {
+    Added,
+    Replaced,
+    Kept,
+}
+
+/// ⛔ A-F118 (lane speed5r, 2026-11-22) — THE ONE MERGE RULE for a record's locator tags, used by every filer: a slot with no key
+/// takes this one; a REAL unit's slot (`real`: below the record's real notes) takes the key that names it; a cover slot keeps
+/// its first (the ledger's uniform filing carries a decoy for every cover slot). Three writers held two rules (the live filer
+/// replaced a real slot, the sidecar adopt and the checkpoint restore kept the first key everywhere), so a joiner held a cover
+/// key in a real slot a replayer had replaced — MEASURED (replica census, main 56be6497): `da_tags_mem` CONTENT at slot 1.
+pub(crate) fn merge_slot_tag(merged: &mut Vec<(u8, [u8; crate::oli::K_BYTES])>, slot: u8, k: [u8; crate::oli::K_BYTES], real: bool) -> TagMerge {
+    match merged.iter_mut().find(|(s, _)| *s == slot) {
+        Some(entry) if real && entry.1 != k => {
+            entry.1 = k;
+            TagMerge::Replaced
+        }
+        Some(_) => TagMerge::Kept,
+        None => {
+            merged.push((slot, k));
+            TagMerge::Added
+        }
+    }
 }

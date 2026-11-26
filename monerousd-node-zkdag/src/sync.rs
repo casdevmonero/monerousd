@@ -353,6 +353,13 @@ pub struct NullifierSnapshot {
     /// as `FoldCarry.ancestors`). Bound into `sync_binding` as one fixed-width digest. ≤ (keep_depth + span) × 56 B.
     #[serde(default)]
     pub nf_fold_span: Vec<([u8; 32], u128, u64)>,
+    /// ⭐ A-F114 UPGRADE (U2, docs/SPENT-SET-GROWTH-DEEP-AUDIT-20261122.md) — THE CANONICAL CHAIN this state stands on: its next
+    /// record index, its end, the judged window's digest and its record counters. In `state_digest_parts`, so the join door's
+    /// 32 mined vouchers vouch it, and in `sync_binding`. The window's records travel apart (bulk kind 33), each checked against
+    /// this end link by link. Zero on today's chain (the switch off). 80 B. `serde(default)` only lets an older bundle decode:
+    /// a stripped or zeroed field changes the state digest, so the join door counts no voucher for it and nothing adopts.
+    #[serde(default)]
+    pub canon: crate::canon_chain::CanonState,
 }
 
 /// G2g-r2a step 2: the one spelling of the fold-span member list inside `sync_binding` — domain-separated, count-prefixed.
@@ -586,6 +593,7 @@ pub fn state_digest_parts(
         put(&(&n.bond_heights, &n.bond_locked_notes, &n.unbonding, &n.peg_wrapped_assets, &n.peg_pools)),
         put(&(ion_pending_digest(&n.peg_ion_pending), n.peg_ion_usdm_held, n.peg_ion_pools)),
         put(&(&n.peg_retention_endowment_commit, &n.l2_state_root, &n.root_history_peaks_hex, n.peg_sat_issued, &n.peg_pendulum, &n.peg_br)),
+        put(&n.canon), // ⭐ A-F114 U2: the canonical chain, vouched with the rest
     ]
 }
 
@@ -1705,6 +1713,13 @@ pub fn sync_binding(
     // ⭐ §BR: the §BR ledger words (pools, quarters, yield index, set-aside, stake snapshot + paid-out total, deployments,
     // attestations) as one fixed-width digest, last — the preimage still parses from the end.
     buf.extend_from_slice(&nullifier.peg_br.digest());
+    // ⭐ A-F114 U2: the canonical chain the state stands on (fixed width, after §BR)
+    buf.extend_from_slice(&nullifier.canon.index.to_le_bytes());
+    buf.extend_from_slice(&nullifier.canon.c);
+    buf.extend_from_slice(&nullifier.canon.window);
+    for s in [nullifier.canon.seqs.0, nullifier.canon.seqs.1, nullifier.canon.seqs.2] {
+        buf.extend_from_slice(&s.to_le_bytes());
+    }
     let h = Hash32::hash(&buf);
     let mut acc = [0u8; 16];
     acc.copy_from_slice(&h.as_bytes()[..16]);
@@ -1843,6 +1858,9 @@ pub struct SyncState {
     /// G2g-r2a — the CERTIFIED fold-span members (id, blue_work, blue_score) whose bodies the adopter places before it
     /// switches to `nf_fold_base_words`. Bound into `sync_binding` (`fold_span_digest`).
     pub nf_fold_span: Vec<([u8; 32], u128, u64)>,
+    /// ⭐ A-F114 U2 — the CERTIFIED canonical chain (see the `NullifierSnapshot` field doc); the adopter pulls its window.
+    #[serde(default)]
+    pub canon: crate::canon_chain::CanonState,
 }
 
 /// Outcome of an adopt attempt. `Adopted` carries the state to install; every rejection leaves the
@@ -2113,6 +2131,7 @@ pub fn adopt_sync_bundle(
         peg_br: bundle.nullifier.peg_br.clone(),
         nf_fold_base_words: bundle.nullifier.nf_fold_base_words,
         nf_fold_span: bundle.nullifier.nf_fold_span.clone(),
+        canon: bundle.nullifier.canon,
 })
 }
 
@@ -2203,6 +2222,7 @@ mod tests {
             peg_br: Default::default(),
             nf_fold_base_words: Default::default(),
             nf_fold_span: Vec::new(),
+            canon: Default::default(),
             peg_price_marks: Vec::new(),
             bond_heights: Vec::new(),
             bond_locked_notes: Vec::new(),
@@ -2333,6 +2353,7 @@ mod tests {
             peg_br: Default::default(),
             nf_fold_base_words: Default::default(),
             nf_fold_span: Vec::new(),
+            canon: Default::default(),
             peg_price_marks: Vec::new(),
             bond_heights: Vec::new(),
             bond_locked_notes: Vec::new(),
@@ -2662,6 +2683,7 @@ mod tests {
             peg_br: Default::default(),
             nf_fold_base_words: Default::default(),
             nf_fold_span: Vec::new(),
+            canon: Default::default(),
             peg_price_marks: Vec::new(),
             bond_heights: Vec::new(),
             bond_locked_notes: Vec::new(),
