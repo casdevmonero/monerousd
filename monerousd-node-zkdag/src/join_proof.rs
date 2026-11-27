@@ -384,6 +384,17 @@ pub fn verify_join(proof: &JoinProof, claim: &JoinClaim<'_>, digest: &dyn Fn(&Bl
     if level_root(&proof.anchor_array) != claim.anchor.level_root {
         return Err(R::AnchorArray);
     }
+    // ── the state, on the fold chain ── ⛔ U-LOCK (2026-11-27): checked FIRST. It reads only the carried fold steps and the claim, no
+    // work hash, and it ran after every link's and every suffix header's post-quantum work digest, so a bundle refused for `State`
+    // paid the whole hashing first. MEASURED on the live origin: "[join-serve] nothing to serve: 7 bundle(s) frozen, the newest
+    // refusal Some(State)" after a kind-4 ask held the runtime lock 17,643 ms and then 36,301 ms, every wallet read waiting behind it.
+    // The verdict is unchanged: every check still runs and refuses exactly as before; only a doomed bundle is refused cheaply.
+    let idx = |o: u64| o.checked_sub(proof.fold_start).map(|d| d as usize).filter(|d| *d < proof.fold_steps.len());
+    let at = idx(claim.anchor_ordinal).ok_or(R::State)?;
+    let anchor_step = &proof.fold_steps[at];
+    if anchor_step.state != claim.state || anchor_step.block != *claim.anchor.id().as_bytes() {
+        return Err(R::State);
+    }
     // ── the level chain ──
     let level = proof.level as usize;
     if level >= LEVELS {
@@ -443,13 +454,6 @@ pub fn verify_join(proof: &JoinProof, claim: &JoinClaim<'_>, digest: &dyn Fn(&Bl
             return Err(R::SuffixEasy);
         }
         above.insert(*h.id().as_bytes());
-    }
-    // ── the state, on the fold chain ──
-    let idx = |o: u64| o.checked_sub(proof.fold_start).map(|d| d as usize).filter(|d| *d < proof.fold_steps.len());
-    let at = idx(claim.anchor_ordinal).ok_or(R::State)?;
-    let anchor_step = &proof.fold_steps[at];
-    if anchor_step.state != claim.state || anchor_step.block != *claim.anchor.id().as_bytes() {
-        return Err(R::State);
     }
     let mut fold_chain: Vec<[u8; 32]> = Vec::with_capacity(proof.fold_steps.len());
     let mut c = proof.fold_prev;

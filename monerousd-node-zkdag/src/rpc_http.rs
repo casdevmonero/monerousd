@@ -3305,7 +3305,9 @@ transaction, so NOTHING was burned or seated. Retry.\"}"
                     let fold_wait_passes = rt.node().fold_wait_state().map(|(_, k)| k).unwrap_or(0);
                     // ONE question, one answer: the door, the runtime's escalation and the ecosystem gate
                     // all read the same verdict, so they cannot disagree about whether this node is stuck.
-                    let fold_wedged = rt.node().wedge_reason().is_some();
+                    let fold_wedged = rt.node().fold_wedge_reason().is_some();
+                    // the record-side debt, served apart: real and loud, but the fold moves (Node::fold_wedge_reason)
+                    let record_debt_stalled = rt.node().record_debt_reason().is_some();
                     // Blocks folded into A_tip. It MUST equal the number of absence-fold records served, or a
                     // spender's fold can never reproduce A_tip and every send fails closed.
                     let nf_fold_seq = rt.node().nf_fold_seq();
@@ -3321,7 +3323,7 @@ transaction, so NOTHING was burned or seated. Retry.\"}"
                         // DAG must leak zero throughput/volume metadata to an observer (an adaptive `required_stamp_bits`
                         // already carries the only congestion signal the wallet needs to size its anti-spam PoW).
                         format!(
-                            "{{\"status\":\"OK\",\"blocks\":{},\"blocks_in_memory\":{},\"tips\":{},\"blue_score\":{},\"height\":{},\"finalized_height\":{},\"required_stamp_bits\":{},\"dag_width\":{},\"target_spacing_ms\":{},\"sat_halving_interval\":{},\"tx_per_block\":{},\"tps\":{},\"proving_power\":{},\"chain_id\":\"{}\",\"mesh_joined\":{},\"mesh_joined_how\":\"{}\",\"foreign_network_contacts\":{},\"network_id\":\"{}\",\"build_unix\":{},\"build_time\":\"{}\",\"build_src\":\"{}\",\"peers\":{},\"live_peer_contacts\":{},\"live_peer_contacts_delta\":{},\"live_writers_held\":{},\"onion_published\":{},\"own_addr\":\"{}\",\"served_seq\":{},\"records_held\":{},\"record_top\":{},\"final_record_top\":{},\"history_complete\":{},\"nf_fold_seq\":{},\"account_root\":\"{}\",\"token_registry_root\":\"{}\",\"membership_acc\":\"{}\",\"unspent_root\":\"{}\",\"produce_lock_wait_ms\":{},\"produce_grind_ms\":{},\"produce_cycle_ms\":{},\"produce_blocks\":{},\"produce_mine_fails\":{},\"tip_work\":{},\"tick_passes\":{},\"tick_last_ms\":{},\"tick_blocks\":{},\"ip_attempts\":{},\"ip_template_none\":{},\"ip_mine_none\":{},\"ip_graft_none\":{},\"bp_slots\":{},\"bp_jobs\":{},\"bp_template_none\":{},\"template_ms\":{},\"graft_ms\":{},\"graft_relay_ms\":{},\"graft_unspent_ms\":{},\"graft_record_ms\":{},\"graft_bond_ms\":{},\"ing_blocks\":{},\"ing_verify_ms\":{},\"ing_graft_ms\":{},\"ing_apply_ms\":{},\"ing_save_ms\":{},\"ing_pow_ms\":{},\"ing_settle_ms\":{},\"unspent_serve_ready\":{},\"wanted_records\":{},\"wanted_ids\":{},\"missing_records\":{},\"missing_by_ordinal\":{},\"missing_by_record_id\":{},\"missing_da_by_id\":{},\"missing_da_by_ordinal\":{},\"missing_spendfold_gap\":{},\"missing_want_cap\":{},\"missing_wants_saturated\":{},\"note_payload_debt\":{},\"sidecar_gap_count\":{},\"fold_unfolded\":{},\"fold_wait_passes\":{},\"fold_wedged\":{},\"nf_view_present\":{},\"nf_view_matches_acc\":{},\"record_want_stall_passes\":{},\"record_want_stall_ms\":{},\"private_network\":\"{}\"}}",
+                            "{{\"status\":\"OK\",\"blocks\":{},\"blocks_in_memory\":{},\"tips\":{},\"blue_score\":{},\"height\":{},\"finalized_height\":{},\"required_stamp_bits\":{},\"dag_width\":{},\"target_spacing_ms\":{},\"sat_halving_interval\":{},\"tx_per_block\":{},\"tps\":{},\"proving_power\":{},\"chain_id\":\"{}\",\"mesh_joined\":{},\"mesh_joined_how\":\"{}\",\"foreign_network_contacts\":{},\"network_id\":\"{}\",\"build_unix\":{},\"build_time\":\"{}\",\"build_src\":\"{}\",\"peers\":{},\"live_peer_contacts\":{},\"live_peer_contacts_delta\":{},\"live_writers_held\":{},\"onion_published\":{},\"own_addr\":\"{}\",\"served_seq\":{},\"records_held\":{},\"record_top\":{},\"final_record_top\":{},\"history_complete\":{},\"nf_fold_seq\":{},\"account_root\":\"{}\",\"token_registry_root\":\"{}\",\"membership_acc\":\"{}\",\"unspent_root\":\"{}\",\"produce_lock_wait_ms\":{},\"produce_grind_ms\":{},\"produce_cycle_ms\":{},\"produce_blocks\":{},\"produce_mine_fails\":{},\"tip_work\":{},\"tick_passes\":{},\"tick_last_ms\":{},\"tick_blocks\":{},\"ip_attempts\":{},\"ip_template_none\":{},\"ip_mine_none\":{},\"ip_graft_none\":{},\"bp_slots\":{},\"bp_jobs\":{},\"bp_template_none\":{},\"template_ms\":{},\"graft_ms\":{},\"graft_relay_ms\":{},\"graft_unspent_ms\":{},\"graft_record_ms\":{},\"graft_bond_ms\":{},\"ing_blocks\":{},\"ing_verify_ms\":{},\"ing_graft_ms\":{},\"ing_apply_ms\":{},\"ing_save_ms\":{},\"ing_pow_ms\":{},\"ing_settle_ms\":{},\"unspent_serve_ready\":{},\"wanted_records\":{},\"wanted_ids\":{},\"missing_records\":{},\"missing_by_ordinal\":{},\"missing_by_record_id\":{},\"missing_da_by_id\":{},\"missing_da_by_ordinal\":{},\"missing_spendfold_gap\":{},\"missing_want_cap\":{},\"missing_wants_saturated\":{},\"note_payload_debt\":{},\"sidecar_gap_count\":{},\"fold_unfolded\":{},\"fold_wait_passes\":{},\"fold_wedged\":{},\"record_debt_stalled\":{},\"nf_view_present\":{},\"nf_view_matches_acc\":{},\"record_want_stall_passes\":{},\"record_want_stall_ms\":{},\"private_network\":\"{}\"}}",
                             // ⛔ `blocks` NOW MEANS CHAIN HEIGHT, NOT THIS PROCESS'S IN-MEMORY COUNT.
                             //
                             // It used to report `n_blocks` — the blocks THIS PROCESS holds in memory. After an
@@ -3364,7 +3366,7 @@ transaction, so NOTHING was burned or seated. Retry.\"}"
                             rt.node().token_registry_root().iter().map(|b| format!("{b:02x}")).collect::<String>(),
                             rt.node().membership_acc().iter().map(|w| format!("{w:016x}")).collect::<String>(),
                             rt.node().nullifier_root().iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                            pp_lock_wait, pp_grind, pp_cycle, pp_blocks, pp_fails, tip_work, tick_passes, tick_last_ms, tick_blocks, ip_att, ip_tmpl, ip_mine, ip_graft, bp_slots, bp_jobs, bp_tmpl_none, tmpl_ms, graft_ms, g_relay, g_uns, g_rec, g_bond, ing_blocks, ing_verify, ing_graft, ing_apply, ing_save, ing_pow, ing_settle, unspent_serve_ready, wanted_records, wanted_ids, missing_records, mw_ord, mw_rid, mw_da_id, mw_da_ord, mw_gap, missing_want_cap, missing_wants_saturated, note_payload_debt, sidecar_gap_count, fold_unfolded, fold_wait_passes, fold_wedged, nf_view_present, nf_view_matches_acc, record_want_stall_passes, record_want_stall_ms, crate::pqmix::network_state()
+                            pp_lock_wait, pp_grind, pp_cycle, pp_blocks, pp_fails, tip_work, tick_passes, tick_last_ms, tick_blocks, ip_att, ip_tmpl, ip_mine, ip_graft, bp_slots, bp_jobs, bp_tmpl_none, tmpl_ms, graft_ms, g_relay, g_uns, g_rec, g_bond, ing_blocks, ing_verify, ing_graft, ing_apply, ing_save, ing_pow, ing_settle, unspent_serve_ready, wanted_records, wanted_ids, missing_records, mw_ord, mw_rid, mw_da_id, mw_da_ord, mw_gap, missing_want_cap, missing_wants_saturated, note_payload_debt, sidecar_gap_count, fold_unfolded, fold_wait_passes, fold_wedged, record_debt_stalled, nf_view_present, nf_view_matches_acc, record_want_stall_passes, record_want_stall_ms, crate::pqmix::network_state()
                         ),
                     )
                 }
@@ -3632,7 +3634,29 @@ transaction, so NOTHING was burned or seated. Retry.\"}"
             (200, format!("{{\"status\":\"OK\",\"tip\":{tip},\"blocks\":[{}]}}", items.join(",")))
         }
         ("GET", "/get_height") | ("GET", "/get_tip") => {
-            let mut rt = rt.lock().unwrap_or_else(|e| e.into_inner());
+            // ⭐ TIP-OFF-LOCK (lane livewedge, 2026-11-26, docs/UX-DEEP-AUDIT-20261126.md U19): the `/get_info` shape (DB-137), try the
+            // lock or serve the last published body. MEASURED why: the wallet reads its spend clock here with a 5 s timeout, and the
+            // live runtime lock held 939 ms at p50, 4,721 ms at p95 and up to 34,800 ms, so a send failed "the node did not report
+            // the chain clock". The published body is at most one refresh old (≤ 500 ms on a ticking node); the spend clock is on
+            // an hour grid a third of an hour back, so no wallet decision changes with it. The tick thread refreshes it beside
+            // `/get_info` (`refresh_get_info_cache`), and it is rewritten whenever this arm computes under the lock.
+            let acquired = if INFO_REFRESH_BLOCKING.with(|f| f.get()) {
+                rt.lock().map_err(std::sync::TryLockError::Poisoned)
+            } else {
+                rt.try_lock()
+            };
+            let mut rt = match acquired {
+                Ok(g) => g,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    let c = get_tip_cache().lock().unwrap_or_else(|e| e.into_inner());
+                    if !c.is_empty() {
+                        return (200, c.clone());
+                    }
+                    drop(c);
+                    rt.lock().unwrap_or_else(|e| e.into_inner()) // nothing published yet (a fresh process): wait, as before
+                }
+                Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+            };
             match rt.rpc(RpcRequest::GetTip) {
                 RpcResponse::Tip { tip, blue_score, finalized_height } => {
                     let tip_hex = tip
@@ -3643,13 +3667,13 @@ transaction, so NOTHING was burned or seated. Retry.\"}"
                     let (chain_ms, finalized_ms) = (rt.node().chain_time_ms(), rt.node().finalized_chain_time_ms());
                     // DIGITAL-CASH-PRIVACY-REVIEWED: chain heights, a block id and header-time medians — public DAG
                     // structure, nothing of any note, amount, key or owner.
-                    (
-                        200,
-                        format!(
-                            "{{\"status\":\"OK\",\"blue_score\":{},\"height\":{},\"finalized_height\":{},\"tip\":{},\"chain_time_ms\":{chain_ms},\"finalized_chain_time_ms\":{finalized_ms}}}",
-                            blue_score, blue_score, finalized_height, tip_hex
-                        ),
-                    )
+                    let body = format!(
+                        "{{\"status\":\"OK\",\"blue_score\":{},\"height\":{},\"finalized_height\":{},\"tip\":{},\"chain_time_ms\":{chain_ms},\"finalized_chain_time_ms\":{finalized_ms}}}",
+                        blue_score, blue_score, finalized_height, tip_hex
+                    );
+                    // TIP-OFF-LOCK: the body a busy lock serves next (public chain structure only, as above)
+                    *get_tip_cache().lock().unwrap_or_else(|e| e.into_inner()) = body.clone();
+                    (200, body)
                 }
                 _ => (200, err_json("UNEXPECTED_RESPONSE")),
             }
@@ -6588,6 +6612,19 @@ transaction, so NOTHING was burned or seated. Retry.\"}"
                 ),
             )
         }
+        ("GET", "/fold_unfolded_census") => {
+            // ⛔ LIVE-GROWTH (docs/LIVE-GROWTH-DEEP-AUDIT-20261126.md) — what the unfolded set holds, as counts (`Node::unfolded_census`).
+            // DIGITAL-CASH-PRIVACY-REVIEWED: counts of public blocks; no id, body, note, key or owner.
+            let g = rt.lock().unwrap_or_else(|e| e.into_inner());
+            let c = g.node().unfolded_census();
+            (
+                200,
+                format!(
+                    "{{\"status\":\"OK\",\"total\":{},\"in_dag\":{},\"in_fold_tip_past\":{},\"shells\":{},\"depth_lt_100\":{},\"depth_lt_merge\":{},\"depth_ge_merge\":{},\"not_in_dag\":{}}}",
+                    c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]
+                ),
+            )
+        }
         ("POST", "/get_nf_fold_inputs") | ("GET", "/get_nf_fold_inputs") => {
             // ⭐⭐⭐ THE CERTIFIED BASE **AND THE SPAN FROM IT TO THE TIP** — the two things a spender needs
             // to build the absence carrier that is the SOLE spend authority.
@@ -8993,6 +9030,12 @@ fn busy_info_json() -> String {
     )
 }
 
+/// TIP-OFF-LOCK — the last `/get_tip` body computed under the lock, served while the lock is busy (the `/get_info` shape).
+fn get_tip_cache() -> &'static std::sync::Mutex<String> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
 fn get_info_cache() -> &'static std::sync::Mutex<String> {
     static CACHE: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(String::new()))
@@ -9019,6 +9062,8 @@ pub fn refresh_get_info_cache<T: CellTransport>(rt: &Arc<Mutex<NodeRuntime<T>>>)
     // trying it. Request threads are never marked and keep the try-lock-or-cache behaviour.
     INFO_REFRESH_BLOCKING.with(|f| f.set(true));
     let _ = route(rt, "GET", "/get_info", "");
+    // TIP-OFF-LOCK: and the tip body, on the same thread and cadence, so a busy lock serves a tip at most one refresh old
+    let _ = route(rt, "GET", "/get_tip", "");
     INFO_REFRESH_BLOCKING.with(|f| f.set(false));
 }
 

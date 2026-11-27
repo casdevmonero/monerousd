@@ -7019,6 +7019,13 @@ fn scan_locator_verdict(probes: impl Iterator<Item = LocatorProbe>) -> bool {
 /// cons: none — at most SCAN_LOCATOR_MAX (64) one-block asks to the wallet's own node, and only when a store opens
 /// with its cursor more than 8 past the tip; nothing is written.
 fn scan_locator_confirmed(key_id: &[u8; 32], tip: u64) -> bool {
+    scan_locator_common(key_id, tip).is_some()
+}
+
+/// ⛔ CURSOR-PAST-TIP (lane livewedge, 2026-11-26) — the newest locator entry the node still holds as the SAME block: the common point
+/// of the chain this wallet scanned and the chain the node serves (Bitcoin's block locator). `None` when no entry up to the first
+/// unheld one is the node's. Same probes and bound as [`scan_locator_confirmed`].
+fn scan_locator_common(key_id: &[u8; 32], tip: u64) -> Option<u64> {
     let (_, _, locator) = parse_applied_cursor(&std::fs::read_to_string(applied_cursor_path(key_id)).unwrap_or_default());
     let agent = ureq::AgentBuilder::new().timeout(Duration::from_millis(2500)).build();
     let probe = |(at, id): &(u64, [u8; 32])| -> LocatorProbe {
@@ -7037,7 +7044,16 @@ fn scan_locator_confirmed(key_id: &[u8; 32], tip: u64) -> bool {
             None => LocatorProbe::Unheld,
         }
     };
-    scan_locator_verdict(locator.iter().rev().filter(|(at, _)| *at <= tip).map(probe))
+    // newest first, at most SCAN_LOCATOR_MAX, stopping at the first entry the node cannot name: `scan_locator_verdict`'s own rule
+    locator
+        .iter()
+        .rev()
+        .filter(|(at, _)| *at <= tip)
+        .take(SCAN_LOCATOR_MAX)
+        .map(|e| (e.0, probe(e)))
+        .take_while(|(_, p)| *p != LocatorProbe::Unheld)
+        .find(|(_, p)| *p == LocatorProbe::Same)
+        .map(|(at, _)| at)
 }
 
 /// DB-88: how many blocks back the applied-notes scan rewinds when the block it last scanned is no longer on
@@ -7395,7 +7411,7 @@ fn seed_scan_from_store(scan_dk: &[u8], view: &pq::NoteView, key_id: &[u8; 32]) 
             set_slot_status(note_store::SlotStatus::Undecided);
         }
     };
-    let Some((cursor, records, persisted_spent)) = note_store::load(&path, scan_dk) else {
+    let Some((mut cursor, mut records, persisted_spent)) = note_store::load(&path, scan_dk) else {
         // ⭐ DB-329 — NO STORE AT THIS NODE SCOPE IS NOT A SEED IMPORT: the store is scoped by node URL, the device slot
         // is this DEVICE's. A seed that already settled here under another node scope keeps its slot, standing, pending
         // add and in-flight change indices; only a seed with no store anywhere on this device is settled from the chain.
@@ -7433,7 +7449,8 @@ fn seed_scan_from_store(scan_dk: &[u8], view: &pq::NoteView, key_id: &[u8; 32]) 
         .and_then(|i| i.get("blue_score").or_else(|| i.get("height")).and_then(|h| h.as_u64()))
     {
         let past = cursor > tip.saturating_add(8);
-        let confirmed = past && scan_locator_confirmed(key_id, tip);
+        let common = if past { scan_locator_common(key_id, tip) } else { None };
+        let confirmed = common.is_some();
         if past && store_lineage(cursor, tip, confirmed) == StoreLineage::Own {
             // DIGITAL-CASH-PRIVACY-REVIEWED: two heights this wallet already prints, and a fixed phrase.
             eprintln!(
@@ -7441,6 +7458,29 @@ fn seed_scan_from_store(scan_dk: &[u8], view: &pq::NoteView, key_id: &[u8; 32]) 
                  under this wallet ({}) — this store is this chain's and is kept; the scan's own reorg rule re-reads what moved",
                 if confirmed { "a block this wallet scanned is still on it" } else { "inside the reorg reach" }
             );
+            // ⛔ CURSOR-PAST-TIP (lane livewedge, 2026-11-26; user: "why does my wallet still show 50 pending and its been hours?") — a
+            // cursor past the node's tip on this store's own lineage RESUMES FROM THE COMMON POINT, never from the cursor. MEASURED (the
+            // user's 0.3.5 wallet, 2026-11-26 16:20): applied cursor 10,845 against the origin's tip 7,001 — its history scanned the
+            // older fork past the fork point, the store was kept as "own" (a locator block below the fork is on both), and nothing at or
+            // below 10,845 was ever scanned again, so a payment the chain settled at ~7,000 stayed pending for hours (and would until the
+            // tip passed 10,845). The DB-88 reorg rewind covers a reorg's depth, not a fork's. Now the cursor moves to the newest locator
+            // block the node still holds (Bitcoin's block locator), the records above it (the branch the node left) leave the loaded view,
+            // and the scan re-reads from there; a rescan only ADDS (every note is de-duplicated by commitment). The store is first copied
+            // aside, timestamped and never destroyed, as the replaced-lineage branch below sets one aside.
+            // AI RESISTANT (b): the node's own blocks by id, compared locally. SCALE: at most SCAN_LOCATOR_MAX probes, at load only.
+            if let Some(at) = common {
+                let aside = path.with_extension(format!("past-tip-{}", now_ms()));
+                let _ = std::fs::copy(&path, &aside);
+                let before = records.len();
+                records.retain(|(_, h)| *h <= at);
+                eprintln!(
+                    "[store-load] ⛔ CURSOR-PAST-TIP: resuming the scan at the common block {at} (was {cursor}); {} record(s) of the \
+                     branch the node left leave the view (the store is kept at {})",
+                    before - records.len(),
+                    aside.display()
+                );
+                cursor = at;
+            }
         }
         if store_lineage(cursor, tip, confirmed) == StoreLineage::Replaced {
             let aside = path.with_extension(format!("foreign-lineage-{}", now_ms()));
@@ -12839,6 +12879,29 @@ fn wallet_detect_impl() -> Result<serde_json::Value, String> {
             "[detect-timing] START cursor={cursor} tip={tip_now} resume_gap={} (cursor-to-tip distance; NOT the walk size — the fetch starts at the served top)",
             tip_now.saturating_sub(cursor)
         );
+        // ⛔ LINEAGE-PROBE-TIMEOUT (lane livewedge, 2026-11-26) — THE LINEAGE VERDICT IS RE-TAKEN WHILE THE WALLET IS OPEN. It was taken
+        // once, at load, and a node that did not answer its 1.5 s probe meant "no evidence, no action". MEASURED (the user's 0.3.5
+        // wallet): reopened ~13:10 while the origin held its runtime lock for seconds, it kept a store from the older fork (cursor
+        // 10,845, every locator entry above the live tip 7,006), so nothing below its cursor was scanned again and a payment stayed
+        // pending for hours. Now a cursor past a tip the node DID answer, by more than the reorg reach, for three passes in a row, drops
+        // the in-memory scan state: the next balance read re-seeds from the durable store (`seed_scan_from_store`), whose lineage guard
+        // then keeps it (resuming at the common block) or sets it aside. Nothing is lost: the store is the source and stays on disk.
+        // NOTHING HALTS: the wait on a node's answer is bounded by three passes, and its expiry does the work.
+        static PAST_TIP_PASSES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if tip_now > 0 && cursor > tip_now.saturating_add(DB88_REORG_REWIND_BLOCKS) {
+            if PAST_TIP_PASSES.fetch_add(1, Ordering::SeqCst) + 1 >= 3 {
+                PAST_TIP_PASSES.store(0, Ordering::SeqCst);
+                // DIGITAL-CASH-PRIVACY-REVIEWED: two heights this wallet already prints.
+                eprintln!(
+                    "[detect] ⛔ LINEAGE-PROBE-TIMEOUT: the scan cursor {cursor} stood past the node's tip {tip_now} for three passes — the \
+                     scan state re-seeds from the store, and its lineage guard decides again"
+                );
+                *SCAN.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                return Ok(serde_json::json!({ "reseeded": true, "why": "the scan cursor stood past the node's tip" }));
+            }
+        } else {
+            PAST_TIP_PASSES.store(0, Ordering::SeqCst);
+        }
     }
 
     // Fetch the unscanned blocks — the delta, PAGED until the STREAM ends. The node serves the ANY-HEIGHT DA

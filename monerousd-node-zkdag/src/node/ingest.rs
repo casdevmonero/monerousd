@@ -469,6 +469,41 @@ impl Node {
         leaves
     }
 
+    /// ⭐ FOLD-COVER-REDERIVE (lane livewedge, 2026-11-26) — a record's 256 leaves from its REAL notes: exactly
+    /// `block_leaves_from_notes(&cover::assemble_fixed_note_payload(reals, seq, key), seq, key)`, the composition `da_block_leaves`
+    /// always made. It is memoized on `(blake3(reals), seq, key)`, the WHOLE input of that pure composition, so a hit is
+    /// byte-identical and skips the 256-note cover assembly. What is held is the leaf commitments (R1c: never the notes or the
+    /// cover), in two generations of `LEAVES_MEMO_CAP` records × 256 × 32 B ≈ 2 MB, constant in height.
+    /// Long-term effects: a bounded two-generation map. Nothing accumulates across reorgs, restarts or joins (a restart starts
+    /// cold), and a changed row has another key, so it can never answer for the old one.
+    /// AI resistance: (b) an exact cache of a pure function; no input chooses another input's answer (the key is the whole input).
+    /// O1-FOOTPRINT-REVIEWED: two generations of LEAVES_MEMO_CAP = 128 records of 256 leaves, a constant.
+    pub fn block_leaves_from_reals(reals: &[u8], seq: u64, key: &crate::cover::CoverKey) -> Vec<crate::spend_frontier::Digest4> {
+        const LEAVES_MEMO_CAP: usize = 128;
+        type Key = ([u8; 32], u64, crate::cover::CoverKey);
+        #[derive(Default)]
+        struct Gens {
+            cur: std::collections::HashMap<Key, std::sync::Arc<Vec<crate::spend_frontier::Digest4>>>,
+            old: std::collections::HashMap<Key, std::sync::Arc<Vec<crate::spend_frontier::Digest4>>>,
+        }
+        static MEMO: std::sync::OnceLock<std::sync::Mutex<Gens>> = std::sync::OnceLock::new();
+        let k: Key = (*blake3::hash(reals).as_bytes(), seq, *key);
+        let memo = MEMO.get_or_init(|| std::sync::Mutex::new(Gens::default()));
+        if let Some(hit) = {
+            let g = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.cur.get(&k).or_else(|| g.old.get(&k)).cloned()
+        } {
+            return hit.as_ref().clone();
+        }
+        let leaves = Self::block_leaves_from_notes(&crate::cover::assemble_fixed_note_payload(reals, seq, key), seq, key);
+        let mut g = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if g.cur.len() >= LEAVES_MEMO_CAP {
+            g.old = std::mem::take(&mut g.cur);
+        }
+        g.cur.insert(k, std::sync::Arc::new(leaves.clone()));
+        leaves
+    }
+
     fn block_leaves_from_notes_computed(notes: &[u8], seq: u64, key: &crate::cover::CoverKey) -> Vec<crate::spend_frontier::Digest4> {
         const PQ_NOTE_BYTES: usize = 1153;
         let fixed = crate::cover::assemble_fixed_note_payload(notes, seq, key);
@@ -8951,10 +8986,15 @@ impl Node {
         // Idempotent: a block whose body is already present re-derives the same notes and matches the
         // same carrier slots, so the producer's own self-ingest and the test callers are unaffected.
         let mut block = block;
+        let hyd_t0 = std::time::Instant::now();
+        crate::node_runtime::ING_STAGE_RECEIVE_MS.store(0, std::sync::atomic::Ordering::Relaxed);
         let (_m, unmatched) = self.rehydrate_block_body(&mut block);
         // G2g-r2b: the preverified door is where every page, gossip and by-id body lands (DB-182) — the owed fold-span body
         // is placed here exactly as in `ingest_block`.
-        if let Some(out) = self.place_owed_fold_span_body_at_ingest(&block, unmatched) {
+        let owed = self.place_owed_fold_span_body_at_ingest(&block, unmatched);
+        // ORPHAN-PARK-COST: this stage's share of a slow apply, printed by `[apply-slow]` (node_runtime.rs)
+        crate::node_runtime::ING_STAGE_HYDRATE_MS.store(hyd_t0.elapsed().as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
+        if let Some(out) = owed {
             return out;
         }
         // ⛔⛔ db333-r — A BLOCK THE ADOPTED STATE ALREADY COUNTS IS PLACED HERE, NEVER APPLIED.
@@ -9225,7 +9265,9 @@ impl Node {
         );
         let ing_t1 = std::time::Instant::now();
         let keep_unfolded = block.clone(); // v31: kept full until its record folds (fold carry)
+        let rcv_t0 = std::time::Instant::now();
         let outcome = self.relay.receive_bounded(block, now_ts, max_cascade);
+        crate::node_runtime::ING_STAGE_RECEIVE_MS.store(rcv_t0.elapsed().as_millis() as u64, std::sync::atomic::Ordering::Relaxed);
         self.reanchor_on_refused_history_merge();
         if matches!(outcome, RelayOutcome::Added(_)) {
             // v31: the runtime ingests HERE (preverified off-lock), not through `ingest_block`.

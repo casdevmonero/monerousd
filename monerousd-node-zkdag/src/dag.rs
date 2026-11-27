@@ -316,6 +316,12 @@ pub struct Dag {
     /// Steps taken by the last ancestry answer. Purely diagnostic, and the evidence a test can assert on:
     /// a counter flat across wildly different chain lengths is what proves O(1) — never a wall-clock.
     last_ancestry_steps: std::cell::Cell<u64>,
+    /// ⛔ U-SHELL (2026-11-27) — each tip the template refused for the merge depth, with the head it was refused against. A refusal
+    /// stands while the head only EXTENDS that one along the selected chain: the merge-depth floor only rises with the chain, so a
+    /// block below it stays below, and a block merging it is refused at the door. MEASURED why (live origin, `[template-parents]`):
+    /// 76 of 77 tips refused for the merge depth, each costing a GHOSTDAG pass and a merge-depth walk on every template.
+    /// CACHE-ONLY: a miss runs the full check. O1-FOOTPRINT-REVIEWED: at most one entry a tip; pruned to the live tips each call.
+    merge_refused: std::cell::RefCell<HashMap<BlockId, BlockId>>,
     /// ⭐⭐⭐ THE FINALITY FLOOR — the block the bonded quorum finalized, and the ONLY input finality has
     /// into consensus. `None` = fork choice is exactly work-only, byte for byte what it was before.
     ///
@@ -397,6 +403,7 @@ impl Dag {
             record_key_index: HashMap::new(),
             by_receive: BTreeMap::new(),
             last_ancestry_steps: std::cell::Cell::new(0),
+            merge_refused: std::cell::RefCell::new(HashMap::new()),
             // No quorum has been heard yet ⇒ no bound. A fresh DAG selects tips exactly as before.
             finality_floor: None,
             anchor_floor: None,
@@ -1531,13 +1538,58 @@ impl Dag {
         // depth (only a selected chain may never leave the finality point); rusty-kaspa `pick_virtual_parents` drops a tip
         // for the merge-depth bound alone. A heavier sibling stays out (`order_key(t) < sp_key`, A-F54's guard).
         // W1: a tip with a withheld block in its past is never merged — its mergeset would carry that block into this one
-        for t in tips.iter().filter(|t| **t != sp && self.availability_admits(t) == 1) {
-            if self.order_key(t) < sp_key && within(&[sp, *t]) {
+        // ⛔ U-SHELL (2026-11-27, docs/UX-DEEP-AUDIT-20261126.md): the live origin's template walked 77 tips (4,141 samples of a 30 s
+        // `sample`, all GHOSTDAG); which rule each tip fails is counted here, once a minute, before any fix is written.
+        // DIGITAL-CASH-PRIVACY-REVIEWED: counts of public tips; no id, note or peer.
+        let (mut unavailable, mut heavier, mut outside) = (0usize, 0usize, 0usize);
+        // ⛔ U-SHELL: a tip refused for the merge depth against `sp0` is refused again without the walk while the head is `sp0` or
+        // extends it along the selected chain (O(1) each: `is_ancestor_of_selected_tip`); a reorg to another branch checks it afresh
+        let still_refused = |t: &BlockId| -> bool {
+            self.merge_refused.borrow().get(t).is_some_and(|sp0| {
+                *sp0 == sp
+                    || (self.is_ancestor_of_selected_tip(sp0)
+                        && self.is_ancestor_of_selected_tip(&sp)
+                        && self.blocks.get(sp0).zip(self.blocks.get(&sp)).is_some_and(|(a, b)| a.blue_score <= b.blue_score))
+            })
+        };
+        self.merge_refused.borrow_mut().retain(|t, _| tips.contains(t));
+        for t in tips.iter().filter(|t| **t != sp) {
+            if self.availability_admits(t) != 1 {
+                unavailable += 1;
+                continue;
+            }
+            if self.order_key(t) >= sp_key {
+                heavier += 1;
+                continue;
+            }
+            if still_refused(t) {
+                outside += 1;
+                continue;
+            }
+            if within(&[sp, *t]) {
                 chosen.push(*t);
+                self.merge_refused.borrow_mut().remove(t);
+            } else {
+                outside += 1;
+                self.merge_refused.borrow_mut().insert(*t, sp);
             }
         }
+        let first_choice = chosen.len();
         while chosen.len() > 1 && !within(&chosen) {
             chosen.pop(); // tips are heaviest-first, so the lightest sibling goes first
+        }
+        {
+            static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            if now.saturating_sub(LAST.load(std::sync::atomic::Ordering::Relaxed)) >= 60 {
+                LAST.store(now, std::sync::atomic::Ordering::Relaxed);
+                eprintln!(
+                    "[template-parents] {} tip(s): {unavailable} unavailable (W1), {heavier} heavier than the head, {outside} outside the merge depth, {} chosen then {} kept",
+                    tips.len(),
+                    first_choice,
+                    chosen.len()
+                );
+            }
         }
         chosen
     }

@@ -34605,3 +34605,30 @@ fn af63_a_waiting_fold_holds_bodies_within_its_reach_and_an_outgrown_wait_goes_t
     assert!(wait_outgrown(500, 500 + reach + 1), "⛔ A-F63: a wait the chain outgrew was left to hoard");
     assert!(!wait_outgrown(900, 500), "a tip below the wait's start (a reorg) is not growth");
 }
+
+/// ⭐ FOLD-COVER-REDERIVE (lane livewedge, 2026-11-26, docs/UX-DEEP-AUDIT-20261126.md U22) — a record's leaves keyed by its REAL notes
+/// are byte-identical to the composition `da_block_leaves` always made (`block_leaves_from_notes` over the assembled 256-note
+/// payload), for an idle record and one with reals, and a repeat answers without rebuilding the cover. MEASURED why: on the live
+/// origin the fold rebuilt the cover to answer for every provisional row on every fold step (2,646 of 15,000 samples under the
+/// runtime lock), because the leaves memo was keyed on the assembled payload.
+/// RED on the old shape: there was no reals-keyed reader, and the second call cost what the first did.
+#[test]
+fn fold_cover_rederive_leaves_from_reals_equal_the_assembled_ones_and_repeat_without_the_cover() {
+    let key = crate::cover::TEST_COVER_KEY;
+    let real = vec![0x33u8; crate::cover::PQ_NOTE_BYTES];
+    for (seq, reals) in [(7_001u64, Vec::new()), (7_002u64, real.clone()), (7_003u64, [real.clone(), vec![0x44u8; crate::cover::PQ_NOTE_BYTES]].concat())] {
+        let want = Node::block_leaves_from_notes(&crate::cover::assemble_fixed_note_payload(&reals, seq, &key), seq, &key);
+        let t0 = std::time::Instant::now();
+        let got = Node::block_leaves_from_reals(&reals, seq, &key);
+        let first = t0.elapsed();
+        assert_eq!(got, want, "⛔ the reals-keyed leaves differ from the assembled ones at record {seq}");
+        let t1 = std::time::Instant::now();
+        let again = Node::block_leaves_from_reals(&reals, seq, &key);
+        let repeat = t1.elapsed();
+        assert_eq!(again, want, "⛔ a repeat answered other leaves");
+        assert!(repeat < first, "⛔ a repeat rebuilt the cover ({repeat:?} against {first:?})");
+    }
+    // a changed row is another key: its leaves follow its bytes, never the old row's
+    let other = vec![0x55u8; crate::cover::PQ_NOTE_BYTES];
+    assert_ne!(Node::block_leaves_from_reals(&other, 7_002, &key), Node::block_leaves_from_reals(&real, 7_002, &key), "⛔ a changed row answered the old row's leaves");
+}

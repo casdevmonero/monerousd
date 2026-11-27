@@ -81,6 +81,10 @@ pub const AUTHORITY_MANIFEST: &[(&str, Authority)] = &[
     ("da_sample_pending", Authority::LocalCache),
     ("chain_cert", Authority::LocalCache),
     ("certified_blue_work", Authority::LocalCache),
+    // LIVE-GROWTH (8dc7281d): the deep-fork sweep's call counter — a cadence (`node.rs` `DEEP_FORK_SWEEP_EVERY`), counted from this
+    // process's own passes, never chain state. MEASURED (testnet gate 20261127-145549, join's replica census): 3/3/2 across three
+    // nodes, a joiner having booted later; unclassified, the census read it as a chain-derived field that differed.
+    ("deep_fork_sweep_n", Authority::LocalCache),
     // Z2 (lane funds 2026-10-27): a test-only override of the measured mesh size — this node's own knob, never a chain value.
     ("mesh_size_override_for_test", Authority::LocalCache),
     ("relay", Authority::ChainDerived),

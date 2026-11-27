@@ -318,8 +318,9 @@ impl Node {
         let Some(sp) = dag.selected_parent_of(&header.parents) else {
             return true; // unreachable: `validate_header_structural` refused NoParents above
         };
-        let (expected, complete) = crate::miner::adaptive_work_checked(dag, Some(sp));
-        !complete || header.work == expected
+        // ⛔ A-F145 RELIEF: the same admitted range the contextual door reads
+        let (lo, expected, complete) = crate::miner::admitted_work(dag, Some(sp), header.timestamp);
+        !complete || (lo <= header.work && header.work <= expected)
     }
 
     /// WHY the header door refuses a bundle, named (run 28, 2026-09-18: eighteen refusals read only

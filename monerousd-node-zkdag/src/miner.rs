@@ -192,6 +192,55 @@ pub const ASERT_HALF_LIFE_TARGETS: u64 = 16;
 /// longest gap at 18 s).
 pub const ASERT_AHEAD_HALVES: i128 = 8;
 
+/// ⛔⛔ A-F145 RELIEF — how long a block may follow its parent before the work it must meet starts to fall: one DAA window, in targets.
+pub const RELIEF_GRACE_TARGETS: u64 = 60;
+/// ⛔⛔ A-F145 RELIEF — past the grace, the work a block must meet halves every this many targets of its own wait.
+pub const RELIEF_HALF_TARGETS: u64 = 8;
+
+/// ⛔⛔ A-F145 RELIEF (lane livediag, 2026-11-27) — THE WORK A BLOCK MUST MEET FALLS WITH ITS OWN WAIT, SO NO CHAIN CAN STAND ON ITS
+/// DIFFICULTY. MEASURED (live origin 27780, 13:13-14:41): a backlog merge read as the chain running ahead lifted the work 1 → 1,140 →
+/// 25,017 in two blocks; block 12,796 then took 2,602,644 ms and carried 27,313, because the window's median endpoints (DB-394) ignore
+/// one late block, and the work falls only after ~6 slow blocks (hours at the origin's ~10 hashes a second): uptime 0 % for the hour.
+/// A window rule computes the work from blocks that EXIST, and a stalled chain has none. BORROWED: Bitcoin testnet's 20-minute rule,
+/// bounded: past one DAA window (`RELIEF_GRACE_TARGETS`) the work halves every `RELIEF_HALF_TARGETS` of the block's own gap after
+/// its selected parent, down to 1. Every door holds both stamps, so every door computes the same figure; the header door's drift
+/// bound stops a faked gap, so only a real wait lowers it; a cheap block adds only its own small work to its chain's weight, so
+/// relief never lets a minority outweigh a working chain. What protects it: (b) code; the weight is still work spent. SCALE: a shift.
+#[must_use]
+pub fn relieved_work(work: u128, parent_ts: u64, child_ts: u64, spacing_ms: u64) -> u128 {
+    let grace = RELIEF_GRACE_TARGETS.saturating_mul(spacing_ms);
+    let half = RELIEF_HALF_TARGETS.saturating_mul(spacing_ms).max(1);
+    let gap = child_ts.saturating_sub(parent_ts);
+    if gap <= grace {
+        return work.max(1);
+    }
+    let halves = (gap - grace) / half;
+    if halves >= 127 {
+        return 1;
+    }
+    (work >> halves).max(1)
+}
+
+/// ⛔⛔ A-F145 RELIEF — THE WORK A BLOCK STAMPED `child_ts` ON `selected_parent` MAY CARRY: from the relieved figure (its own wait
+/// applied, [`relieved_work`]) up to the window's figure ([`adaptive_work_checked`]), with the window's completeness verdict.
+/// A RANGE, NOT A NEW EQUALITY, so the rule needs no activation height and splits no history: every block the chain already holds
+/// carries the window's figure, the top of its range, and stays valid under this rule; a relieved block is admitted by every node
+/// that runs it and refused by an older one (a declared NETWORK-UPGRADE: the release tells every node to take it). The top bound
+/// keeps the rule the DAA's: no block may claim more than the window asks.
+#[must_use]
+pub fn admitted_work(dag: &Dag, selected_parent: Option<BlockId>, child_ts: u64) -> (u128, u128, bool) {
+    let (hi, complete) = adaptive_work_checked(dag, selected_parent);
+    let parent_ts = selected_parent.and_then(|p| dag.get(&p)).map(|n| n.header.timestamp);
+    let lo = parent_ts.map_or(hi, |pts| relieved_work(hi, pts, child_ts, dag.params().target_spacing_ms));
+    (lo, hi, complete)
+}
+
+/// ⛔⛔ A-F145 RELIEF — the work a producer stamps on a block at `child_ts`: the bottom of its admitted range (its own wait applied).
+#[must_use]
+pub fn adaptive_work_at(dag: &Dag, selected_parent: Option<BlockId>, child_ts: u64) -> u128 {
+    admitted_work(dag, selected_parent, child_ts).0
+}
+
 /// `anchor × 2^((target − actual) / half)`, the exponent clamped above at `ahead_halves`, in integer fixed point: the exponent in
 /// 1/65536 units, 2^frac by aserti3-2d's cubic, the integer part as a shift. Pure, so it is pinned directly.
 #[must_use]
@@ -435,7 +484,7 @@ pub fn build_template_reserving(
     // selected tip's key leads with this node's FINALITY verdict, so when the floor demoted the heaviest tip the template
     // built on that tip with another's figure and its own graft refused it (`WrongWork` ×72 in one n=8 load window).
     let selected_parent = dag.selected_parent_of(&parents);
-    let work = adaptive_work(dag, selected_parent);
+    let work = adaptive_work_at(dag, selected_parent, now_ts); // ⛔ A-F145 RELIEF: the template's own stamp
     let tx_ids = mempool.select_for_template_reserving(dag.params().max_block_weight, reserve, draw);
     let tx_root = tx_merkle_root(&tx_ids);
     let prev_acc = selected_parent
@@ -649,6 +698,27 @@ mod tests {
         assert!(expect(250).0 > 1000 && expect(1000).0 < 1000, "fast hardens, slow eases");
         // No tip => bootstrap.
         assert_eq!(adaptive_work(&Dag::new(), None), BOOTSTRAP_WORK);
+    }
+
+    /// ⛔ A-F145 RELIEF PIN — inside one DAA window of its parent a block's admitted range is the window's figure alone; past it the
+    /// bottom halves every `RELIEF_HALF_TARGETS` of the block's own wait, down to 1; the live stall's gap (2,602,644 ms on work
+    /// 27,313) relieves it to 1; a drift-sized gap (30 s) relieves nothing; and the top is always the window's figure, so every block
+    /// already on a chain (it carries that figure) stays admitted — the rule splits no history.
+    #[test]
+    fn af145_relief_the_work_falls_with_the_blocks_own_wait_and_history_stays_admitted() {
+        let spacing = crate::params::ChainParams::default().target_spacing_ms;
+        let (grace, half) = (RELIEF_GRACE_TARGETS * spacing, RELIEF_HALF_TARGETS * spacing);
+        let w = 27_313u128;
+        assert_eq!(relieved_work(w, 1_000, 1_000 + grace, spacing), w, "⛔ a block inside the grace was relieved");
+        assert_eq!(relieved_work(w, 1_000, 1_000 + 30_000, spacing), w, "⛔ a drift-sized gap (30 s) relieved the work");
+        assert_eq!(relieved_work(w, 1_000, 1_000 + grace + half, spacing), w >> 1, "⛔ one half-life past the grace is not half");
+        assert_eq!(relieved_work(w, 1_000, 1_000 + grace + 3 * half, spacing), w >> 3, "⛔ three half-lives past the grace");
+        assert_eq!(relieved_work(w, 0, 2_602_644, spacing), 1, "⛔ the live stall's gap did not relieve the work to 1");
+        assert_eq!(relieved_work(w, 5_000, 1_000, spacing), w, "⛔ a stamp before its parent relieved the work");
+        // the empty DAG: no parent, so the range is the window's figure alone (the top of every range is that figure by
+        // construction of `admitted_work`, so every block already on a chain stays admitted)
+        let (lo, hi, _) = admitted_work(&Dag::new(), None, 10_000_000);
+        assert_eq!((lo, hi), (BOOTSTRAP_WORK, BOOTSTRAP_WORK), "⛔ a parentless range is not the bootstrap figure alone");
     }
 
     /// A-F110: `asert_work` is `anchor × 2^ex` to within the cubic's error over the whole range, and only running AHEAD is clamped:

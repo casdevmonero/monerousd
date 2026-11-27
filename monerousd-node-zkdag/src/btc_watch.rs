@@ -348,6 +348,7 @@ impl ReserveCoin {
 }
 
 /// Where this node reads Bitcoin from and hands a payout to.
+#[derive(Clone)]
 pub enum BtcSource {
     /// ⭐ §22 6 — the BUNDLED watcher (`btc_neutrino`): Bitcoin's own peers over the node's Tor, headers followed by
     /// Bitcoin's rules, every block's filter agreed by three peers, matched blocks checked against their headers. No
@@ -618,12 +619,49 @@ impl BtcSource {
     /// The fee rate a payout pays, in sat/vB: `MONEROUSD_BTC_FEE_RATE_SAT_VB` when the operator pins one (the
     /// regtest rig does — a fresh regtest chain has no fee market to estimate), else the source's 6-block estimate.
     /// `None` when neither answers — the proposer then waits; it never guesses a fee.
+    /// This node's own Bitcoin fee estimate (sat/vB, 6-block target), read from [`fee_cache`] and NEVER fetched on the
+    /// caller's thread.
+    ///
+    /// ⭐ LOCK-NET-IO (lane livewedge, 2026-11-26, docs/UX-DEEP-AUDIT-20261126.md U15). MEASURED on the live origin
+    /// (`sample` of pid 1561, 15 s): `PayoutLane::tick` → this function → `ureq` over Tor took 1,908 of the payout tick's
+    /// 1,912 samples. Every caller runs on the runtime lock (`main.rs` `rt.lock()` → `tick_relay` → `lanes_every_tick` →
+    /// `payout_lane_tick`; `/btc_cashout_fee_quote` holds `rt.lock()` around it). The agent's timeout is 25 s (`agent()`), so
+    /// one slow onion answer held every RPC, the pump and production for up to 25 s; the log's slow holds reached 34,800 ms.
+    ///
+    /// The shape: stale-while-revalidate. A reading at most [`fee_cache::REFRESH_MS`] old is served as is. An older one
+    /// starts ONE background fetch per source (in-flight dedupe) and is still served until [`fee_cache::MAX_AGE_MS`]. Past
+    /// that, `None`. Every caller already reads `None` as "no estimate of my own" (it refuses or skips the item this tick and
+    /// asks again on the next), the meaning a failed fetch had before. A Bitcoin fee estimate moves on Bitcoin's block
+    /// timescale (~600 s), so a reading ≤ 30 s old prices a fee as a fresh one would.
+    /// Long-term effects: at most [`fee_cache::SLOTS_MAX`] slots, one per configured source, overwritten in place, and at most
+    /// one fetch thread per slot. Nothing accumulates across reorgs, restarts or joins. A restart starts cold, and the first
+    /// tick's `None` is the "source not answering" case the callers already handle.
+    /// AI resistance: (b). The estimate is this node's own reading of an outside source; a quorum signs only what each
+    /// custodian's own estimate admits (`refuse` at the callers), unchanged.
     pub fn fee_rate_sat_vb(&self) -> Option<u64> {
         if let Ok(v) = std::env::var("MONEROUSD_BTC_FEE_RATE_SAT_VB") {
             if let Ok(n) = v.trim().parse::<u64>() {
                 return Some(n.max(1));
             }
         }
+        #[cfg(any(test, feature = "bridge-test-oracle"))]
+        if let BtcSource::Sim(s) = self {
+            return Some(s.lock().unwrap_or_else(|e| e.into_inner()).fee_rate_sat_vb());
+        }
+        fee_cache::read_or_refresh(self)
+    }
+
+    fn fee_cache_key(&self) -> String {
+        match self {
+            BtcSource::Neutrino { net } => format!("neutrino:{net:?}"),
+            BtcSource::CoreRpc { url, .. } => format!("core:{url}"),
+            #[cfg(any(test, feature = "bridge-test-oracle"))]
+            BtcSource::Sim(_) => "sim".to_string(),
+        }
+    }
+
+    /// The network fetch itself, run only on a [`fee_cache`] refresh thread.
+    fn fee_rate_fetch(&self) -> Option<u64> {
         match self {
             BtcSource::CoreRpc { .. } => {
                 let r = self.core_call("estimatesmartfee", serde_json::json!([6]))?;
@@ -646,6 +684,96 @@ impl BtcSource {
 }
 
 /// The Bitcoin network an address string belongs to, from its prefix.
+/// The fee estimate's off-lock cache ([`BtcSource::fee_rate_sat_vb`] says why).
+/// Bound: [`SLOTS_MAX`] slots of (key, rate, fetched-at), a constant; one refresh thread per slot at most.
+pub(crate) mod fee_cache {
+    use super::BtcSource;
+    use std::sync::Mutex;
+
+    /// A reading younger than this is served with no refresh.
+    pub const REFRESH_MS: u64 = 30_000;
+    /// A reading older than this is never served (`None`: the caller refuses or skips the item this tick).
+    pub const MAX_AGE_MS: u64 = 600_000;
+    /// Slots: one per configured source (Neutrino per network, a Core RPC per url). A constant, never f(history).
+    pub const SLOTS_MAX: usize = 8;
+
+    struct Slot {
+        key: String,
+        rate: Option<u64>,
+        at_ms: u64,
+        fetching: bool,
+    }
+
+    static SLOTS: Mutex<Vec<Slot>> = Mutex::new(Vec::new());
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+    }
+
+    fn slots() -> std::sync::MutexGuard<'static, Vec<Slot>> {
+        SLOTS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The served reading, and at most one refresh started; never a network call on this thread.
+    pub(super) fn read_or_refresh(src: &BtcSource) -> Option<u64> {
+        let key = src.fee_cache_key();
+        let now = now_ms();
+        let (served, start) = {
+            let mut g = slots();
+            if !g.iter().any(|s| s.key == key) {
+                if g.len() >= SLOTS_MAX {
+                    // the least recently fetched slot gives way (a source the node no longer reads)
+                    if let Some(i) = (0..g.len()).filter(|&i| !g[i].fetching).min_by_key(|&i| g[i].at_ms) {
+                        g.remove(i);
+                    }
+                }
+                if g.len() < SLOTS_MAX {
+                    g.push(Slot { key: key.clone(), rate: None, at_ms: 0, fetching: false });
+                }
+            }
+            match g.iter_mut().find(|s| s.key == key) {
+                Some(s) => {
+                    let age = now.saturating_sub(s.at_ms);
+                    let served = s.rate.filter(|_| age <= MAX_AGE_MS);
+                    let start = !s.fetching && (s.rate.is_none() || age >= REFRESH_MS);
+                    if start {
+                        s.fetching = true;
+                    }
+                    (served, start)
+                }
+                None => (None, false),
+            }
+        };
+        if start {
+            let owned = src.clone();
+            let spawned = std::thread::Builder::new().name("btc-fee-refresh".into()).spawn(move || {
+                let rate = owned.fee_rate_fetch();
+                let done = now_ms();
+                let mut g = slots();
+                if let Some(s) = g.iter_mut().find(|s| s.key == key) {
+                    s.fetching = false;
+                    if let Some(r) = rate {
+                        s.rate = Some(r);
+                        s.at_ms = done;
+                    }
+                }
+            });
+            if spawned.is_err() {
+                // no thread this time: clear the mark so the next call starts one
+                if let Some(s) = slots().iter_mut().find(|s| s.key == src.fee_cache_key()) {
+                    s.fetching = false;
+                }
+            }
+        }
+        served
+    }
+
+    #[cfg(test)]
+    pub(super) fn reset() {
+        slots().clear();
+    }
+}
+
 pub fn net_of_address(address: &str) -> crate::btc_tx::BtcNet {
     let a = address.trim().to_ascii_lowercase();
     if a.starts_with("bcrt1") {
@@ -729,6 +857,56 @@ pub fn injected_coin_for_test(address: &str) -> ReserveCoin {
 #[cfg(all(test, feature = "pins-core"))]
 mod tests {
     use super::*;
+
+    /// ⭐ LOCK-NET-IO: the fee estimate never makes its caller wait on the network.
+    /// A Core RPC that accepts a connection and answers only after 3 s must cost the caller no time (`None` at once, the
+    /// "no estimate of my own" every caller already handles), and the answer must be served once the background fetch has it.
+    /// Fails on the old shape: the first call blocked the full 3 s on its own thread (under the runtime lock, live: up to 25 s).
+    /// ROOT-LAYER: `fee_rate_sat_vb` is the one function every fee reader calls (10 sites, btc_payout, node_runtime,
+    /// rpc_http), so the class is closed for all of them at once.
+    #[test]
+    fn lock_net_io_a_slow_bitcoin_source_never_holds_the_fee_estimate_caller() {
+        if std::env::var("MONEROUSD_BTC_FEE_RATE_SAT_VB").is_ok() {
+            return; // a fixed rate short-circuits the source; this pin measures the source path
+        }
+        fee_cache::reset();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a local stand-in for Core");
+        let addr = listener.local_addr().expect("its address");
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    use std::io::{Read, Write};
+                    let mut s = stream;
+                    let mut buf = [0u8; 4096];
+                    if s.read(&mut buf).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(3_000));
+                    let body = r#"{"result":{"feerate":0.00012,"blocks":6},"error":null,"id":"usdmd"}"#;
+                    let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+                    if s.write_all(reply.as_bytes()).is_err() {
+                        eprintln!("[lock-net-io pin] the stand-in could not write its answer");
+                    }
+                });
+            }
+        });
+        let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(25)).build();
+        let src = BtcSource::CoreRpc { url: format!("http://{addr}/"), auth_header: "Basic eDp4".into(), agent };
+        let t0 = std::time::Instant::now();
+        let first = src.fee_rate_sat_vb();
+        let took = t0.elapsed();
+        assert!(took < Duration::from_millis(500), "⛔ the caller waited {took:?} on a slow Bitcoin source");
+        assert_eq!(first, None, "a cold cache serves no estimate rather than wait for one");
+        let t1 = std::time::Instant::now();
+        let mut got = None;
+        while t1.elapsed() < Duration::from_secs(10) && got.is_none() {
+            std::thread::sleep(Duration::from_millis(100));
+            let t = std::time::Instant::now();
+            got = src.fee_rate_sat_vb();
+            assert!(t.elapsed() < Duration::from_millis(500), "⛔ a later read waited on the network too");
+        }
+        assert_eq!(got, Some(12), "the background fetch's answer (0.00012 BTC/kvB = 12 sat/vB) is served once it lands");
+    }
 
     #[test]
     fn confirmation_counting_is_thorchains_value_over_subsidy_with_a_floor_of_one() {

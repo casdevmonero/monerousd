@@ -8,6 +8,15 @@
 use super::*;
 use crate::join_proof::{self as jp, FoldStep, JoinClaim, JoinProof, JoinRefusal, JoinVerdict};
 
+/// U-LOCK: the most header work hashes the join verdict keeps (a few bundles' suffixes; a cache, cleared whole when full).
+const JOIN_HASH_MEMO_MAX: usize = 4 * jp::MAX_SUFFIX;
+
+/// U-LOCK: header work hashes the join verdict has computed, keyed by the preimage's blake3. CACHE-ONLY: a miss recomputes.
+fn join_hash_memo() -> &'static std::sync::Mutex<std::collections::HashMap<crate::hash::Hash32, crate::hash::Hash32>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<crate::hash::Hash32, crate::hash::Hash32>>> = std::sync::OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 /// How deep a level array is rebuilt when it is not held. A folded block's array is always held, so only unfolded blocks recurse.
 const LEVEL_WALK_DEPTH: usize = 256;
 /// A bundle is frozen once per this many fold ordinals. The kept bundles must reach back past what a served one needs: a
@@ -340,7 +349,25 @@ impl Node {
     pub(crate) fn join_verdict(&self, bundle: &SyncBundle) -> Result<JoinVerdict, JoinRefusal> {
         let Some(m) = self.pow_miner.as_ref() else { return Err(JoinRefusal::NotMined) };
         let hasher = m.hasher();
-        jp::verify_join(&bundle.join, &self.join_claim(bundle), &|h| hasher.hash(&h.preimage()))
+        // ⛔ U-LOCK (2026-11-27): a header's work hash is a pure function of its preimage, and this verdict runs under the runtime lock
+        // for every served join bundle, re-hashing up to `MAX_SUFFIX` headers through the post-quantum work hasher each time
+        // (`[bulk-serve-slow] a kind-4 ask held the rt lock 8821ms` on the live origin, every wallet read waiting behind it). The hash is
+        // kept by the preimage's blake3 (collision-resistant, so a kept value is the value), so a serve hashes only the headers it has
+        // not seen. SCALE: bounded — cleared past `JOIN_HASH_MEMO_MAX` entries (a cache: a miss only recomputes). CACHE-ONLY.
+        jp::verify_join(&bundle.join, &self.join_claim(bundle), &|h| {
+            let pre = h.preimage();
+            let key = crate::hash::Hash32::hash(&pre);
+            if let Some(v) = join_hash_memo().lock().unwrap_or_else(|e| e.into_inner()).get(&key).copied() {
+                return v;
+            }
+            let v = hasher.hash(&pre);
+            let mut g = join_hash_memo().lock().unwrap_or_else(|e| e.into_inner());
+            if g.len() >= JOIN_HASH_MEMO_MAX {
+                g.clear();
+            }
+            g.insert(key, v);
+            v
+        })
     }
 
     /// Fill in what moved since a bundle froze: the headers above its anchor and the commit steps they name.
@@ -516,8 +543,19 @@ impl Node {
     pub(crate) fn serve_join_bundle(&self) -> Option<Vec<u8>> {
         let mut last_refusal = None;
         for frozen in self.join_frozen.iter().rev() {
+            // ⛔ U-LOCK diagnosis (2026-11-27): this runs under the runtime lock for every served kind-4 ask, and one ask held the lock
+            // 8,821 ms on the live origin (`[bulk-serve-slow]`); the two parts are timed so the fix lands on the one that costs.
+            let t_finish = std::time::Instant::now();
             let Some(bundle) = self.finish_join_bundle(frozen) else { continue };
-            match self.join_verdict(&bundle) {
+            let finish_ms = t_finish.elapsed().as_millis();
+            let t_verdict = std::time::Instant::now();
+            let verdict = self.join_verdict(&bundle);
+            let verdict_ms = t_verdict.elapsed().as_millis();
+            if finish_ms + verdict_ms > 250 {
+                // DIGITAL-CASH-PRIVACY-REVIEWED: two durations and a public position.
+                eprintln!("[join-serve-time] anchor ordinal {}: finish {finish_ms} ms, verdict {verdict_ms} ms (under the runtime lock)", bundle.anchor_ordinal);
+            }
+            match verdict {
                 Ok(v) => {
                     let wire = bundle.to_wire();
                     // DIGITAL-CASH-PRIVACY-REVIEWED: public chain position, a count, an estimate of public work and a byte length.

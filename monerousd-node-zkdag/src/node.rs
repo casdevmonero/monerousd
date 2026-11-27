@@ -534,6 +534,10 @@ pub enum AggHold {
 /// f(fixed constants).
 pub const AGG_HOLD_MAX: usize = 2 * crate::cover::BLOCK_FIXED_SPEND_TX_COUNT;
 
+/// ⛔ LIVE-GROWTH — the deep-fork sweep's pace (`Node::drain_folded_unfolded_blocks`): once in this many drains. STRUCTURE, not a
+/// time: a block it finds is past the merge depth whichever drain finds it, so the pace changes only how soon RAM is freed.
+pub const DEEP_FORK_SWEEP_EVERY: u64 = 64;
+
 /// ⭐ §14 THE BUNDLE RELAY (docs/LEVEL-AGGREGATE-SPEC-20261115.md §14) — one bundle this node holds: the tree-form ids of
 /// its payments in carried order (each held in [`Node::agg_held`] with its full carriers) and the ONE root that proves
 /// their statements. A bundle of 2^j payments merges with another of 2^j into one of 2^(j+1)
@@ -1451,6 +1455,9 @@ pub struct Node {
     /// into the note spine (None before the first fold). Persisted; everything above it re-derives from
     /// the DAG on resume. One optional block id — no growth term.
     fold_chain_tip: Option<crate::block::BlockId>,
+    /// ⛔ LIVE-GROWTH — drains since the node started, so the deep-fork sweep in `drain_folded_unfolded_blocks` runs once in
+    /// [`DEEP_FORK_SWEEP_EVERY`]. Process-local pacing only: it decides WHEN the sweep runs, never what it finds. One counter.
+    deep_fork_sweep_n: u64,
     /// Records this node is sampling for availability, each with the root it was committed under.
     /// O1-FOOTPRINT-REVIEWED: bounded by DA_SAMPLE_PENDING_MAX
     da_sample_pending: std::collections::BTreeMap<u64, DaSampleState>,
@@ -2051,10 +2058,10 @@ pub struct Node {
     /// ⭐⭐⭐ THE NO-REORG FLOOR (`Node::refresh_work_final`, figure 2): the deeper final block only the fork choice reads, monotone.
     /// VOLATILE: a restart recomputes it from the resumed selected chain. O1-FOOTPRINT-REVIEWED: one (id, u64).
     pub(crate) floor_final: Option<(BlockId, u64)>,
-    /// ⭐ A-F116 — the fold top (`served_seq`) at which the adopted node's stream-window replay last FAILED (its replayed
-    /// root not this node's), so the replay is retried once per newly folded record, never on every pass. CACHE-ONLY: a
-    /// process-local retry gate no rule reads.
-    pub(crate) db471_failed_top: u64,
+    /// ⭐ A-F116 / U-LOCK-7 — the certified anchor whose stream-window replay FAILED (its replayed root not this node's), so
+    /// that replay is not run again until an adopt installs another anchor. CACHE-ONLY: a process-local retry gate no rule
+    /// reads. O1-FOOTPRINT-REVIEWED: one Option<BlockId>.
+    pub(crate) db471_failed_anchor: Option<crate::block::BlockId>,
     /// A-F114: the bounty counter (`bounty_payout_tx::bounty_statement`'s `seq`), stepped at each bounty paid, kept in the
     /// canon sidecar. O1-FOOTPRINT-REVIEWED: one u64.
     pub(crate) canon_bounty_seq: u64,
@@ -4183,6 +4190,18 @@ impl Node {
     /// owner.
     #[must_use]
     pub fn wedge_reason(&self) -> Option<String> {
+        self.fold_wedge_reason().or_else(|| self.record_debt_reason())
+    }
+
+    /// ⭐ THE FOLD HALF OF [`Self::wedge_reason`]: the fold itself cannot move (settlement stopped: nobody can be paid).
+    /// This, and only this, is what `/get_info`'s `fold_wedged` reports and what the uptime probe counts as DOWN.
+    /// MEASURED why it is split (live 27780, 2026-11-27 10:05): `fold_wedged` true and the probe read the origin down
+    /// (last hour 19 %) while `record_top` 9,563 == `served_seq` 9,563 at height 9,566 — the fold at the tip, payments
+    /// settling — because the RECORD-DEBT branch fired (32 by-id byte wants, `missing_da_by_id` 32, unchanged 2,694 s:
+    /// `[record-miss]` for ordinals 462–493 and 2650–3908). That debt is real and stays loud as `record_debt_stalled`;
+    /// it is not a stopped fold. The runtime's escalation still reads the union, so its behaviour is unchanged.
+    #[must_use]
+    pub fn fold_wedge_reason(&self) -> Option<String> {
         if let Some((_id, passes, backlog, window)) = self.fold_wait_is_unrecoverable() {
             return Some(format!(
                 "the canonical fold has not moved for {passes} pass(es) with {backlog} block(s) unfolded                  against a {window}-block retention window"
@@ -4204,6 +4223,13 @@ impl Node {
                 self.unfolded_blocks.len()
             ));
         }
+        None
+    }
+
+    /// ⭐ THE RECORD-DEBT HALF OF [`Self::wedge_reason`]: the same by-id record bytes wanted, unchanged, past
+    /// `DA_WANT_STALL_HOPELESS_MS`. Served as `/get_info` `record_debt_stalled`; never a reason the fold is called wedged.
+    #[must_use]
+    pub fn record_debt_reason(&self) -> Option<String> {
         // ⛔ BOTH CONDITIONS, CHECKED HERE. The counter is only reset to 0 on an empty set by
         // `retire_held_record_ids`, so reading it alone makes this verdict depend on an invariant
         // maintained in another function — and a node that stopped sweeping would be reported wedged for
@@ -4688,14 +4714,51 @@ impl Node {
         self.anchor_block_full = next;
     }
 
-    /// Drop every buffered block whose record has folded (see `unfolded_blocks`).
+    /// Drop each buffered block whose record has folded (see `unfolded_blocks`), and each one that can NEVER fold.
+    ///
+    /// ⛔ LIVE-GROWTH (docs/LIVE-GROWTH-DEEP-AUDIT-20261126.md, lane livegrowth, 2026-11-26). MEASURED why: the live origin held
+    /// 5,178 whole bodies here in all probes for 7 h (heights ~7,100 to 7,998), with 73 DAG tips, at a 2.9-3.7 GB plateau. A block
+    /// that no chain block merges never gets a fold ordinal, so `block_record_folded` never said yes, and its body sat in RAM.
+    /// BORROWED (Kaspa's merge-depth bound): a block outside the selected tip's past and more than `merge_depth_cap` blue score
+    /// below it can never be merged. It leaves by the SAME path a folded block takes: into the on-disk block window, with the
+    /// accumulator stamp its acceptance gave it (`fold_block_into_atip` runs at acceptance, a fork's included). So the span still
+    /// reproduces A_tip, and the window releases the body when the horizon passes it.
+    /// BOUNDS: the unfolded set then holds only blocks within `merge_depth_cap` of the tip (a constant in blue score). The deep
+    /// sweep runs once in [`DEEP_FORK_SWEEP_EVERY`] drains, reads the unfolded set (that bound) and makes one past-walk from the
+    /// selected tip that stops at the oldest deep target's topological order, inside the DAG's `keep_depth` (a constant of the
+    /// params). Nothing in it grows with height. AI RESISTANT (b): a peer flooding forks gains nothing; their bodies leave RAM at
+    /// the depth, as an honest fork's do.
     fn drain_folded_unfolded_blocks(&mut self) {
-        let folded: Vec<crate::block::BlockId> = self
+        let mut folded: Vec<crate::block::BlockId> = self
             .unfolded_blocks
             .iter()
             .map(|b| b.id())
             .filter(|id| self.block_record_folded(id))
             .collect();
+        self.deep_fork_sweep_n = self.deep_fork_sweep_n.wrapping_add(1);
+        if self.deep_fork_sweep_n % DEEP_FORK_SWEEP_EVERY == 0 {
+            let dag = self.relay.dag();
+            if let Some(tip) = dag.selected_tip() {
+                let tip_score = dag.get(&tip).map_or(0, |n| n.blue_score);
+                let depth = dag.params().merge_depth_cap as u64;
+                let deep: Vec<crate::block::BlockId> = self
+                    .unfolded_blocks
+                    .iter()
+                    .map(|b| b.id())
+                    .filter(|id| !folded.contains(id))
+                    .filter(|id| dag.get(id).is_some_and(|n| tip_score.saturating_sub(n.blue_score) > depth))
+                    .collect();
+                if !deep.is_empty() {
+                    let merged = dag.which_in_past_of(&tip, &deep);
+                    let never: Vec<crate::block::BlockId> = deep.into_iter().filter(|id| !merged.contains(id)).collect();
+                    if !never.is_empty() {
+                        // DIGITAL-CASH-PRIVACY-REVIEWED: a COUNT of public blocks; no id, tag, amount, key or owner.
+                        eprintln!("[fold-span] {} block(s) past the merge depth outside the selected tip's past can never fold: their bodies leave RAM for the block window", never.len());
+                        folded.extend(never);
+                    }
+                }
+            }
+        }
         if !folded.is_empty() {
             // A-F32: a folded body enters the block window whole — its notes from the record that just folded, when the
             // held copy lost them (a restart) and the record holds the ones the header commits.
@@ -21911,6 +21974,13 @@ impl Node {
         if self.certified_anchor.is_none() {
             return;
         }
+        // ⛔ U-LOCK-7 — a replay that failed for this anchor is not tried again (see the reason above the replay below), and the
+        // gate stands FIRST: MEASURED on the live origin (08:05, `sample` 15 s, after f8223b2f): with the gate after the prefix,
+        // every fold pass still rebuilt the frontier prefix below the ring (`refold_frontier_prefix` → 4,716 per-record roots
+        // derived, 4,905 of 9,687 samples) before reaching it, a 4.2 s tick under the runtime lock and no block produced.
+        if self.db471_failed_anchor.is_some() && self.db471_failed_anchor == self.certified_anchor {
+            return;
+        }
         let top = self.served_seq;
         let reach = self.anchor_ring_len() as u64;
         let want_front = top.saturating_sub(reach).max(1);
@@ -21940,14 +22010,21 @@ impl Node {
         // the switch this replay failed ("reaches a spine root that is not this node's", equal leaf counts) and, filling
         // nothing, ran again on EVERY fold pass — 5,582 replays of ~300 records in one launch, against 0 on the last green
         // join. A replay of the same held records to the same top fails the same way, so it is retried only when a new
-        // record has folded (`served_seq` moved). The mismatch's cause is audited apart (A-F116 row). cons: an adopted node
-        // whose replay can never succeed tries once per folded record instead of once per pass.
-        if self.db471_failed_top == top {
-            return;
-        }
+        // record has folded (`served_seq` moved). The mismatch's cause is audited apart (A-F116 row).
+        // ⛔ U-LOCK-7 (MEASURED 2026-11-27, the live origin after its 07:17 restart, docs/UX-DEEP-AUDIT-20261126.md): "once per folded
+        // record" was still a full replay of the ring's reach (3,600 records, ~920 k frontier appends) under the runtime lock on
+        // EVERY block — 15 failed replays since boot, 5,557 of the graft's 8,933 samples, every wallet RPC waiting behind it — and
+        // the ring is RAM-only, so after any restart the condition above stays true until 3,600 records fold (days at the live
+        // pace). One more record cannot repair a mismatch inside the records already replayed, so a replay that failed is not run
+        // again for the same anchor; an adopt that installs another anchor runs it once more. The ring fills by the fold itself
+        // (`fold.rs`, `completed_windows.push_back` per folded record) and wallets read the windows below its front from the
+        // persisted `window_index` (`restore_window_index`), as they did between replays.
+        // SCALE: one replay per adopt, a constant; nothing stored past one Option<BlockId>.
+        // AI RESISTANT: (b) code — the replay installs nothing it did not check against the live spine root, now or before.
+        // (the gate is the function's first step, above: `db471_failed_anchor`)
         let (replayed, recorded) = self.rebuild_windows_from_records(anchor);
         if recorded == 0 {
-            self.db471_failed_top = top;
+            self.db471_failed_anchor = self.certified_anchor;
         }
         // DIGITAL-CASH-PRIVACY-REVIEWED: ordinals and counts of public spine windows; no note, tag, amount, key or owner.
         eprintln!("[db471] the adopted node's stream windows rebuilt from ordinal {want_front}: {replayed} record(s) replayed, {recorded} window(s)");

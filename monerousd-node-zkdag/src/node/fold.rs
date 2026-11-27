@@ -565,9 +565,16 @@ impl Node {
             // form (MEASURED replica census main 56be6497: ordinals 50, 51, 53 still provisional on the joiner after the sweep).
             // The canonical chain commits every record's output leaves (`canon_chain::record_step`, chain-checked on the window's
             // pull), so a row whose leaves are a window record's is the chain's bytes.
+            // ⛔ U-LOCK-9 (MEASURED 2026-11-27, the live origin after U-LOCK-7b, `sample` 30 s): this arm rebuilt the row's 256
+            // leaves at each fold step (`da_block_leaves` → `cover_note_det`, 2,831 of the graft's 4,462 samples; the leaves memo
+            // holds 128 rows) and compared them with each window record. Now the row's leaves digest is kept by the row's own
+            // bytes (`provisional_leaves_digest`) and the window answers by digest (`CanonRecent::holds_leaves_digest`): the
+            // same exact test (blake3 collision resistance), one memo read and one map read for a row already seen.
+            // O1-INFINITY-REVIEWED: the rows walked are the held provisional rows, bounded by the record retention (`da_entry_census_named`, the
+            // ladder span), a protocol constant; the memo is a fixed-capacity two-generation map of 32 B digests, never f(height).
             if crate::canon_chain::canon_live() {
-                if let Some(ul) = self.da_block_leaves(s).filter(|l| !l.is_empty()) {
-                    if self.canon_recent.holds_leaves(&ul) {
+                if let Some(d) = self.provisional_leaves_digest(s) {
+                    if self.canon_recent.holds_leaves_digest(&d) {
                         self.da_mark_chain_bound(s);
                     }
                 }
@@ -1720,6 +1727,39 @@ impl Node {
         self.unfolded_blocks.len()
     }
 
+    /// ⛔ LIVE-GROWTH (docs/LIVE-GROWTH-DEEP-AUDIT-20261126.md) — WHAT THE UNFOLDED SET HOLDS, as counts: `(total, in the DAG, in
+    /// the past of the fold's chain tip, shells, depth below the selected tip in blue score: < 100, < merge depth, ≥ merge depth,
+    /// not in the DAG)`. The read the fix's rule is checked against: a block in the fold tip's past has been folded, and one
+    /// outside it deeper than the merge depth can never be merged. DIGITAL CASH: counts of public blocks only, never an id.
+    /// SCALE: one pass over the unfolded set and one bounded past-walk from the fold tip (`Dag::which_in_past_of`).
+    #[must_use]
+    pub fn unfolded_census(&self) -> [usize; 8] {
+        let dag = self.relay.dag();
+        let ids: Vec<crate::block::BlockId> = self.unfolded_blocks.iter().map(|b| b.id()).collect();
+        let in_past = match self.fold_chain_tip {
+            Some(c) => dag.which_in_past_of(&c, &ids),
+            None => std::collections::HashSet::new(),
+        };
+        let tip_score = dag.selected_tip().and_then(|t| dag.get(&t)).map_or(0, |n| n.blue_score);
+        let merge_depth = dag.params().merge_depth_cap as u64;
+        let mut out = [0usize; 8];
+        out[0] = ids.len();
+        for b in &self.unfolded_blocks {
+            let id = b.id();
+            out[3] += usize::from(b.pow_proof.is_empty());
+            out[2] += usize::from(in_past.contains(&id));
+            match dag.get(&id) {
+                Some(n) => {
+                    out[1] += 1;
+                    let depth = tip_score.saturating_sub(n.blue_score);
+                    out[if depth < 100 { 4 } else if depth < merge_depth { 5 } else { 6 }] += 1;
+                }
+                None => out[7] += 1,
+            }
+        }
+        out
+    }
+
     /// Consecutive fold passes spent waiting on the SAME block, if the fold is waiting at all.
     #[must_use]
     pub fn fold_wait_state(&self) -> Option<(crate::block::BlockId, u64)> {
@@ -1974,6 +2014,39 @@ impl Node {
         Some((lacks_bond, lacks_credit, lacks_wide, lacks_evidence || lacks_tags))
     }
 
+    /// ⛔ A-F139-F8 (lane livewedge, 2026-11-26; docs/FOLD-OVERHAUL-DEEP-AUDIT-20261126.md "LIVE RESUME AT THE ADOPT ANCHOR") — THE
+    /// CERTIFIED TIP AT THE ADOPT ANCHOR, `(prev, root, acc)`, when a rewind's fork point `k` IS the anchor a certified adopt
+    /// installed. A joiner never held the records below its anchor, so neither the per-ordinal index nor the ring can answer
+    /// `acc(k − 1)` or `root(k)` there, and a restarted joiner whose fold stood at its anchor went stale for good unless a peer served
+    /// a bundle. MEASURED (live origin 73052, 2026-11-26 05:47, log line ~30798): cursor 4553 at the adopted prefix, "the membership
+    /// tip transition at the fork point is not derivable here". The adopt's own state answers it: `synced` (the certified
+    /// `SyncState`, persisted, `persist.rs` `snap.synced`) carries `membership_tip`, and `fold_checkpoint` the frontier at `k`.
+    /// BOUND, never trusted: used only when the checkpoint stands at `k`, the certified state's frontier root IS the checkpoint
+    /// frontier's root (the same bytes the serve side publishes, `note_frontier_root`), and its pair folds to its accumulator
+    /// (`note_membership_step_new_acc`, the restore's own binding). Anything else answers `None` and the derivation runs as before.
+    /// AI RESISTANT (a)/(b): the state is the certified bundle this node's join door verified; no peer is asked. SCALE: three
+    /// comparisons and one hash, constant. Long-term: nothing accumulates; a later adopt replaces both values together, and a
+    /// rewind that evicts the checkpoint's ordinal drops the checkpoint (DB-268), which ends this answer with it.
+    fn adopted_tip_at(
+        &self,
+        k: u64,
+    ) -> Option<(crate::spend_frontier::Digest4, crate::spend_frontier::Digest4, crate::spend_frontier::Digest4)> {
+        let (ck_k, ck, _) = self.fold_checkpoint.as_ref()?;
+        if *ck_k != k || k == 0 {
+            return None;
+        }
+        let s = self.synced.as_ref()?;
+        let (p, r, a) = s.membership_tip;
+        // a zero half is "never folded", never a binding: refused before anything reads it
+        let zero = usdm_decider::poseidon2_compress::zero_digest();
+        if p == zero || r == zero || a == zero {
+            return None;
+        }
+        (crate::spend_frontier::leaf_to_cm_bytes(ck.root()) == s.frontier_root
+            && usdm_decider::note_membership_air::note_membership_step_new_acc(p, r) == a)
+            .then_some((p, r, a))
+    }
+
     fn rewind_fold_inner(&mut self, common: crate::block::BlockId, base: Option<StepBase>) {
         // Genesis is the floor: it may carry a record (a persisted node files one at ordinal 0) or none
         // (an in-memory node). Everything above the common block's record — or everything, when the
@@ -2038,7 +2111,8 @@ impl Node {
             }
             let k = first_evict - 1;
             let ring_acc = from_ring.as_ref().and_then(|(_, a, _)| *a);
-            let acc = match self.da_membership_acc_at_ordinal(k).or(ring_acc) {
+            let anchor_acc = self.adopted_tip_at(k).map(|(_, _, a)| a); // A-F139-F8: a fork point at the adopt anchor
+            let acc = match self.da_membership_acc_at_ordinal(k).or(ring_acc).or(anchor_acc) {
                 Some(a) => a,
                 None if k == 0 => Self::MEMBERSHIP_GENESIS_ACC,
                 None => match self.derive_membership_acc_through(k) {
@@ -2086,9 +2160,14 @@ impl Node {
                 None if k == 1 => Some(Self::MEMBERSHIP_GENESIS_ACC),
                 None => ring_acc(k - 1).or_else(|| self.derive_membership_acc_through(k - 1)),
             };
-            let root = self.da_block_root_at_ordinal(k).or_else(|| self.da_block_root_at_ordinal_derive(k));
-            match (prev, root) {
-                (Some(p), Some(r)) => (p, r),
+            // `da_block_root_at_ordinal` derives from this node's own record first (`da.rs`), so it is asked once
+            let root = self.da_block_root_at_ordinal(k);
+            // ⛔ A-F139-F8: at the adopt anchor the certified pair IS the transition (neither half is held below a joiner's
+            // anchor); `adopted_tip_at` refuses a zero half and any pair that does not fold to its certified accumulator
+            let anchor_pair = self.adopted_tip_at(k);
+            match (anchor_pair, prev, root) {
+                (Some((p, r, _)), ..) => (p, r),
+                (None, Some(p), Some(r)) => (p, r),
                 _ => {
                     self.mark_spine_stale(
                         "the membership tip transition at the fork point is not derivable here — the certified \
@@ -3883,6 +3962,38 @@ impl Node {
         // DIGITAL-CASH-PRIVACY-REVIEWED: a count of notes a rogue block carried, and no cm, amount, key or owner.
         eprintln!("[fold] ⛔ {} note(s) this block committed have nothing that justifies them: they leave its record on every node", gone.len());
         self.fold_strip_row(b, seq, &gone)
+    }
+
+    /// ⛔ U-LOCK-9 — the [`crate::canon_chain::leaves_digest`] of record `s`'s leaves (`da_block_leaves`), kept by the row's own
+    /// bytes: the key is (blake3 of the row's real notes, the record address, its cover key), so a row whose bytes change (a strip,
+    /// a restore) is a new key and is derived again. CACHE-ONLY: a miss recomputes; two generations of at most
+    /// `PROVISIONAL_DIGEST_CAP` entries each (64 B a key and value), a constant.
+    pub(super) fn provisional_leaves_digest(&self, s: u64) -> Option<[u8; 32]> {
+        const PROVISIONAL_DIGEST_CAP: usize = 16_384;
+        type Key = ([u8; 32], u64, crate::cover::CoverKey);
+        #[derive(Default)]
+        struct Gens {
+            cur: std::collections::HashMap<Key, [u8; 32]>,
+            old: std::collections::HashMap<Key, [u8; 32]>,
+        }
+        static MEMO: std::sync::OnceLock<std::sync::Mutex<Gens>> = std::sync::OnceLock::new();
+        let reals = self.da_record_reals(s)?;
+        let key: Key = (*blake3::hash(&reals.concat()).as_bytes(), s, self.cover_key_of(s));
+        let memo = MEMO.get_or_init(|| std::sync::Mutex::new(Gens::default()));
+        if let Some(d) = {
+            let g = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.cur.get(&key).or_else(|| g.old.get(&key)).copied()
+        } {
+            return Some(d);
+        }
+        let leaves = self.da_block_leaves(s).filter(|l| !l.is_empty())?;
+        let d = crate::canon_chain::leaves_digest(&leaves);
+        let mut g = memo.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if g.cur.len() >= PROVISIONAL_DIGEST_CAP {
+            g.old = std::mem::take(&mut g.cur);
+        }
+        g.cur.insert(key, d);
+        Some(d)
     }
 
     pub(super) fn fold_strip_row(

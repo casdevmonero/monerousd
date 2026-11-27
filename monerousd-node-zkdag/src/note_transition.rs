@@ -2060,8 +2060,14 @@ pub fn verify_ledger_with(
     padded_tags: &[[u8; 32]],
     bound: bool,
 ) -> Option<Admissible> {
-    let published = decode_ledger_published(&nt.tuples)?;
+    // ⛔ LIVE-LEDGER-WHY (lane livediag, 2026-11-27): each refusal names its check — the live origin refused every ledger it laid
+    // ("a joined ledger proof this node's OWN verifier refuses") with no reason, on two binaries. DIGITAL-CASH-PRIVACY-REVIEWED: fixed strings.
+    let Some(published) = decode_ledger_published(&nt.tuples) else {
+        eprintln!("[ledger-why] the published list does not decode");
+        return None;
+    };
     if !ledger_outs_are_the_header_slots(&published, header_cms) {
+        eprintln!("[ledger-why] the list's out cells are not the header's note slots");
         return None; // fail-closed (spec §3.2): a list that is not the header's slots names which slots are spends
     }
     verify_ledger_on_wire_with(nt, output_notes_root, seed_commit, oli_tags, padded_tags, bound)
@@ -2084,25 +2090,49 @@ pub fn verify_ledger_on_wire_with(
     bound: bool,
 ) -> Option<Admissible> {
     use usdm_decider::slot_ledger::{PUB_D, PUB_FLAGS, PUB_OUT0, PUB_OUT1, PUB_TAG0, PUB_TAG1};
+    let why = |s: &str| eprintln!("[ledger-why] {s}"); // LIVE-LEDGER-WHY: fixed strings only
     if Some(nt.shape) != ledger_shape_wire() {
+        why("the shape is not the wire shape");
         return None;
     }
-    let published = decode_ledger_published(&nt.tuples)?;
+    let Some(published) = decode_ledger_published(&nt.tuples) else {
+        why("the published list does not decode (wire)");
+        return None;
+    };
     if !ledger_cells_are_the_header_lane(&published, padded_tags) {
+        why("the tag cells are not the header's lane");
         return None; // fail-closed (spec §3.2): tag cells that are not the header's lane name which tags are spends
     }
-    let sc = crate::block::cover_seed_commit_lanes(seed_commit)?;
+    let Some(sc) = crate::block::cover_seed_commit_lanes(seed_commit) else {
+        why("the seed commit does not decode");
+        return None;
+    };
     // goods spec §9.1: the ledger's clock, as the hour count its proof binds; a clock off the hour grid is no ledger's
     // (one encoding). Whether the chain has REACHED it is the fold's verdict (`Node::ledger_clock_is_reached`).
-    let block_clock_h = clock_hours(nt.clock_ms)?;
-    let filed = filed_keys(oli_tags)?;
+    let Some(block_clock_h) = clock_hours(nt.clock_ms) else {
+        why("the ledger clock is off the hour grid");
+        return None;
+    };
+    let Some(filed) = filed_keys(oli_tags) else {
+        why("the filed keys do not decode");
+        return None;
+    };
     if !ledger_filing_is_uniform(oli_tags, &published) {
+        why("the filing is not uniform with the published list");
         return None; // fail-closed (§10 C1): a filing that skips a published note, files one it does not publish, or
                      // lists records out of order names which rows are spends
     }
     for p in &published {
-        if ledger_row_filing_d(&filed, &p[PUB_OUT0], &p[PUB_OUT1])? != p[PUB_D] {
-            return None; // fail-closed: a row's D is not the public filing function of its notes
+        match ledger_row_filing_d(&filed, &p[PUB_OUT0], &p[PUB_OUT1]) {
+            Some(d) if d == p[PUB_D] => {}
+            Some(_) => {
+                why("a row's D is not the filing function of its notes");
+                return None; // fail-closed: a row's D is not the public filing function of its notes
+            }
+            None => {
+                why("a row's filing D is unstateable");
+                return None;
+            }
         }
     }
     let (onr, dsr) = roots(output_notes_root);

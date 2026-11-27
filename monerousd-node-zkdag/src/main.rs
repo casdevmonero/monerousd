@@ -159,6 +159,37 @@ fn run_sovereign(args: &[String]) {
 /// with zero manual configuration. Falls back to `preferred` if the whole window is busy (the real bind then
 /// surfaces the true error instead of masking it).
 fn pick_free_rpc_port(preferred: u16) -> u16 {
+    // ⛔ PORT-RACE-IDENTITY (lane livewedge, 2026-11-26) — A NODE WITH ITS OWN SAVED CHAIN ON A PORT KEEPS THAT PORT. Per-node files
+    // follow the served port (DB-341), so a node that binds a port it has no chain on boots EMPTY under that port's name. MEASURED
+    // (live, 2026-11-26 05:37–05:41): the origin (~/.usdmd-node, chain on 27780) was mid-boot when the wallet node (its own state dir,
+    // chain on 27781, preferring 27780) restarted; the wallet node took the free 27780, the origin's relaunch took 27781, and both
+    // served fresh chains from genesis (heights 0 and 27) while their real snapshots sat intact. Now: the first port in this node's
+    // range that THIS state dir holds a snapshot for is its port, taken even when an earlier one is free, and waited for (a bounded
+    // 120 s: a just-stopped instance or a booting neighbour) when busy; past the bound the process exits non-zero and its supervisor
+    // restarts it, never as another node. A state dir with no snapshot in the range picks as before (a fresh node, a second node).
+    // AI RESISTANT (b): local files of this node only. SCALE: ≤ 32 file checks at boot. NOTHING HALTS: the wait is bounded and its
+    // expiry hands the restart to the supervisor; production never waits on it.
+    let own = |p: u16| usdmd_node::persist::state_dir().join(format!("state-{p}.snap")).exists();
+    let free = |p: u16| usdmd_node::rpc_http::reusable_tcp_listener("127.0.0.1", p).is_ok();
+    let mine_all: Vec<u16> = (preferred..preferred.saturating_add(32)).filter(|p| own(*p)).collect();
+    // a state dir that still hosts two nodes' chains: a FREE port of its own goes first, so neither takes the other's
+    if let Some(p) = mine_all.iter().copied().find(|p| free(*p)) {
+        return p;
+    }
+    if let Some(&mine) = mine_all.first() {
+        let began = std::time::Instant::now();
+        while usdmd_node::rpc_http::reusable_tcp_listener("127.0.0.1", mine).is_err() {
+            if began.elapsed() >= std::time::Duration::from_secs(120) {
+                eprintln!(
+                    "[auto-port] ⛔ this node's own chain is on port {mine} and the port stayed busy for 120 s — exiting so the \
+                     supervisor restarts it; it never serves another port's identity"
+                );
+                std::process::exit(75);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        return mine;
+    }
     for cand in preferred..preferred.saturating_add(32) {
         // SO_REUSEADDR probe (same as the real serve bind): a TIME_WAIT socket a JUST-KILLED prior instance left
         // on `preferred` is RECLAIMABLE, so a restart stays on ITS OWN port (and thus ITS snapshot + onion),

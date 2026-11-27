@@ -1754,7 +1754,7 @@ impl Node {
         let selected = dag.selected_parent_of(&parents);
         let prev_acc = selected.and_then(|t| dag.get(&t)).map_or([0u8; 16], |n| n.header.chain_acc);
         let next_score = dag.selected_tip().and_then(|t| dag.get(&t)).map_or(0, |n| n.blue_score + 1);
-        block.header.work = crate::miner::adaptive_work(dag, selected);
+        block.header.work = crate::miner::adaptive_work_at(dag, selected, block.header.timestamp); // ⛔ A-F145 RELIEF
         block.header.chain_acc = crate::miner::fold_chain_acc(&prev_acc, &block.header.tx_merkle_root, &block.header.frontier_root);
         block.header.version = self.peg.deployments().version_for(next_score);
         block.header.parents = parents;

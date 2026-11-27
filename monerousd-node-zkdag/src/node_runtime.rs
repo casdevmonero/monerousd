@@ -123,6 +123,13 @@ pub static ING_SETTLE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 pub static ING_DECODE_FAILS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static ING_GRAFT_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static ING_APPLY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// ⭐ ORPHAN-PARK-COST (lane livewedge, 2026-11-26, docs/UX-DEEP-AUDIT-20261126.md U16): the LAST preverified ingest's two
+/// stages no other stamp covers. Read by `[apply-slow]` only: (a) body rehydration + owed-span placement, (b) the relay's own
+/// receive (structural + contextual checks, buffering, the cascade). MEASURED why: parked blocks held the lock 376 times, up to
+/// 34.6 s, while the pre-receive span (≤ 143 ms) and the post-graft apply (≤ 941 ms) each log their own share.
+/// DIGITAL-CASH-PRIVACY-REVIEWED: two durations of this node's own scheduler; no note, amount, key or owner.
+pub static ING_STAGE_HYDRATE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static ING_STAGE_RECEIVE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static ING_SAVE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static PRODUCE_BLOCKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static PRODUCE_MINE_FAILS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -261,14 +268,27 @@ pub fn grind_job<T: crate::transport::CellTransport>(
     now_unix_ms: fn() -> u64,
 ) -> Option<Block> {
     loop {
-        let (duty, tip0) = {
+        // ⛔ A-F145 RELIEF: the window's figure and the selected parent's stamp, read once a rebind, so the grind sees when its own
+        // wait has lowered the work it must meet (`miner::relieved_work`) without taking the lock per hash
+        let (duty, tip0, window_work, parent_ts, spacing) = {
             let r = rt.lock().unwrap_or_else(|e| e.into_inner());
-            (r.grind_duty_milli(now_unix_ms()), r.node().selected_tip())
+            let dag = r.node().dag();
+            let sp = dag.selected_parent_of(&job.block.header.parents);
+            (
+                r.grind_duty_milli(now_unix_ms()),
+                r.node().selected_tip(),
+                crate::miner::adaptive_work(dag, sp),
+                sp.and_then(|p| dag.get(&p)).map(|n| n.header.timestamp),
+                dag.params().target_spacing_ms,
+            )
         };
+        let header_work = job.block.header.work;
+        let relief_due = |now: u64| parent_ts.is_some_and(|pts| crate::miner::relieved_work(window_work, pts, now, spacing) < header_work);
         let tries = std::cell::Cell::new(0u32);
+        // the stop is checked once every 64 hashes (a lock-check cadence, not a log): a new tip, or a wait that lowered the work
         let stop = || {
             tries.set(tries.get().wrapping_add(1));
-            tries.get() % 64 == 0 && rt.try_lock().map_or(false, |r| r.node().selected_tip() != tip0)
+            tries.get() & 63 == 0 && (relief_due(now_unix_ms()) || rt.try_lock().map_or(false, |r| r.node().selected_tip() != tip0))
         };
         let mut header = job.block.header.clone();
         match miner.mine_paced(&mut header, duty, 200_000_000, &stop) {
@@ -285,7 +305,17 @@ pub fn grind_job<T: crate::transport::CellTransport>(
             Err(_) => {
                 let r = rt.lock().unwrap_or_else(|e| e.into_inner());
                 if r.node().selected_tip() == tip0 {
-                    return None;
+                    let now = now_unix_ms();
+                    if !relief_due(now) {
+                        return None;
+                    }
+                    // ⛔ A-F145 RELIEF: the same proven job, stamped now and held to the lower work its wait earned (the body
+                    // binds neither, so nothing is proved again); every door computes this figure from the same two stamps
+                    job.block.header.timestamp = now.max(job.block.header.timestamp);
+                    let dag = r.node().dag();
+                    let sp = dag.selected_parent_of(&job.block.header.parents);
+                    job.block.header.work = crate::miner::adaptive_work_at(dag, sp, job.block.header.timestamp);
+                    continue;
                 }
                 r.rebind_parents(job);
             }
@@ -868,7 +898,8 @@ pub(crate) fn next_pace_milli(pace_milli: u64, rate_per_ks: u64, want_per_ks: u6
     let min = min_milli.clamp(1, 1_000);
     // A-F93: the decrease fires only past PACE_MD_SLACK_MILLI of the target, and goes back to the target (× rate / want)
     if rate_per_ks.saturating_mul(1_000) > want_per_ks.saturating_mul(PACE_MD_SLACK_MILLI) {
-        return (pace.saturating_mul(rate_per_ks) / want_per_ks.max(1)).max(min);
+        // ⛔ PACE-RUNAWAY (lane livediag, 2026-11-27): the decrease never takes a node past PACE_MAX_MILLI (see that constant)
+        return (pace.saturating_mul(rate_per_ks) / want_per_ks.max(1)).max(min).min(PACE_MAX_MILLI);
     }
     // ⛔⛔ W-LIVE-7 (docs/LIVE-FINALITY-AND-FOLD-WEDGE-DEEP-AUDIT-20261125.md) — A STALLED MESH IS RESTORED AT ONCE, NEVER RAMPED INTO. Below
     // PACE_STARVED_MILLI of the target the mesh is not a crowd this node competes with: it is standing still, and the additive ramp's
@@ -881,7 +912,29 @@ pub(crate) fn next_pace_milli(pace_milli: u64, rate_per_ks: u64, want_per_ks: u6
     }
     // this node's rate as thousandths of its fair share, plus one step
     let rate_milli = 1_000_000 / pace + PACE_AIMD_STEP_MILLI;
-    (1_000_000 / rate_milli.max(1)).max(min)
+    (1_000_000 / rate_milli.max(1)).max(min).min(PACE_MAX_MILLI)
+}
+
+/// ⛔⛔ PACE-RUNAWAY (lane livediag, 2026-11-27) — THE SLOWEST PACE A NODE EVER RUNS AT: its own slow start. MEASURED live (origin
+/// 27780, main 3b0740a0, 13:1x): the multiplicative decrease read the mesh 1.5-3x over the target at six tips running (old parked
+/// blocks merging, "stamped 145,704 s ago", raise the blue score in a short span) and compounded the pace 1,515 → 565,861, a 2 h
+/// 9 min gap (`[pace] … gap 7735885 ms`); the pace is re-read only at a new tip, which that gap never let come, so the chain stood
+/// at 12,795 (uptime 0 % for the hour). A joining node starts here and earns its way down; no reading slows it further.
+pub(crate) const PACE_MAX_MILLI: u64 = PACE_SLOW_START_MILLI;
+
+/// ⛔⛔ PACE-RUNAWAY — THE STALL LINE ON THE CLOCK. A pace above the fair share that has seen no new selected tip for one DAA window
+/// returns to the fair share at once (`NodeRuntime::repace_on_stall`): W-LIVE-7's "a stalled mesh is restored at once" read on the
+/// clock, because a rule read only at a new tip cannot see the stall its own gap made. NOTHING HALTS: the wait is bounded by one DAA
+/// window (`daa_sample_len` x target, 117 s at the live parameters) and its expiry DOES the work (the node produces at its share).
+/// Pure, so it is pinned directly. SCALE: one comparison a tick, nothing stored beyond one timestamp.
+/// ⛔⛔⛔ STALL-FLOOR — the liveness floor's bound, pure: a tip clock that has run (`tip_ms` > 0) and stood for one DAA window
+/// (`window_ms` > 0). See `NodeRuntime::liveness_floor_due`.
+pub(crate) fn liveness_floor(tip_ms: u64, now_ms: u64, window_ms: u64) -> bool {
+    tip_ms != 0 && window_ms != 0 && now_ms.saturating_sub(tip_ms) >= window_ms
+}
+
+pub(crate) fn pace_after_stall(pace_milli: u64, tip_unchanged_ms: u64, window_ms: u64) -> Option<u64> {
+    (pace_milli > 1_000 && window_ms > 0 && tip_unchanged_ms >= window_ms).then_some(1_000)
 }
 
 /// ⛔ A-F93 — whether the pace may run under the fair share (down to [`pace_min_milli`]). OFF: on a fast link it let a
@@ -919,6 +972,42 @@ mod pace_recovery_tests {
         assert!(moving > 1_000 && moving < PACE_SLOW_START_MILLI, "⛔ a moving mesh no longer ramps: {moving}");
         let over = next_pace_milli(1_000, 2 * want, want, 1);
         assert_eq!(over, 2_000, "⛔ the multiplicative decrease above 1.5× changed: {over}");
+    }
+
+    /// ⛔ PACE-RUNAWAY PIN — the live run's sequence (pace 1,515 read 1.5-3x over the target at tip after tip, MEASURED origin 13:1x)
+    /// never passes the slow start, and a pace above the share whose tip has not moved for one DAA window returns to the share;
+    /// a pace at the share, a tip that moved inside the window, or a window of 0 change nothing.
+    /// TWO-PARTY-REVIEWED: a pure pacing function of one node's own timer; the mesh-wide effect is the pace model's
+    /// (`scratchpad/net/pace.py`, which reads these constants from the source).
+    /// ⛔⛔⛔ STALL-FLOOR PIN — the liveness floor fires exactly when a seen tip has stood for one DAA window, never on a clock that has
+    /// not started (0) or a zero window, and never before the window ends.
+    /// TWO-PARTY-REVIEWED: a pure bound on one node's own timer; the mesh effect is the netsim runs of the batch.
+    #[test]
+    fn stall_floor_fires_after_one_daa_window_of_a_standing_tip() {
+        let p = crate::params::ChainParams::default();
+        let window = p.daa_sample_len * p.target_spacing_ms;
+        assert!(liveness_floor(1_000, 1_000 + window, window), "⛔ a tip standing one full window did not fire the floor");
+        assert!(!liveness_floor(1_000, 1_000 + window - 1, window), "⛔ the floor fired before the window ended");
+        assert!(!liveness_floor(0, u64::MAX / 2, window), "⛔ the floor fired on a clock that never started");
+        assert!(!liveness_floor(1_000, u64::MAX / 2, 0), "⛔ the floor fired on a zero window");
+    }
+
+    #[test]
+    fn pace_runaway_is_bounded_and_a_stalled_tip_restores_the_share_on_the_clock() {
+        // the chain's own parameters (never a literal pace); the readings are the live run's MEASURED ratios to the target
+        let p = crate::params::ChainParams::default();
+        let want = 1_000_000 / p.target_spacing_ms.max(1);
+        let mut pace = 1_515;
+        for ratio_milli in [1_530u64, 1_545, 1_572, 3_145, 3_160, 3_170, 3_180, 3_200] {
+            pace = next_pace_milli(pace, want * ratio_milli / 1_000, want, 1_000);
+            assert!(pace <= PACE_MAX_MILLI, "⛔ the pace passed the slow start: {pace}");
+        }
+        assert_eq!(pace, PACE_MAX_MILLI, "CALIBRATION: the live sequence reaches the bound");
+        let window = p.daa_sample_len * p.target_spacing_ms;
+        assert_eq!(pace_after_stall(pace, window, window), Some(1_000), "⛔ a pace above the share with a stalled tip was not restored");
+        assert_eq!(pace_after_stall(pace, window - 1, window), None, "⛔ a tip that moved inside the window was overridden");
+        assert_eq!(pace_after_stall(1_000, 10 * window, window), None, "⛔ a pace at the share was touched");
+        assert_eq!(pace_after_stall(pace, window, 0), None, "⛔ a zero window restored the share");
     }
 }
 
@@ -1863,6 +1952,12 @@ pub struct NodeRuntime<T: CellTransport> {
     pace_milli: u64,
     /// A-F60: the selected tip the pace was last read at.
     pace_tip: Option<crate::block::BlockId>,
+    /// ⛔ PACE-RUNAWAY — when this node's selected tip last changed (ms; 0: never), read by `repace_on_stall`. CACHE-ONLY.
+    pace_tip_ms: u64,
+    /// ⛔⛔⛔ STALL-FLOOR — the selected tip the liveness floor last saw and when it changed: the floor's OWN clock, moved only by a
+    /// real tip change (never by the pace's resets or a behind-peers read). CACHE-ONLY.
+    floor_tip: Option<crate::block::BlockId>,
+    floor_tip_ms: u64,
     /// A-F60 (scale): when this node began deferring its production because it was behind its peers (`behind_peers`);
     /// 0 while it is not deferring. Bounds the deferral to one DAA window (`behind_defers`). A scalar.
     behind_since_ms: u64,
@@ -2316,6 +2411,14 @@ pub struct NodeRuntime<T: CellTransport> {
     /// node's own sink time, never a peer's claimed score).
     peer_graft_ms: u64,
     peer_graft_newest_ts: u64,
+    /// ⛔ DB292-GAP-NOT-SHRINKING (lane livewedge, 2026-11-26) — the smallest gap to the best peer seen while this node defers as
+    /// BEHIND, and when it was first that small: `(gap, at_ms)`. A catch-up is the gap SHRINKING; grafts arriving is not one.
+    /// CACHE-ONLY: this node's own production timer; two scalars, cleared when the node is not behind.
+    behind_min_gap: Option<(u64, u64)>,
+    /// ⛔ HOLD-NEEDS-PROGRESS (2026-11-27) — while a JOINING or BEHIND hold stands: the selected tip's blue score when it last
+    /// advanced to a block this node did NOT produce, and when: `(blue, at_ms)`. CACHE-ONLY: this node's own production timer; two
+    /// scalars, cleared when no peer is ahead.
+    hold_min_gap: Option<(u64, u64)>,
     /// The runtime clock at the first tick — the baseline for "nothing has landed since" before any peer block
     /// does (a restarted node gets the live bound of grace before the lanes count as stale). Same clock as
     /// `last_peer_block_in_ms`, so the Sim's synthetic clock and production's wall clock both work.
@@ -2474,7 +2577,10 @@ pub struct NodeRuntime<T: CellTransport> {
     /// stopped as a whole would never have restarted.
     boot_directive: bool,
     /// Last time the production-gated notice was logged (throttle: one line / 30s, not one per spacing).
-    last_gate_log_ms: u64,
+    /// ⛔ GATE-LOG-PER-SITE (2026-11-27): each production gate's own 30 s log clock, keyed by its call site (`line!()`), so the gate
+    /// that HOLDS always names itself. One shared clock let the "extend anyway" line silence the BEHIND hold for hours on the live
+    /// origin (docs/LIVE-ORIGIN-HOLD-WEDGE-DEEP-AUDIT-20261127.md). Bounded by the sites that call it (17). CACHE-ONLY: log pacing.
+    gate_logs: std::collections::HashMap<u32, u64>,
     /// This node's bonded-validator ML-DSA (pubkey, secret) — set by the daemon after it loads its validator key,
     /// used to SELF-ATTEST an orchestrated confidential mint/redeem ([`Node::execute_peg_in`]) when this node acts
     /// as the (1-of-1, growing to t-of-n) custodian. `None` until set: a non-validator node cannot self-attest a
@@ -2786,6 +2892,9 @@ impl<T: CellTransport> NodeRuntime<T> {
             spacing_ms,
             pace_milli: PACE_SLOW_START_MILLI,
             pace_tip: None,
+            pace_tip_ms: 0,
+            floor_tip: None,
+            floor_tip_ms: 0,
             behind_since_ms: 0,
             seen_dsync_adopts: 0,
             joining: false,
@@ -2929,6 +3038,8 @@ impl<T: CellTransport> NodeRuntime<T> {
             last_caught_up_beacon_ms: 0,
             peer_graft_ms: 0,
             peer_graft_newest_ts: 0,
+            behind_min_gap: None,
+            hold_min_gap: None,
             boot_ms: 0,
             last_tip_served_ms: 0,
             last_heavier_ask: None,
@@ -2979,7 +3090,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             preverify_tx,
             verdict_rx,
             preverify_inflight,
-            last_gate_log_ms: 0,
+            gate_logs: std::collections::HashMap::new(),
             bridge_signer: None,
             custody_kem: None,
             payout_lane: crate::btc_payout::PayoutLane::new(),
@@ -3042,6 +3153,15 @@ impl<T: CellTransport> NodeRuntime<T> {
     /// re-anchored (fold cursor 109 vs DAG tip 2642 for 3,400 simulated s). Bitcoin's shape: `GetTime()` honours
     /// `SetMockTime`. cons: none — one call per stamp; the daemon's links have no simulated clock, so it reads the wall
     /// clock exactly as before.
+    /// GATE-LOG-PER-SITE: whether the gate at `site` may log now (its own 30 s clock), marking it logged when it may.
+    fn gate_log_due(&mut self, site: u32, now_ms: u64) -> bool {
+        let due = self.gate_logs.get(&site).is_none_or(|t| now_ms.saturating_sub(*t) >= 30_000);
+        if due {
+            self.gate_logs.insert(site, now_ms);
+        }
+        due
+    }
+
     pub fn now_unix_ms(&self) -> u64 {
         self.channel.clock_ms().unwrap_or_else(unix_ms_now)
     }
@@ -4230,8 +4350,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             return false;
         }
         if self.deep_fork_recent(now_ms) {
-            if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                self.last_gate_log_ms = now_ms;
+            if self.gate_log_due(line!(), now_ms) {
                 // DIGITAL-CASH-PRIVACY-REVIEWED: a block gap only.
                 crate::arti_transport::ilog(&format!(
                     "[dsync] a heavier peer's blocks expire here with their ancestry absent: its chain forked from ours deeper than \
@@ -4241,8 +4360,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             return true;
         }
         if self.view_recently_degraded(now_ms, gap) {
-            if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                self.last_gate_log_ms = now_ms;
+            if self.gate_log_due(line!(), now_ms) {
                 // DIGITAL-CASH-PRIVACY-REVIEWED: a block gap and a verdict — no tag, root, amount, owner or address.
                 crate::arti_transport::ilog(&format!(
                     "[dsync] this node's own view read DEGRADED (DB-380) and a same-genesis peer announces a tip {gap} \
@@ -4253,8 +4371,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             return true;
         }
         if self.lanes_stale(now_ms, gap) {
-            if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                self.last_gate_log_ms = now_ms;
+            if self.gate_log_due(line!(), now_ms) {
                 crate::arti_transport::ilog(&format!(
                     "[dsync] the block lanes are STALE: no peer block landed for {} s while a heavier tip is announced \
                      ({} above ours) — asking for the certified bundle (the lanes failed; IBD)",
@@ -6881,12 +6998,57 @@ impl<T: CellTransport> NodeRuntime<T> {
     /// gap from now (production is memoryless, so the redraw is exact). A chain too short to measure (genesis: a handful of
     /// nodes, nothing to outrun) runs at the fair share. See [`next_pace_milli`].
     /// CACHE-ONLY: one scalar of this node's own production timer, re-derived from the DAG at every new tip; no door reads it.
+    /// ⛔⛔⛔ STALL-FLOOR — whether this node's selected tip has stood for one DAA window (`daa_sample_len` x target, the same clock
+    /// `repace_on_stall` keeps): then `begin_produce`'s waiting rules stand aside and it produces. Pure over the tip clock
+    /// ([`liveness_floor`]), so the bound is pinned directly. CACHE-ONLY: this node's own production timer.
+    fn liveness_floor_due(&mut self, now_ms: u64) -> bool {
+        let tip = self.node.selected_tip();
+        if tip != self.floor_tip || self.floor_tip_ms == 0 {
+            self.floor_tip = tip;
+            self.floor_tip_ms = now_ms.max(1);
+            return false;
+        }
+        let window_ms = self.node.params().daa_sample_len.saturating_mul(self.node.params().target_spacing_ms);
+        let due = liveness_floor(self.floor_tip_ms, now_ms, window_ms);
+        if due && self.gate_log_due(line!(), now_ms) {
+            // DIGITAL-CASH-PRIVACY-REVIEWED: this node's own production timer only.
+            crate::arti_transport::ilog(&format!(
+                "[produce] ⛔ STALL-FLOOR: no new selected tip for {} ms (one DAA window is {window_ms} ms) — every waiting rule \
+                 stands aside and this node produces now",
+                now_ms.saturating_sub(self.floor_tip_ms)
+            ));
+        }
+        due
+    }
+
+    /// ⛔⛔ PACE-RUNAWAY — the stall line on the clock ([`pace_after_stall`]): a pace above the share whose selected tip has not moved
+    /// for one DAA window returns to the share and the next production is drawn from now. Called every tick beside
+    /// [`Self::repace_on_new_tip`]. CACHE-ONLY: this node's own production timer.
+    fn repace_on_stall(&mut self, now_ms: u64) {
+        if self.pace_tip_ms == 0 {
+            self.pace_tip_ms = now_ms; // the clock starts at the first tick
+            return;
+        }
+        let window_ms = self.node.params().daa_sample_len.saturating_mul(self.node.params().target_spacing_ms);
+        let Some(next) = pace_after_stall(self.pace_milli, now_ms.saturating_sub(self.pace_tip_ms), window_ms) else { return };
+        // DIGITAL-CASH-PRIVACY-REVIEWED: this node's own production timer only.
+        crate::arti_transport::ilog(&format!(
+            "[pace] ⛔ no new tip for {} ms (one DAA window is {window_ms} ms) at pace {}: back to the fair share now",
+            now_ms.saturating_sub(self.pace_tip_ms),
+            self.pace_milli
+        ));
+        self.pace_milli = next;
+        self.pace_tip_ms = now_ms;
+        self.schedule_next_production(now_ms);
+    }
+
     fn repace_on_new_tip(&mut self, now_ms: u64) {
         let tip = self.node.selected_tip();
         if tip == self.pace_tip {
             return;
         }
         self.pace_tip = tip;
+        self.pace_tip_ms = now_ms;
         // ⛔ A-F60 (scale) — READ ONLY WHILE CAUGHT UP. A chain block a node takes in while it is behind its peers was made
         // by producers as starved as it, so its blue score undercounts the blocks that exist, and a pace fed that reading
         // speeds up exactly when the mesh is saturated. MEASURED in the mesh model (`scratchpad/net/pace.py`, the source's
@@ -9071,6 +9233,7 @@ impl<T: CellTransport> NodeRuntime<T> {
         // ⭐ RE-OFFER any payment block the peer has not demonstrably taken. Cheap (a few blocks, capped at
         // 8) and self-limiting: once a peer's DAG holds the block it is dropped from the list.
         self.repace_on_new_tip(now_ms); // A-F60: the pace follows the mesh's rate as the DAG records it
+        self.repace_on_stall(now_ms); // PACE-RUNAWAY: and a stalled tip restores the share on the clock
         // A-F60 (scale): a node behind its peers defers (a fresh gap, bounded by one DAA window) — `behind_defers`
         if !self.external_producer && self.production_due(now_ms) && !self.behind_defers(now_ms)
         {
@@ -9082,7 +9245,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             // Fires at most once per 30s and only while the condition is unmet, so a healthy node is silent.
             // DIGITAL-CASH-PRIVACY-REVIEWED: two booleans about THIS node's own state; no note, amount, key
             // or owner.
-            if !self.mesh_joined && now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
+            if !self.mesh_joined && self.gate_log_due(line!(), now_ms) {
                 eprintln!(
                     "[gossip-gate] mesh_joined=false — this node produces but NEVER gossips its blocks, so a \
                      peer can only ever obtain them by backfill."
@@ -9092,9 +9255,8 @@ impl<T: CellTransport> NodeRuntime<T> {
                 if let Some(block) = self.node.produce(now_ms, frontier_root, miner_commitment) {
                     TICK_PRODUCE_BLOCKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if block.output_notes.is_empty()
-                        && now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000
+                        && self.gate_log_due(line!(), now_ms)
                     {
-                        self.last_gate_log_ms = now_ms;
                         eprintln!(
                             "[gossip-gate] produce() returned a block with ZERO output notes — it is gossiped, \
                              but carries no payment for any peer to file."
@@ -9116,8 +9278,7 @@ impl<T: CellTransport> NodeRuntime<T> {
                     }
                     report.produced = true;
                 }
-            } else if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                self.last_gate_log_ms = now_ms;
+            } else if self.gate_log_due(line!(), now_ms) {
                 crate::arti_transport::ilog("[mesh] production GATED: not yet joined the canonical mesh (dialing peers + pulling #29 DSYNC — join-mesh-or-nothing)");
             }
             self.schedule_next_production(now_ms);
@@ -10118,8 +10279,10 @@ impl<T: CellTransport> NodeRuntime<T> {
             if one_ms > 250 {
                 eprintln!(
                     "[apply-slow] ONE block apply held the rt lock {one_ms}ms against a 200ms budget \
-                     (outcome {outcome:?}, {applied} applied before it this tick) — the per-tick budget \
-                     cannot bound a single call, so this is the unit that must become interruptible"
+                     (outcome {outcome:?}, {applied} applied before it this tick; hydrate+owed {} ms, relay receive {} ms) — the \
+                     per-tick budget cannot bound a single call, so this is the unit that must become interruptible",
+                    ING_STAGE_HYDRATE_MS.load(std::sync::atomic::Ordering::Relaxed),
+                    ING_STAGE_RECEIVE_MS.load(std::sync::atomic::Ordering::Relaxed),
                 );
             }
             let routine = matches!(
@@ -11989,6 +12152,22 @@ impl<T: CellTransport> NodeRuntime<T> {
                             }
                             continue; // already held — the relay's Duplicate outcome, decided early
                         }
+                        // ⛔ A-F142 / SOL-RAM-1 (ported from lane speed5-b4 d5831403) — AN ECHO OF A BLOCK ALREADY IN FLIGHT BUYS NOTHING
+                        // EITHER. The early drop above sees only the DAG, so every copy that arrived while the first was still being
+                        // verified was handed again: one more whole frame in the unbounded verifier channel and one more full verify
+                        // (MEASURED under Solstice: ~1 GB a minute a node in frame-sized regions). BORROWED: Bitcoin Core's
+                        // `mapBlocksInFlight`. A copy is taken again once SYNC_SAME_ASK_REARM_MS has passed (a failed first copy waits
+                        // at most that: NOTHING HALTS), and gossip keeps the backlog bound every page door keeps; the pull lanes
+                        // deliver a dropped block again by id. SCALE: the channel holds at most the backlog bound of frames.
+                        // AI RESISTANT: (b) code — dropping a copy changes no verdict; the copy that is taken passes every gate.
+                        let now_ms = self.now_unix_ms();
+                        if self.handed_to_verifier(&hdr.id().0, now_ms) {
+                            continue;
+                        }
+                        if self.preverify_inflight.load(std::sync::atomic::Ordering::Relaxed) >= BLOCK_BATCH_INFLIGHT_MAX {
+                            continue;
+                        }
+                        self.note_handed(hdr.id().0, now_ms);
                         // ⭐ A-F88: remember which link carried this unseen block, so its Added verdict names a delivering peer
                         let link = self.channel.last_message_link();
                         self.note_block_arrival(hdr.id().0, link);
@@ -13220,7 +13399,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             self.node.served_block_count(),
             self.mesh_joined(),
             self.node.unfolded_blocks_len() as u64,
-            self.node.wedge_reason().is_some(),
+            self.node.fold_wedge_reason().is_some(),
         );
         // …and the confidential solvency answer, so `/get_solvency` (the reserves page) never waits on a block apply.
         {
@@ -16496,10 +16675,22 @@ impl<T: CellTransport> NodeRuntime<T> {
         miner_commitment: Hash32,
     ) -> Option<ProduceJob> {
         self.repace_on_new_tip(now_ms); // A-F60
+        self.repace_on_stall(now_ms); // PACE-RUNAWAY
         if !self.production_due(now_ms) {
             return None;
         }
-        if self.behind_defers(now_ms) {
+        // ⛔⛔⛔ STALL-FLOOR (lane livediag, 2026-11-27; user: "stalling should be impossible … remove any possibility of stalls"):
+        // THE ONE LIVENESS FLOOR. When this node's selected tip has not moved for one DAA window, every WAITING rule below (behind its
+        // peers, P7's band backpressure, the re-anchor hold, the joining hold, the behind-a-live-peer hold, the orphan deferral)
+        // stands aside and the node produces: a stopped view is never made safer by waiting longer, a wider DAG merges by mergeset,
+        // and A-F145's relief makes the block's work fall with its own wait, so the block is found. A catching-up node keeps taking
+        // in new tips, so the floor never fires for it (A-F94's shape is untouched). What it never bypasses: a node that never
+        // joined the mesh (it must not mint its own chain) and a node past an upgrade it has not taken (SH5's stop) — those are
+        // what the node IS, not waits. MEASURED why (live origin, 2026-11-27): production stood ~90 min behind a chain of waits each
+        // "bounded" on its own (the pace, the deferrals, the difficulty), none bounding the chain as a whole.
+        // SCALE: one comparison a slot; nothing stored beyond the tip clock the pace already keeps.
+        let floor = self.liveness_floor_due(now_ms);
+        if !floor && self.behind_defers(now_ms) {
             return None; // A-F60 (scale): behind its peers — a fresh gap is drawn, bounded by one DAA window
         }
         self.schedule_next_production(now_ms);
@@ -16516,7 +16707,8 @@ impl<T: CellTransport> NodeRuntime<T> {
         // could not carry each time, and the lag reached the cap. And a STOPPED band never lets the unfolded backlog pass
         // the DAG's retention window (C1). One verdict, side-effect free (`p7_verdict`), so the rule is pinned directly.
         self.band_sample_cadence(now_ms);
-        match self.p7_verdict(now_ms) {
+        // STALL-FLOOR: a stopped view's band backpressure stands aside (the floor's doc, above)
+        match if floor { P7Verdict::Open } else { self.p7_verdict(now_ms) } {
             P7Verdict::Open => {}
             P7Verdict::Defer { budget, at_window } => {
                 if now_ms.saturating_sub(self.band_bp_log_ms) >= 30_000 {
@@ -16650,8 +16842,7 @@ impl<T: CellTransport> NodeRuntime<T> {
         let claim_corroborated = now_ms.saturating_sub(graft_ref_ms) <= LIVE_CATCH_UP_STALL_MS
             && data_age_ms > LIVE_CATCH_UP_STALL_MIN_GAP.saturating_mul(self.spacing_ms);
         if peer_ahead && peer_recent && gap_to_peer >= LIVE_CATCH_UP_STALL_MIN_GAP && !claim_corroborated {
-            if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                self.last_gate_log_ms = now_ms;
+            if self.gate_log_due(line!(), now_ms) {
                 // DIGITAL-CASH-PRIVACY-REVIEWED: public chain heights and ages only.
                 crate::arti_transport::ilog(&format!(
                     "[produce] DB-292: a live peer claims {gap_to_peer} block(s) ahead, but this node's own chain data \
@@ -16692,8 +16883,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             self.reanchor_wait_since_ms = now_ms.max(1);
         }
         let reanchor_expired = reanchor_hold && now_ms.saturating_sub(self.reanchor_wait_since_ms) > LIVE_CATCH_UP_STALL_MS;
-        if reanchor_expired && now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-            self.last_gate_log_ms = now_ms;
+        if reanchor_expired && self.gate_log_due(line!(), now_ms) {
             // DIGITAL-CASH-PRIVACY-REVIEWED: public chain heights and a duration.
             crate::arti_transport::ilog(&format!(
                 "[produce] W7: the re-anchor wait passed its horizon ({} ms) with no bundle landed — producing (the chain never stops); peer {} against {}",
@@ -16702,9 +16892,8 @@ impl<T: CellTransport> NodeRuntime<T> {
                 self.node.tip_height()
             ));
         }
-        if reanchor_hold && !reanchor_expired {
-            if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                self.last_gate_log_ms = now_ms;
+        if reanchor_hold && !reanchor_expired && !floor {
+            if self.gate_log_due(line!(), now_ms) {
                 // DIGITAL-CASH-PRIVACY-REVIEWED: public chain heights only.
                 crate::arti_transport::ilog(&format!(
                     "[produce] waiting for a re-anchor: this node's fold cannot reach its selected chain and a live peer's chain is \
@@ -16744,9 +16933,51 @@ impl<T: CellTransport> NodeRuntime<T> {
         }
         let joining_corroborated = now_ms.saturating_sub(graft_ref_ms) <= LIVE_CATCH_UP_STALL_MS
             && data_age_ms > gap_to_peer.saturating_mul(self.spacing_ms) / 2;
-        if self.joining && peer_ahead && peer_recent && joining_corroborated {
-            if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                self.last_gate_log_ms = now_ms;
+        // ⛔⛔ HOLD-NEEDS-PROGRESS (2026-11-27) — A HOLD ON A PEER'S CLAIM STANDS ONLY WHILE THIS NODE'S TIP TAKES PEER BLOCKS.
+        // MEASURED (live origin, 2026-11-27 01:06 → 04:20+): wedged at height 8186 for 3 h+, alternating "A-F77: JOINING — 46 block(s)
+        // behind a live peer … building no block" and "BEHIND: the selected tip is 9625 s old … a live peer claims 40 block(s) ahead —
+        // not building on a stale tip", while that peer's blocks never landed. Both holds read only the CLAIM; the DB-292 bound
+        // (`gap_shrinking`) arms at 48 blocks or more, so at 40-46 nothing ever expired them (NOTHING HALTS: a hold whose expiry never
+        // comes is a halt, and any peer that beacons a lead it never serves could silence a node this way). Now both holds stand only
+        // while THIS NODE'S SELECTED TIP advances to a block it did not produce at least once every LIVE_CATCH_UP_STALL_MS (90 s): a
+        // real catch-up moves the tip as the pages land, so a joiner still syncs before it produces; a tip that does not move frees the
+        // node, and the DAG merges the wider tip. MEASURED why not the gap (the first form, 8d44fe9d, on the live origin): the gap made
+        // new lows (34 → 33, about one a minute) while the tip stayed at 8186 — a peer trickling side-branch blocks moves the gap and
+        // never the chain. BORROWED: Bitcoin Core leaves IBD on its own tip's progress, never on a peer's claim. AI RESISTANT (b): a
+        // peer holds a node only by serving the chain that moves its tip. SCALE: two scalars. The expiry DOES the work.
+        let tip_now = self.tip_blue();
+        let tip_is_peer_block = self.node.dag().selected_tip().is_some_and(|t| !self.own_produced.contains(&t));
+        let gap_low_recent = if peer_ahead && peer_recent {
+            match self.hold_min_gap {
+                Some((b, _)) if tip_now > b && tip_is_peer_block => {
+                    self.hold_min_gap = Some((tip_now, now_ms));
+                    true
+                }
+                Some((_, at)) => now_ms.saturating_sub(at) <= LIVE_CATCH_UP_STALL_MS,
+                None => {
+                    self.hold_min_gap = Some((tip_now, now_ms));
+                    true
+                }
+            }
+        } else {
+            // ⛔ a beacon that blinks out for one pass is no catch-up: the tracker is NOT cleared here (clearing it restarted the
+            // 90 s clock at every flap, so a flapping peer held the node for good — the live origin's "STANDSTILL … no live peer
+            // claims a heavier tip" lines between its holds). It moves only when the tip takes a peer block, above.
+            if self.hold_min_gap.is_some_and(|(b, _)| tip_now > b && tip_is_peer_block) {
+                self.hold_min_gap = Some((tip_now, now_ms));
+            }
+            true
+        };
+        if peer_ahead && peer_recent && !gap_low_recent && self.gate_log_due(line!(), now_ms) {
+            // DIGITAL-CASH-PRIVACY-REVIEWED: a public chain height gap and a duration.
+            crate::arti_transport::ilog(&format!(
+                "[produce] HOLD-NEEDS-PROGRESS: {gap_to_peer} block(s) behind a live peer and this node's tip took no peer block for {} ms \
+                 — no catch-up is happening; the JOINING and BEHIND holds release and this node produces",
+                LIVE_CATCH_UP_STALL_MS
+            ));
+        }
+        if self.joining && peer_ahead && peer_recent && joining_corroborated && gap_low_recent && !floor {
+            if self.gate_log_due(line!(), now_ms) {
                 // DIGITAL-CASH-PRIVACY-REVIEWED: public chain heights and ages only.
                 crate::arti_transport::ilog(&format!(
                     "[produce] A-F77: JOINING — {gap_to_peer} block(s) behind a live peer since the last certified adopt, and \
@@ -16757,9 +16988,44 @@ impl<T: CellTransport> NodeRuntime<T> {
             self.produce_deferrals = self.produce_deferrals.saturating_add(1);
             return None;
         }
-        if peer_ahead && peer_recent && gap_to_peer >= LIVE_CATCH_UP_STALL_MIN_GAP && claim_corroborated {
-            if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                self.last_gate_log_ms = now_ms;
+        // ⛔ DB292-GAP-NOT-SHRINKING (lane livewedge, 2026-11-26) — BEHIND MEANS CATCHING UP, AND CATCHING UP MEANS THE GAP SHRINKS.
+        // `claim_corroborated` reads only that a peer's block grafted lately and that its data is old, so a peer serving old blocks
+        // of a heavier fork one at a time re-armed this hold for good. MEASURED (live origin, 2026-11-26 13:34): "BEHIND a live peer
+        // by 535 block(s) … stamp 22580483 ms behind", then 536, then 537 — the gap GROWING — and the origin made about one block a
+        // minute against its 1,953 ms target (NOTHING HALTS: a hold whose expiry never comes is a halt in slow motion). Now the
+        // hold stands only while the gap reaches a new low at least once every LIVE_CATCH_UP_STALL_MS: a real catch-up does, so a
+        // node behind its peers still syncs instead of forking; a gap that stalls or grows frees the node to produce (the DAG merges
+        // a wider tip by mergeset, a stopped producer does not recover). BORROWED: Bitcoin Core leaves IBD on progress, not on peers'
+        // claims. AI RESISTANT (b): a peer gains nothing by feeding old blocks; it cannot shrink the gap without serving the chain.
+        // SCALE: two scalars. NOTHING HALTS: the expiry DOES the work (production resumes).
+        let gap_shrinking = if peer_ahead && peer_recent && gap_to_peer >= LIVE_CATCH_UP_STALL_MIN_GAP {
+            match self.behind_min_gap {
+                Some((g, _)) if gap_to_peer < g => {
+                    self.behind_min_gap = Some((gap_to_peer, now_ms));
+                    true
+                }
+                Some((_, at)) => now_ms.saturating_sub(at) <= LIVE_CATCH_UP_STALL_MS,
+                None => {
+                    self.behind_min_gap = Some((gap_to_peer, now_ms));
+                    true
+                }
+            }
+        } else {
+            self.behind_min_gap = None;
+            true
+        };
+        if peer_ahead && peer_recent && gap_to_peer >= LIVE_CATCH_UP_STALL_MIN_GAP && claim_corroborated && !gap_shrinking && !floor {
+            if self.gate_log_due(line!(), now_ms) {
+                // DIGITAL-CASH-PRIVACY-REVIEWED: public chain heights and a duration.
+                crate::arti_transport::ilog(&format!(
+                    "[produce] DB292-GAP-NOT-SHRINKING: {gap_to_peer} block(s) behind a live peer and the gap made no new low for {} ms — \
+                     this is no catch-up; producing (the DAG merges a wider tip)",
+                    LIVE_CATCH_UP_STALL_MS
+                ));
+            }
+        }
+        if peer_ahead && peer_recent && gap_to_peer >= LIVE_CATCH_UP_STALL_MIN_GAP && claim_corroborated && gap_shrinking && !floor {
+            if self.gate_log_due(line!(), now_ms) {
                 crate::arti_transport::ilog(&format!(
                     "[produce] BEHIND a live peer by {gap_to_peer} block(s) ({orphans} orphan(s) parked; the latest peer \
                      graft's stamp is {data_age_ms} ms behind this node's clock, DB-292) — not extending a lighter branch; \
@@ -16802,7 +17068,8 @@ impl<T: CellTransport> NodeRuntime<T> {
             }
             let max_ms = if catching_up_by_pages { DEFER_MAX_FLOWING_MS } else { DEFER_MAX_MS };
             let deferred_too_long = now_ms.saturating_sub(self.deferral_started_ms) > max_ms;
-            if !deferred_too_long
+            if !floor
+                && !deferred_too_long
                 && ((peer_ahead && link_live) || self.stalled_deferrals < STALLED_DEFERRALS_BEFORE_PRODUCE)
             {
                 if self.produce_deferrals % 64 == 0 {
@@ -16877,8 +17144,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             // cannot halt this chain. What is refused is only the very first block of a node that has never
             // met the network — and an operator who genuinely means to start a new network says so with
             // `MONEROUSD_MESH_BOOTSTRAP=1`, an explicit input, never an automatic fallback.
-            if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                self.last_gate_log_ms = now_ms;
+            if self.gate_log_due(line!(), now_ms) {
                 crate::arti_transport::ilog(
                     "[mesh] production GATED: never joined the canonical mesh — dialing peers + pulling #29 \
                      DSYNC. This node will NOT mint its own chain; set MONEROUSD_MESH_BOOTSTRAP=1 only if you \
@@ -16929,9 +17195,8 @@ impl<T: CellTransport> NodeRuntime<T> {
                     // cons: a live peer that beacons NO lead while the mesh moved past this node makes it build one block
                     //   per slot on its old tip — a GHOSTDAG-merged red block, no value moved, bounded by the slot; none
                     //   on growth, privacy or proof size.
-                    if age > live_bound_ms && peer_ahead && peer_recent {
-                        if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                            self.last_gate_log_ms = now_ms;
+                    if age > live_bound_ms && peer_ahead && peer_recent && gap_low_recent && !floor {
+                        if self.gate_log_due(line!(), now_ms) {
                             crate::arti_transport::ilog(&format!(
                                 "[produce] BEHIND: the selected tip is {} s old (live bound {} s) and a live peer claims \
                                  {gap_to_peer} block(s) ahead — not building on a stale tip; the pages are landing and \
@@ -16942,8 +17207,7 @@ impl<T: CellTransport> NodeRuntime<T> {
                         }
                         return None;
                     }
-                    if age > live_bound_ms && now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                        self.last_gate_log_ms = now_ms;
+                    if age > live_bound_ms && self.gate_log_due(line!(), now_ms) {
                         crate::arti_transport::ilog(&format!(
                             "[produce] STANDSTILL: the selected tip is {} s old (live bound {} s) and no live peer claims a \
                              heavier tip — the network stood still as a whole; building on it (a concurrent restart merges)",
@@ -17003,11 +17267,11 @@ impl<T: CellTransport> NodeRuntime<T> {
             let alone_past_budget = now_ms.saturating_sub(self.last_peer_beacon_ms.max(self.boot_ms))
                 > crate::net::FIRST_CONTACT_BUDGET_SECS.saturating_mul(1000);
             if !alone_past_budget
+                && !floor
                 && (!origin || resumed_origin_before_first_contact)
                 && silence_ms > BEACON_INTERVAL_MS.saturating_mul(10)
             {
-                if now_ms.saturating_sub(self.last_gate_log_ms) >= 30_000 {
-                    self.last_gate_log_ms = now_ms;
+                if self.gate_log_due(line!(), now_ms) {
                     let since = if self.last_peer_beacon_ms == 0 {
                         "no beacon heard since this process started".to_string()
                     } else {

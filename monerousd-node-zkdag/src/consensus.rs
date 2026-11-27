@@ -605,8 +605,9 @@ pub fn validate_contextual(dag: &Dag, h: &BlockHeader) -> Result<(), ConsensusEr
     if let Err(got) = dag.mergeset_size_within(&h.parents, &sp, bound) {
         return Err(ConsensusError::MergesetTooLarge { got, bound });
     }
-    let expected = crate::miner::adaptive_work(dag, Some(sp));
-    if h.work != expected {
+    // ⛔ A-F145 RELIEF: the block's work must lie in its admitted range — the window's figure, or less by its own real wait
+    let (lo, expected, _) = crate::miner::admitted_work(dag, Some(sp), h.timestamp);
+    if h.work < lo || h.work > expected {
         return Err(ConsensusError::WrongWork {
             expected,
             got: h.work,

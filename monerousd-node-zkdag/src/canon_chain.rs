@@ -51,6 +51,22 @@ pub type RecentRecord = (u64, Digest4, std::sync::Arc<Vec<[u8; 32]>>, std::sync:
 pub struct CanonRecent {
     ring: std::collections::VecDeque<RecentRecord>,
     newest: std::collections::HashMap<[u8; 32], u64>,
+    /// ⛔ U-LOCK-9 (2026-11-27) — how many ring records carry each output-leaf list, keyed by [`leaves_digest`], so
+    /// [`Self::holds_leaves`] is one lookup instead of a compare against every record (the fold's provisional-row sweep asked it
+    /// once per held row per fold step). Kept by the ring's only writers: `push` (its push and pop) and `truncate_from`.
+    /// O1-FOOTPRINT-REVIEWED: one 32 B key and a count per ring record, bounded as the ring is.
+    leaf_sets: std::collections::HashMap<[u8; 32], u32>,
+}
+
+/// ⛔ U-LOCK-9 — one digest of a record's output leaves (blake3 over their canonical bytes), the key [`CanonRecent::holds_leaves`]
+/// reads. Two lists with one digest are one list (blake3's collision resistance), so the answer is the list compare's answer.
+#[must_use]
+pub fn leaves_digest(leaves: &[Digest4]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new_derive_key("monerousd canon window leaves v1");
+    for l in leaves {
+        h.update(&digest_bytes(l));
+    }
+    *h.finalize().as_bytes()
 }
 
 impl CanonRecent {
@@ -59,9 +75,11 @@ impl CanonRecent {
         for t in tags.iter() {
             self.newest.insert(*t, ordinal);
         }
+        *self.leaf_sets.entry(leaves_digest(&leaves)).or_insert(0) += 1;
         self.ring.push_back((ordinal, c, tags, leaves, score));
         while self.ring.len() > CANON_RECENT_RECORDS + CANON_SERVE_MARGIN {
-            if let Some((o, _, old, _, _)) = self.ring.pop_front() {
+            if let Some((o, _, old, old_leaves, _)) = self.ring.pop_front() {
+                self.forget_leaves(&old_leaves);
                 for t in old.iter() {
                     if self.newest.get(t) == Some(&o) {
                         self.newest.remove(t);
@@ -94,7 +112,23 @@ impl CanonRecent {
     /// ⭐ A-F118 — does a record this window holds (judged or serve margin) carry exactly these output leaves, in order?
     #[must_use]
     pub fn holds_leaves(&self, leaves: &[Digest4]) -> bool {
-        self.ring.iter().any(|(_, _, _, l, _)| l.as_slice() == leaves)
+        self.leaf_sets.contains_key(&leaves_digest(leaves))
+    }
+
+    /// As [`Self::holds_leaves`], for a caller that already holds the list's [`leaves_digest`].
+    #[must_use]
+    pub fn holds_leaves_digest(&self, d: &[u8; 32]) -> bool {
+        self.leaf_sets.contains_key(d)
+    }
+
+    fn forget_leaves(&mut self, leaves: &[Digest4]) {
+        let d = leaves_digest(leaves);
+        if let Some(n) = self.leaf_sets.get_mut(&d) {
+            *n -= 1;
+            if *n == 0 {
+                self.leaf_sets.remove(&d);
+            }
+        }
     }
 
     /// Was `tag` carried by any record of the judged window?
@@ -136,7 +170,8 @@ impl CanonRecent {
     pub fn truncate_from(&mut self, from: u64) {
         let mut dropped: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
         while self.ring.back().is_some_and(|(o, _, _, _, _)| *o >= from) {
-            if let Some((o, _, tags, _, _)) = self.ring.pop_back() {
+            if let Some((o, _, tags, leaves, _)) = self.ring.pop_back() {
+                self.forget_leaves(&leaves);
                 for t in tags.iter() {
                     if self.newest.get(t) == Some(&o) {
                         self.newest.remove(t);

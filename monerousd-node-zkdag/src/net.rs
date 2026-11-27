@@ -428,7 +428,9 @@ impl Reassembler {
             // as before (the one-lost-cell repair is unchanged); a partial that grows is asked at `cooldown` again.
             if let Some((last, unanswered, touched_then)) = self.asked.get(msg_id) {
                 let backoff = if touched_then == touched { unanswered.saturating_sub(1) } else { 0 };
-                let wait = (0..backoff).fold(cooldown, |w, _| w.saturating_mul(2));
+                // ⛔ S-STALL R2 (2026-11-27): the doubling is capped at 64 cooldowns, so a partial that keeps going unanswered is
+                // still asked again in bounded time (uncapped, the wait saturated and the message was never asked for again)
+                let wait = (0..backoff.min(6)).fold(cooldown, |w, _| w.saturating_mul(2)).min(cooldown.saturating_mul(64));
                 if now_slot.saturating_sub(*last) < wait {
                     continue;
                 }

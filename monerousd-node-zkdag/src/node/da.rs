@@ -5,6 +5,18 @@
 #![allow(clippy::all)]
 use super::*;
 
+/// U-LOCK: a record's block root keyed by its complete input `(blake3(notes), ordinal, cover key)`, two generations (`cur`, `old`).
+/// CACHE-ONLY: an exact memo of a pure function (`Node::da_block_root_at_ordinal_derive`).
+type BlockRootMemo = (
+    std::collections::HashMap<([u8; 32], u64, crate::cover::CoverKey), crate::spend_frontier::Digest4>,
+    std::collections::HashMap<([u8; 32], u64, crate::cover::CoverKey), crate::spend_frontier::Digest4>,
+);
+
+fn block_root_memo() -> &'static std::sync::Mutex<BlockRootMemo> {
+    static M: std::sync::OnceLock<std::sync::Mutex<BlockRootMemo>> = std::sync::OnceLock::new();
+    M.get_or_init(|| std::sync::Mutex::new((std::collections::HashMap::new(), std::collections::HashMap::new())))
+}
+
 impl Node {
     /// One record's FULL 256-slot note payload, by canonical address — the by-id read the instant restore
     /// uses instead of walking a range. Reals come from the record, cover regenerates, so the response is the
@@ -369,7 +381,13 @@ impl Node {
         // Feeding the assembled shape back through `block_leaves_from_notes` is a fixed point:
         // `assemble_fixed_note_payload_det` returns its input unchanged once it is already at the fixed
         // width, so the leaves are byte-identical to the pre-release ones.
-        Some(Self::block_leaves_from_notes(&self.da_record_notes(seq)?, seq, &self.cover_key_of(seq)))
+        // ⭐ FOLD-COVER-REDERIVE (lane livewedge, 2026-11-26, docs/UX-DEEP-AUDIT-20261126.md U22): keyed by the record's REAL
+        // notes, so a known record never rebuilds its 256-note cover to answer. MEASURED on the live origin (`sample`, 15 s):
+        // `fold_record_into_spine` → here → `da_record_notes` → `assemble_fixed_note_payload_computed` → `cover_note_det` took
+        // 2,646 samples under the runtime lock. The leaves memo below sat AFTER that assembly, so every call paid it, and the
+        // A-F118 sweep (fold.rs) asks for every provisional row's leaves on every fold step.
+        let reals = self.da_record_reals(seq)?;
+        Some(Self::block_leaves_from_reals(&reals.concat(), seq, &self.cover_key_of(seq)))
     }
 
     /// A note's membership copath WITHIN its own block, derived from the DA layer — never from a witness the
@@ -1393,9 +1411,27 @@ impl Node {
                 }
             }
         };
-        Some(Self::fold_leaves_to_root(&Self::block_leaves_from_notes(
-            &notes, ordinal, &self.cover_key_of(ordinal),
-        )))
+        // ⛔ U-LOCK (2026-11-27): the root is a pure function of `(notes, ordinal, cover key)`, and a kind-6 roots run derives up
+        // to a ladder span of them under the runtime lock (MEASURED on the live origin: `[bulk-serve-slow] a kind-6 ask held the rt
+        // lock 3650ms`, ~1,380 roots); the leaf memo above holds 128 records, so a run past it rebuilt every record's 256-unit cover.
+        // The ROOT (32 B) is kept under the leaf memo's own complete key, two generations of a ladder span: an exact cache of a pure
+        // function — a changed row has another key and can never answer for the old one. O1-FOOTPRINT-REVIEWED: 2 × DA_LADDER_SPAN
+        // entries of 32 B + a 72 B key, about 0.9 MB, a constant. CACHE-ONLY: a miss recomputes.
+        let key = self.cover_key_of(ordinal);
+        let k = (*blake3::hash(&notes).as_bytes(), ordinal, key);
+        if let Some(r) = {
+            let g = block_root_memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.0.get(&k).or_else(|| g.1.get(&k)).copied()
+        } {
+            return Some(r);
+        }
+        let root = Self::fold_leaves_to_root(&Self::block_leaves_from_notes(&notes, ordinal, &key));
+        let mut g = block_root_memo().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if g.0.len() >= Self::DA_LADDER_SPAN as usize {
+            g.1 = std::mem::take(&mut g.0);
+        }
+        g.0.insert(k, root);
+        Some(root)
     }
 
     /// ⭐ A NOTE'S COMPLETE DEPTH-32 MEMBERSHIP COPATH, IN ONE CALL: the in-block half
