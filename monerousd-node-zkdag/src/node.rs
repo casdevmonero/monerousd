@@ -1989,6 +1989,15 @@ pub struct Node {
     /// Bundles frozen as the fold moved, kept on disk beside the snapshot (`save_frozen_join_bundles`): a new one is servable only once
     /// `VOUCHERS` blocks stand above it, minutes after a restart.
     join_frozen: std::collections::VecDeque<SyncBundle>,
+    /// ⛔ DSYNC-SERVE-OFF-LOCK (lane speed5-b4, 2026-11-27, docs/SOLSTICE-RECEIVE-DEEP-AUDIT-20261127.md 'PACE-AUDIT'): the wire of the
+    /// bundle `serve_join_bundle` last chose, keyed by the frozen set it came from (its length, the newest frozen anchor) and the
+    /// wall time it was chosen. MEASURED why (the live origin, 132 `[tick-slow]` drains): finishing and re-judging the newest frozen
+    /// bundle under the runtime lock took 581 ms p50, 2,249 ms p90 and up to 34,179 ms on EVERY served ask (one each
+    /// BULK_BUNDLE_SERVE_MIN_MS), stalling production behind it. CACHE-ONLY: a copy of what `join_frozen` yields; it decides nothing —
+    /// every asker re-verifies the bundle whole (`join_verdict` on its side), so a stale copy is refused, never admitted.
+    /// LONG-TERM: one wire (≤ BULK_FRAME_MAX) at most, replaced in place; rebuilt when the frozen set changes or after
+    /// JOIN_SERVE_CACHE_MS. bound: 1 entry.
+    pub(crate) join_serve_cache: std::sync::Mutex<Option<((usize, u64), u64, Vec<u8>)>>,
     join_last_freeze: u64,
     nf_evidence_cache: std::collections::HashMap<[u8; 32], crate::nf_evidence::TagEvidence>,
     /// §2.5: shards being fetched: the tags so far and the last one asked after. At most `SHARDS_AT_ONCE` entries.

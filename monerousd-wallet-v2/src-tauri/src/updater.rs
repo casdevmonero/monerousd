@@ -203,6 +203,34 @@ fn node_label() -> String {
     format!("org.monerousd.node-{port}")
 }
 
+/// ⭐ UPDATE-TO-APPLICATIONS (lane livediag, 2026-11-27; user: "downloading the update should auto update the mac build version as
+/// well") — THE BUNDLE AN UPDATE REPLACES IS THE INSTALLED ONE. A wallet run from anywhere but `/Applications` (a mounted disk
+/// image's folder copy, Downloads, a build folder) updates `/Applications/<name>.app` and reopens from there, so the copy the
+/// person opens from Launchpad and the Dock is the one that moves.
+/// MEASURED why (2026-11-27): a tester's wallet ran from a build folder since Nov 22; its update replaced that folder's copy
+/// (now 0.3.6) and `/Applications/MoneroUSD Wallet.app` stayed 0.3.3, so the next launch from Applications would open 0.3.3.
+/// BORROWED: macOS's move-to-Applications pattern (LetsMove, used with Sparkle updates). The reopened wallet re-points its own node
+/// service at its bundle on start (`lib.rs` `start_node_service` replaces a definition naming another binary), so the node
+/// follows. Where `/Applications` cannot be written, the running bundle is replaced as before (nothing is lost, nothing waits).
+/// AI RESISTANT: (b) code — the bundle written is still only the signed, hash-checked release (`hand_to_system`'s callers).
+/// SCALE: one probe file write and remove, once per accepted update. LONG-TERM: nothing is kept; the old copy is left where it was.
+#[cfg(target_os = "macos")]
+fn install_target(running: &std::path::Path) -> std::path::PathBuf {
+    let apps = std::path::Path::new("/Applications");
+    if running.starts_with(apps) {
+        return running.to_path_buf();
+    }
+    let Some(name) = running.file_name() else { return running.to_path_buf() };
+    let probe = apps.join(format!(".musd-update-probe-{}", std::process::id()));
+    let writable = std::fs::write(&probe, b"").is_ok();
+    let _ = std::fs::remove_file(&probe);
+    if writable {
+        apps.join(name)
+    } else {
+        running.to_path_buf()
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn hand_to_system(file: &std::path::Path, version: &str) -> Result<serde_json::Value, String> {
     // The running app's bundle: …/MoneroUSD Wallet.app/Contents/MacOS/<exe>
@@ -211,6 +239,7 @@ fn hand_to_system(file: &std::path::Path, version: &str) -> Result<serde_json::V
     if app.extension().and_then(|x| x.to_str()) != Some("app") {
         return Err("this wallet is not running from an app bundle; open the downloaded file to update".into());
     }
+    let app = install_target(&app);
     let mnt = std::env::temp_dir().join(format!("musd-update-{}", std::process::id()));
     // A helper that outlives this process: wait for the wallet to quit, replace the bundle from the verified image (a disk image,
     // or the zip the release ships), restart the wallet's own node on the new release's binary, relaunch.

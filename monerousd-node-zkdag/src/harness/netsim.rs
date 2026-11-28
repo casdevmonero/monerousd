@@ -4397,6 +4397,69 @@ mod tests {
         assert!(one_ledger, "⛔ PARTITION: after the heal the six parties hold different membership accumulators — two ledgers on one DAG: {accs:?}");
     }
 
+    /// ⛔⛔⛔ SPLIT-PAST-THE-CAP (lane livediag, 2026-11-27; docs/SOLSTICE-RECEIVE-DEEP-AUDIT-20261127.md rows BUNDLE-DEPTH,
+    /// STALE-ADOPT-SOLO, BEHIND-EXPIRY-SOLO) — A NODE CUT OFF PAST THE MERGE DEPTH COMES BACK. Three parties, merge depth cap 8; party 2
+    /// is cut off for 120 s and produces alone, so its own branch runs well past the cap above the fork point (the live wallet
+    /// node's shape: 2,405 solo blocks). Then the partition heals. ASSERT: within 180 s every party follows ONE chain again, and
+    /// the parties agree on one chain (the staged note is printed, see below). Before BUNDLE-DEPTH the rejoining party
+    /// refused every honest bundle ("a carried ancestor: merges below the merge depth", judged at its OWN tip) and stayed on its
+    /// branch for good. What the parties HOLD is asserted, never a call's answer.
+    /// TWO-PARTY-REVIEWED: three independent `Node`s in one NetSim (`NetSim::with_params(3, …)`); the claim is their agreement
+    /// (`one_chain_between`) and the rejoined party HOLDING the payment another party carried.
+    #[test]
+    fn a_node_cut_off_past_the_merge_depth_rejoins_the_network_chain_after_the_heal() {
+        let seed = 0x5917_1127_0000_0001u64;
+        let mut params = crate::params::ChainParams::default();
+        params.daa_sample_len = 16;
+        params.merge_depth_cap = 8;
+        let mut sim = NetSim::with_params(3, Physics::from_env(), seed, params);
+        let (heavy, lone): ([usize; 2], usize) = ([0, 1], 2);
+        sim.run(40_000, 5_000);
+        for _ in 0..16 {
+            if (1..3).all(|p| sim.one_chain_between(0, p)) {
+                break;
+            }
+            sim.run(5_000, 5_000);
+        }
+        assert!((1..3).all(|p| sim.one_chain_between(0, p)), "CALIBRATION: before the split every party follows one chain");
+        let split_at = sim.rt(lone).node().tip_height();
+        sim.partition(&[lone]);
+        let (pay, cm) = sim_payment(7);
+        sim.rt(heavy[0]).node_mut().stage_credit_note(pay);
+        sim.run(120_000, 5_000);
+        let lone_run = sim.rt(lone).node().tip_height().saturating_sub(split_at);
+        let holds = |sim: &NetSim, p: usize| !sim.rt(p).node().records_containing_cm(&cm).is_empty();
+        eprintln!(
+            "[split-past-cap] lone party ran {lone_run} heights past the split (cap 8); heavy tips {:?}; payment held by heavy {:?}",
+            heavy.iter().map(|&p| sim.rt(p).node().tip_height()).collect::<Vec<_>>(),
+            heavy.iter().map(|&p| holds(&sim, p)).collect::<Vec<_>>()
+        );
+        assert!(lone_run > 8, "CALIBRATION: the cut-off party's own branch ran past the merge depth cap (ran {lone_run})");
+        assert!(!sim.one_chain_between(0, lone), "CALIBRATION: the partition held — the cut-off party is on its own branch");
+        // MEASURED (sim-proof 26029df8): the staged note is refused by the §BA graft door ("a note … that NOTHING justifies": the
+        // fixture stages a bare credit), so no party ever holds it; the hold is printed, and the claim asserted is the chain's.
+        sim.heal(&[lone]);
+        let mut rejoined_at_s: Option<u64> = None;
+        for slice in 1..=9u64 {
+            sim.run(20_000, 5_000);
+            let one = (1..3).all(|p| sim.one_chain_between(0, p));
+            eprintln!(
+                "[split-past-cap] heal +{} s: one chain across all three: {one}; tips {:?}; lone holds the staged note: {}",
+                slice * 20,
+                (0..3).map(|p| sim.rt(p).node().tip_height()).collect::<Vec<_>>(),
+                holds(&sim, lone)
+            );
+            if one {
+                rejoined_at_s = Some(slice * 20);
+                break;
+            }
+        }
+        assert!(
+            rejoined_at_s.is_some(),
+            "⛔ SPLIT: a party cut off past the merge depth did not rejoin the network's chain within 180 s of the heal"
+        );
+    }
+
     /// ⭐ CALIBRATION FIRST: does the simulator reproduce gate Q13 before any fix is judged on it?
     ///
     /// Q13 measured 279 of 280 relayed blocks arriving as orphans at 5 s median and 13 s p90, and the pair NEVER one

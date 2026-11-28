@@ -256,17 +256,28 @@ impl Node {
         if self.band_door.is_stale() {
             return freeze_skipped("the band door is stale");
         }
+        // ⛔ JOIN-NOTHING-TO-SERVE (lane livediag, 2026-11-27; docs/SOLSTICE-RECEIVE-DEEP-AUDIT-20261127.md): every return below names
+        // its own reason (S-WAIT: a wait with no line is unreadable), so a node that serves no bundle says which step stopped it.
+        if self.fold_chain_tip.is_none() {
+            return freeze_skipped("no fold chain tip yet");
+        }
         let Some(anchor) = self.fold_chain_tip else { return };
+        if self.certified_fold_base_position(&anchor).is_none() {
+            return freeze_skipped("the fold tip has no certified base position");
+        }
         let Some(position) = self.certified_fold_base_position(&anchor) else { return };
         if position < self.join_last_freeze.saturating_add(FREEZE_EVERY) {
-            return;
+            return; // not due: the ordinary case between freezes
         }
-        // Due from here on: if nothing below freezes, the state moved after its step, the anchor has no level array, or no draft.
-        freeze_skipped("due, and the state moved after its fold step, the anchor has no level array, or the draft failed");
         if self.join.fold.get(&position).map(|(s, _)| s.state) != Some(self.own_state_digest()) {
-            return; // the state moved after the step was committed: the next batch's end freezes instead
+            // the state moved after the step was committed: the next batch's end freezes instead
+            return freeze_skipped("due, but the state moved after its fold step");
+        }
+        if !self.join.arrays.contains_key(anchor.as_bytes()) {
+            return freeze_skipped("due, but the fold tip has no level array");
         }
         let Some(array) = self.join.arrays.get(anchor.as_bytes()).cloned() else { return };
+        freeze_skipped("due, but the bundle draft failed"); // cleared by the freeze line below when the draft succeeds
         let Some(mut bundle) = self.draft_sync_bundle(frontier) else { return };
         let genesis = self.relay.dag().genesis().map_or(jp::NO_BLOCK, |g| *g.as_bytes());
         let (level, links) = self.join.levels.best_walk(&array, &genesis);
@@ -541,12 +552,40 @@ impl Node {
 
     /// The newest frozen bundle that passes the very door a joiner runs. `None`: nothing to serve yet, and a young chain is walked by lanes.
     pub(crate) fn serve_join_bundle(&self) -> Option<Vec<u8>> {
+        // ⛔ DSYNC-SERVE-OFF-LOCK: the bundle chosen from THIS frozen set within the last minute is served again without
+        // re-finishing and re-judging it under the runtime lock (`join_serve_cache` says why, with the measurement). A new frozen
+        // bundle, or a minute, rebuilds it; every asker re-verifies what it receives.
+        const JOIN_SERVE_CACHE_MS: u64 = 60_000;
+        let key = (self.join_frozen.len(), self.join_frozen.back().map_or(0, |b| b.anchor_ordinal));
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        if let Ok(g) = self.join_serve_cache.lock() {
+            if let Some((k, at, wire)) = g.as_ref() {
+                if *k == key && now.saturating_sub(*at) < JOIN_SERVE_CACHE_MS {
+                    return Some(wire.clone());
+                }
+            }
+        }
+        let served = self.serve_join_bundle_fresh();
+        if let (Some(wire), Ok(mut g)) = (served.as_ref(), self.join_serve_cache.lock()) {
+            *g = Some((key, now, wire.clone()));
+        }
+        served
+    }
+
+    /// [`Self::serve_join_bundle`] without its cache: the newest frozen bundle that passes the joiner's own door.
+    fn serve_join_bundle_fresh(&self) -> Option<Vec<u8>> {
         let mut last_refusal = None;
+        // JOIN-NOTHING-TO-SERVE: a bundle `finish_join_bundle` cannot finish (its anchor left this DAG, or too few blocks stand above
+        // it) is counted, so "nothing to serve" says why instead of `None`.
+        let mut unfinished = 0usize;
         for frozen in self.join_frozen.iter().rev() {
             // ⛔ U-LOCK diagnosis (2026-11-27): this runs under the runtime lock for every served kind-4 ask, and one ask held the lock
             // 8,821 ms on the live origin (`[bulk-serve-slow]`); the two parts are timed so the fix lands on the one that costs.
             let t_finish = std::time::Instant::now();
-            let Some(bundle) = self.finish_join_bundle(frozen) else { continue };
+            let Some(bundle) = self.finish_join_bundle(frozen) else {
+                unfinished += 1;
+                continue;
+            };
             let finish_ms = t_finish.elapsed().as_millis();
             let t_verdict = std::time::Instant::now();
             let verdict = self.join_verdict(&bundle);
@@ -573,7 +612,12 @@ impl Node {
             }
         }
         // DIGITAL-CASH-PRIVACY-REVIEWED: a count and a refusal name.
-        eprintln!("[join-serve] nothing to serve: {} bundle(s) frozen, the newest refusal {:?}", self.join_frozen.len(), last_refusal);
+        eprintln!(
+            "[join-serve] nothing to serve: {} bundle(s) frozen, {unfinished} unfinishable (anchor not in this DAG or too few blocks above it), \
+             the newest door refusal {:?}",
+            self.join_frozen.len(),
+            last_refusal
+        );
         None
     }
 

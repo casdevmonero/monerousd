@@ -933,6 +933,12 @@ pub(crate) fn liveness_floor(tip_ms: u64, now_ms: u64, window_ms: u64) -> bool {
     tip_ms != 0 && window_ms != 0 && now_ms.saturating_sub(tip_ms) >= window_ms
 }
 
+/// ⛔⛔⛔ STALE-ADOPT-SOLO — a peer's announced chain is advancing past this node, pure: the best announced score rose (`moved_ms` > 0)
+/// inside the last window and stands above `ahead_of` (this node's tip plus one DAG width). See `NodeRuntime::liveness_floor_due`.
+pub(crate) fn peer_chain_advancing_at(moved_ms: u64, now_ms: u64, window_ms: u64, best_peer: u64, ahead_of: u64) -> bool {
+    moved_ms != 0 && now_ms.saturating_sub(moved_ms) <= window_ms && best_peer > ahead_of
+}
+
 pub(crate) fn pace_after_stall(pace_milli: u64, tip_unchanged_ms: u64, window_ms: u64) -> Option<u64> {
     (pace_milli > 1_000 && window_ms > 0 && tip_unchanged_ms >= window_ms).then_some(1_000)
 }
@@ -990,6 +996,19 @@ mod pace_recovery_tests {
         assert!(!liveness_floor(1_000, 1_000 + window - 1, window), "⛔ the floor fired before the window ended");
         assert!(!liveness_floor(0, u64::MAX / 2, window), "⛔ the floor fired on a clock that never started");
         assert!(!liveness_floor(1_000, u64::MAX / 2, 0), "⛔ the floor fired on a zero window");
+    }
+
+    /// ⛔⛔⛔ STALE-ADOPT-SOLO PIN — a peer's chain counts as advancing only while its best announced score ROSE inside the window and
+    /// stands more than one width above this node; a score heard once and gone quiet, a concurrent peer, and a never-heard peer
+    /// each leave the floor free (the network-wide stall it exists for).
+    /// TWO-PARTY-REVIEWED: a pure bound on one node's own reads; the mesh effect is the netsim runs of the batch.
+    #[test]
+    fn stale_adopt_solo_holds_the_floor_only_while_a_peer_chain_advances() {
+        let w = 117_000;
+        assert!(peer_chain_advancing_at(1_000, 1_000 + w, w, 200, 150), "⛔ an advancing peer did not hold the floor");
+        assert!(!peer_chain_advancing_at(1_000, 1_000 + w + 1, w, 200, 150), "⛔ a peer quiet a whole window still held it");
+        assert!(!peer_chain_advancing_at(1_000, 1_000, w, 150, 150), "⛔ a concurrent peer held the floor");
+        assert!(!peer_chain_advancing_at(0, 5_000, w, 10_000, 150), "⛔ a never-moved score held the floor");
     }
 
     #[test]
@@ -1396,6 +1415,10 @@ pub const LIVE_CATCH_UP_DEPTH: u64 = crate::block_window::WHOLE_KEEP;
 /// blocks" at the settle verdict. A gap the lanes have not reduced over this many milliseconds is one they
 /// are not closing.
 pub const LIVE_CATCH_UP_STALL_MS: u64 = 90_000;
+/// ⛔ FORK-ASK — how long a run of beacons naming a heavier tip this DAG never holds lasts before it is read as a fork and the certified
+/// bundle is asked (`NodeRuntime::active_sync_ask_verdict`). 30 s: many beacon intervals and several block times, so ordinary relay lag
+/// (a tip held within seconds) never reads as a fork.
+pub const FORK_ASK_MS: u64 = 30_000;
 /// The daemon's maintenance pass period (serve.rs auto-peer loop sleep) and the anti-eclipse certified pull's share of
 /// it (every 6th pass = 30 s) — [`NodeRuntime::maintenance_tick_at`].
 pub const MAINTENANCE_PASS_MS: u64 = 5_000;
@@ -1958,9 +1981,23 @@ pub struct NodeRuntime<T: CellTransport> {
     /// real tip change (never by the pace's resets or a behind-peers read). CACHE-ONLY.
     floor_tip: Option<crate::block::BlockId>,
     floor_tip_ms: u64,
+    /// ⛔⛔⛔ STALE-ADOPT-SOLO — when the best score a same-network peer announced last ROSE (ms; 0: never). The floor stands aside
+    /// the waiting rules only while no peer's announced chain is advancing past this node (`peer_chain_advancing`). Moved only
+    /// by a beacon's score rising above every score heard before, so a peer that announced a high score once and went quiet stops
+    /// counting one DAA window later. CACHE-ONLY: a scalar; a restart re-learns it from the next beacon.
+    peer_score_moved_ms: u64,
+    /// ⛔⛔⛔ FORK-ASK — when a run of beacons naming a heavier tip this DAG does not hold began (ms; 0: no run). Reset by any beacon whose
+    /// tip this DAG holds. A run of `FORK_ASK_MS` opens the certified-bundle ask whatever the height gap (`active_sync_ask_verdict`).
+    /// CACHE-ONLY: a scalar.
+    peer_fork_since_ms: u64,
+    /// FORK-VS-BEHIND — the gap to the best announced score when the current FORK-ASK run began. CACHE-ONLY: a scalar.
+    peer_fork_gap0: u64,
     /// A-F60 (scale): when this node began deferring its production because it was behind its peers (`behind_peers`);
     /// 0 while it is not deferring. Bounds the deferral to one DAA window (`behind_defers`). A scalar.
     behind_since_ms: u64,
+    /// ⛔⛔⛔ BEHIND-EXPIRY-SOLO — when the behind deferral's window ran out while a peer's chain was advancing and the node began
+    /// asking a certified bundle instead of producing (ms; 0: not holding). Bounds that hold to LIVE_CATCH_UP_STALL_MS. CACHE-ONLY.
+    behind_reanchor_since_ms: u64,
     /// ⭐ A-F77 (lane af57, 2026-11-16): `Node::dsync_adopts` when this runtime last looked, and whether this node is JOINING —
     /// set by a new certified #29 adopt, cleared for good the first time its tip comes within one DAG width of its best peer
     /// (BORROWED: Bitcoin Core's IsInitialBlockDownload latch, which once false never turns true again on its own). Two scalars.
@@ -2895,7 +2932,11 @@ impl<T: CellTransport> NodeRuntime<T> {
             pace_tip_ms: 0,
             floor_tip: None,
             floor_tip_ms: 0,
+            peer_score_moved_ms: 0,
+            peer_fork_since_ms: 0,
+            peer_fork_gap0: 0,
             behind_since_ms: 0,
+            behind_reanchor_since_ms: 0,
             seen_dsync_adopts: 0,
             joining: false,
             fetch_joined: std::collections::VecDeque::new(),
@@ -4471,6 +4512,19 @@ impl<T: CellTransport> NodeRuntime<T> {
         }
         if b.blue_score > self.best_peer_blue_score {
             self.best_peer_blue_score = b.blue_score;
+            self.peer_score_moved_ms = now_ms.max(1); // STALE-ADOPT-SOLO: a peer's chain advanced
+        }
+        // ⛔⛔⛔ FORK-ASK (lane livediag, 2026-11-27) — a run of beacons naming a HEAVIER tip this DAG never holds is a fork: on one chain a
+        // peer's announced tip is held within seconds, so the run breaks. Reset by any beacon whose tip this DAG holds.
+        if self.node.dag().get(&crate::hash::Hash32(b.tip)).is_some() {
+            self.peer_fork_since_ms = 0;
+        } else {
+            let ours = self.node.selected_tip().and_then(|t| self.node.dag().get(&t).map(|n| n.blue_work)).unwrap_or(0);
+            if b.blue_work > ours && self.peer_fork_since_ms == 0 {
+                self.peer_fork_since_ms = now_ms.max(1);
+                // FORK-VS-BEHIND: the gap when the run began; a fork is a run whose gap never shrinks (`on_lighter_fork`)
+                self.peer_fork_gap0 = self.best_peer_blue_score.saturating_sub(self.node.tip_height());
+            }
         }
         self.best_peer_band_next = self.best_peer_band_next.max(b.band_next);
         self.last_peer_beacon_ms = now_ms;
@@ -7010,6 +7064,34 @@ impl<T: CellTransport> NodeRuntime<T> {
         }
         let window_ms = self.node.params().daa_sample_len.saturating_mul(self.node.params().target_spacing_ms);
         let due = liveness_floor(self.floor_tip_ms, now_ms, window_ms);
+        // ⛔⛔⛔ STALE-ADOPT-SOLO (lane livediag, 2026-11-27; user: "get us all back on the same chain so splits never can happen
+        // again"; docs/SOLSTICE-RECEIVE-DEEP-AUDIT-20261127.md rows LIVE-WALLET-FORK, STALE-ADOPT-SOLO) — THE FLOOR IS FOR A STALLED
+        // NETWORK, NEVER FOR A NODE THAT STOPPED FOLLOWING A LIVE ONE. While a same-network peer's announced chain is advancing past
+        // this node (`peer_chain_advancing`), the chain is not stalled: it lives on that peer, and this node's stale tip means it is
+        // not taking the peer's blocks in. Producing then starts a solo branch; finality here is by work depth on a node's own
+        // selected chain, so that branch finalizes and is never left. MEASURED (live, read 21:03 this session): the user's 0.3.6
+        // wallet node produced 2,405 blocks alone, finalized its own branch at 15,899 while the origin finalized 17,116, and each
+        // refused the other below its merge depth. So the floor does not fire while a peer advances, and each waiting rule keeps
+        // its OWN bound (DB-292's corroboration releases a claim no graft backs, W7's horizon, the joining latch's stall release).
+        // SAFE-FALLBACK: declining the floor only returns production to the waiting rules' own bounded expiries, the same doors
+        // and checks the node ran before the floor existed; nothing is admitted that any rule refuses.
+        // BORROWED: Kaspa builds no template while not nearly synced; Bitcoin Core refuses getblocktemplate in IBD.
+        // NO HALTS: the chain moves on the advancing peer; when no peer advances (a stall of the whole network) the floor fires one
+        // DAA window after the tip stopped. AI RESISTANT (b): a lying peer can hold back only the floor, never a rule's own expiry.
+        // SCALE: one scalar and one comparison a slot, constant in nodes, items and height.
+        if due && self.peer_chain_advancing(now_ms, window_ms) {
+            if self.gate_log_due(line!(), now_ms) {
+                // DIGITAL-CASH-PRIVACY-REVIEWED: public chain heights and durations only.
+                crate::arti_transport::ilog(&format!(
+                    "[produce] STALE-ADOPT-SOLO: no new selected tip for {} ms, but a live peer's chain is advancing ({} against \
+                     this node's {}) — catching up, not starting a solo branch",
+                    now_ms.saturating_sub(self.floor_tip_ms),
+                    self.best_peer_blue_score,
+                    self.node.tip_height()
+                ));
+            }
+            return false;
+        }
         if due && self.gate_log_due(line!(), now_ms) {
             // DIGITAL-CASH-PRIVACY-REVIEWED: this node's own production timer only.
             crate::arti_transport::ilog(&format!(
@@ -7019,6 +7101,20 @@ impl<T: CellTransport> NodeRuntime<T> {
             ));
         }
         due
+    }
+
+    /// ⛔⛔⛔ STALE-ADOPT-SOLO — is a same-network peer's announced chain advancing past this node? The best announced score ROSE inside
+    /// the last DAA window (`window_ms`) and stands more than one DAG width above this node's tip (inside one width is concurrent,
+    /// the production gate's own `peer_ahead` margin). Pure read of two scalars; see [`Self::liveness_floor_due`].
+    fn peer_chain_advancing(&self, now_ms: u64, window_ms: u64) -> bool {
+        let dag_width = self.node.params().dag_width.max(1) as u64;
+        peer_chain_advancing_at(
+            self.peer_score_moved_ms,
+            now_ms,
+            window_ms,
+            self.best_peer_blue_score,
+            self.node.tip_height().saturating_add(dag_width),
+        )
     }
 
     /// ⛔⛔ PACE-RUNAWAY — the stall line on the clock ([`pace_after_stall`]): a pace above the share whose selected tip has not moved
@@ -7392,6 +7488,7 @@ impl<T: CellTransport> NodeRuntime<T> {
     fn behind_defers(&mut self, now_ms: u64) -> bool {
         if !self.behind_peers(now_ms) {
             self.behind_since_ms = 0;
+            self.behind_reanchor_since_ms = 0; // BEHIND-EXPIRY-SOLO: caught up (or adopted), the re-anchor hold ends
             return false;
         }
         let window_ms = self.node.params().daa_sample_len.saturating_mul(self.node.params().target_spacing_ms);
@@ -7415,6 +7512,37 @@ impl<T: CellTransport> NodeRuntime<T> {
         if self.behind_since_ms == 0 {
             self.behind_since_ms = now_ms.max(1);
         } else if now_ms.saturating_sub(self.behind_since_ms) >= window_ms {
+            // ⛔⛔⛔ BEHIND-EXPIRY-SOLO (lane livediag, 2026-11-27; docs/SOLSTICE-RECEIVE-DEEP-AUDIT-20261127.md row BEHIND-EXPIRY-SOLO) —
+            // THE EXPIRY DOES THE WORK FIRST. A node behind a peer whose chain is still ADVANCING (`peer_chain_advancing`) and whose
+            // fetched blocks stopped grafting cannot follow that chain block by block; producing at once starts a solo branch (the
+            // user's wallet node, 2,405 blocks alone). So the expiry first asks a peer's certified bundle (`request_dsync_at`, its
+            // own throttle and verifying adopt door) and keeps deferring for at most LIVE_CATCH_UP_STALL_MS more (W7's horizon);
+            // an adopt clears the behind read, and past the horizon with nothing landed the node produces exactly as before.
+            // SAFE-FALLBACK: the ask is an ordinary certified-bundle request through the full adopt door, and the bounded
+            // horizon ends in the same production the rule always made; nothing is admitted that a door refuses.
+            // NO HALTS: bounded by window + 90 s; a peer that stops advancing ends the hold at once. AI RESISTANT (b): a liar
+            // announcing rising scores buys at most 90 s a window, the bound W7 and DB-292 already grant. SCALE: one scalar.
+            if self.peer_chain_advancing(now_ms, window_ms) {
+                if self.behind_reanchor_since_ms == 0 {
+                    self.behind_reanchor_since_ms = now_ms.max(1);
+                }
+                if now_ms.saturating_sub(self.behind_reanchor_since_ms) <= LIVE_CATCH_UP_STALL_MS {
+                    self.request_dsync_at(now_ms);
+                    if self.gate_log_due(line!(), now_ms) {
+                        // DIGITAL-CASH-PRIVACY-REVIEWED: public chain heights and a duration only.
+                        crate::arti_transport::ilog(&format!(
+                            "[produce] BEHIND-EXPIRY-SOLO: behind a live peer's advancing chain ({} against {}) for a window with \
+                             no graft — asking a certified bundle and re-anchoring before producing (bounded: {} ms)",
+                            self.best_peer_blue_score,
+                            self.node.tip_height(),
+                            LIVE_CATCH_UP_STALL_MS
+                        ));
+                    }
+                    self.schedule_next_production(now_ms);
+                    return true;
+                }
+            }
+            self.behind_reanchor_since_ms = 0;
             // DIGITAL-CASH-PRIVACY-REVIEWED: a fixed string and a duration of this node's own timer; no id, note or peer.
             eprintln!("[produce] behind its peers for a whole DAA window ({window_ms} ms): producing anyway (bounded deferral)");
             self.behind_since_ms = 0;
@@ -8544,8 +8672,19 @@ impl<T: CellTransport> NodeRuntime<T> {
         // and the next certified bundle re-anchors this node", record_top frozen 850 behind its DAG) while its DAG caught
         // up to inside the depth — so the ask said "inside-depth" and the bundle the fold waits for was never asked for. A
         // stale spine is owed a certified bundle at any depth (`instant_sync` adopts an equal-or-heavier one for it).
+        // ⛔⛔⛔ FORK-ASK (lane livediag, 2026-11-27; docs/SOLSTICE-RECEIVE-DEEP-AUDIT-20261127.md row FORK-ASK) — A NODE ON A LIGHTER FORK
+        // ASKS THE CERTIFIED BUNDLE WHATEVER THE HEIGHT GAP. MEASURED (netsim split-past-the-cap, 2d37df78): a party cut off past the
+        // merge depth trailed the network by ~27 heights after the heal — inside the catch-up depth, so this gate never let a bundle ask
+        // out, while its gossip door could not graft the heavier chain whose fork point sits below its merge depth; it never rejoined
+        // (no `[dsync]` line in 180 s). On one chain a peer's announced tip is held within seconds; a FORK_ASK_MS run of beacons
+        // naming a heavier tip this DAG never holds is a fork, and the bundle (adopted by certified work, BUNDLE-DEPTH) is the only way
+        // back. BORROWED: Kaspa starts IBD when a peer's chain is heavier and its blocks cannot be placed, not by a height gap.
+        // AI RESISTANT (b): a liar announcing heavy unplaced tips buys one throttled bundle ask per SYNC_REQ_THROTTLE_MS, a cost the
+        // degraded-view and stalled-lane exemptions already grant. SCALE: one scalar, one comparison.
+        let on_lighter_fork = self.on_lighter_fork(now_ms);
         if now_ms.saturating_sub(self.last_peer_beacon_ms) < 30_000
             && self.best_peer_blue_score <= self.node.tip_height().saturating_add(LIVE_CATCH_UP_DEPTH)
+            && !on_lighter_fork
             && !lanes_not_closing
             && !view_degraded
             && !self.pivot_absence_ask_due()
@@ -8554,9 +8693,15 @@ impl<T: CellTransport> NodeRuntime<T> {
         {
             return (false, "inside-depth-and-lanes-not-declared-stalled");
         }
+        // ⛔⛔ FORK-ASK-LATCH (lane livediag, 2026-11-27) — MEASURED (netsim split-past-the-cap, f8bee646, EXP_JOIN_TRACE): the cut-off
+        // party's last ask left DURING the partition and no host ever answered it; unrelated pages keep refreshing the in-flight mark
+        // (DB-166), so it held for the whole SYNC_ASK_LIFE_MS (240 s) and the ask the heal needed (logged at +100 s) never left. On a
+        // lighter fork an ask older than FORK_ASK_MS gives way: at most one fresh ask per FORK_ASK_MS (its own start re-arms the bound).
+        let stale_for_fork = self.fork_ask_overrides_inflight(now_ms);
         if self.sync_ask_inflight_ms != 0
             && now_ms.saturating_sub(self.sync_ask_inflight_ms) < SYNC_ASK_SILENCE_MS
             && now_ms.saturating_sub(self.sync_ask_started_ms) < SYNC_ASK_LIFE_MS
+            && !stale_for_fork
         {
             return (false, "an-ask-is-still-in-flight");
         }
@@ -8564,6 +8709,34 @@ impl<T: CellTransport> NodeRuntime<T> {
             return (false, "repoll-rest-after-the-last-bundle");
         }
         (true, "asking")
+    }
+
+    /// ⛔⛔⛔ FORK-ASK — is this node on a lighter fork? A run of beacons naming a heavier tip this DAG never holds has lasted FORK_ASK_MS,
+    /// and a peer beaconed inside the last 30 s (`note_peer_beacon_claim` keeps the run). Pure read of three scalars.
+    /// ⛔ FORK-VS-BEHIND (2026-11-27): a node merely BEHIND also never holds its peers' newest tips, so the run alone read a healthy
+    /// catch-up as a fork and FORK-JUMP took a bundle jump mid-catch-up — MEASURED: the testnet gate's replica census at 9ba408ae, a
+    /// DSYNC joiner held 23 more `da_tags_mem` entries and a shorter `canon_rewind` than the nodes that replayed. Behind and forked
+    /// differ in whether the gap CLOSES: catching up, this node's tip climbs toward the peer's; on a fork it extends its own branch
+    /// and the gap holds or grows (MEASURED, split-past-the-cap: 14 → 21 → 23). A grafted peer block does not tell them apart (the
+    /// cut-off party grafted 7 at 48cd63cf). So a fork also needs the gap not to have shrunk since the run began
+    /// (`peer_fork_gap0`). SCALE: one more scalar.
+    fn on_lighter_fork(&self, now_ms: u64) -> bool {
+        let gap_now = self.best_peer_blue_score.saturating_sub(self.node.tip_height());
+        self.peer_fork_since_ms != 0
+            && now_ms.saturating_sub(self.peer_fork_since_ms) >= FORK_ASK_MS
+            && now_ms.saturating_sub(self.last_peer_beacon_ms) < 30_000
+            && gap_now >= self.peer_fork_gap0
+            // a JOINING node (A-F77's latch: set at every DSYNC adopt, cleared once within one width of its best peer) is catching up
+            // by definition, never on a fork. MEASURED at ae43faff: the launch simulator's joiner n4 still read as forked after an
+            // adopt (its gap did not shrink at once), jumped three times, and held a different member-ring root at fold ordinal 274
+            && !self.joining
+    }
+
+    /// ⛔⛔ FORK-ASK-LATCH — on a lighter fork, an in-flight bundle ask that started FORK_ASK_MS ago or more no longer holds the next one
+    /// back: it went to a host that could not answer (MEASURED: an ask sent during a partition held the latch 240 s past the heal).
+    /// Bounded: each ask re-arms `sync_ask_started_ms`, so at most one ask per FORK_ASK_MS rides this.
+    fn fork_ask_overrides_inflight(&self, now_ms: u64) -> bool {
+        self.on_lighter_fork(now_ms) && now_ms.saturating_sub(self.sync_ask_started_ms) >= FORK_ASK_MS
     }
 
     fn sync_ask(&mut self) {
@@ -12551,9 +12724,11 @@ impl<T: CellTransport> NodeRuntime<T> {
                         // with 17 production holds and never asked once. A `heavier` verdict is already a considered ask
                         // (past the depth, stale lanes, or the 90 s stall + patience, re-armed per tip by
                         // SYNC_SAME_ASK_REARM_MS); it needs only the request throttle and the in-flight guard.
+                        // FORK-ASK-LATCH: on a lighter fork an ask older than FORK_ASK_MS gives way (`fork_ask_overrides_inflight`)
                         let stall_ask_due = now_ms.saturating_sub(self.last_sync_req_ms) >= SYNC_REQ_THROTTLE_MS
                             && (self.sync_ask_inflight_ms == 0
-                                || now_ms.saturating_sub(self.sync_ask_inflight_ms) >= SYNC_ASK_SILENCE_MS);
+                                || now_ms.saturating_sub(self.sync_ask_inflight_ms) >= SYNC_ASK_SILENCE_MS
+                                || self.fork_ask_overrides_inflight(now_ms));
                         if heavier && stall_ask_due {
                             // BULK first (kind 4): the cell-path response is a multi-cell page the
                             // paced lane can DROP under load (run-19: ~75% of SyncResponses lost);
@@ -14676,7 +14851,13 @@ impl<T: CellTransport> NodeRuntime<T> {
                         // path through the mined suffix above it (`suffix_chain_work`): the anchor's alone lost to our tip every
                         // time (MEASURED 2026-11-07: declared 118 against our 152 while the peer's tip held 160). The adopt door
                         // still verifies every suffix header's work and bounds the claimed work.
-                        let deep_fork = b.chain_work() > self.our_tip_blue_work() && self.deep_fork_recent(now_ms);
+                        // ⛔⛔ FORK-JUMP (lane livediag, 2026-11-27) — MEASURED (netsim split-past-the-cap, 3fd76916): the cut-off party's
+                        // asks were answered, and each served bundle ("blue_score 48 against ours 52") was refused here as "inside the
+                        // catch-up depth, the block lanes close it" — on a fork past the merge depth they never do. A lighter-fork run
+                        // (`on_lighter_fork`: heavier tips this DAG never holds, FORK_ASK_MS long) reads as the deep fork it is; the
+                        // bundle must still carry more chain work, and the adopt door weighs it by certified work as before.
+                        let deep_fork = b.chain_work() > self.our_tip_blue_work()
+                            && (self.deep_fork_recent(now_ms) || self.on_lighter_fork(now_ms));
                         if deep_fork {
                             crate::arti_transport::ilog(&format!(
                                 "[dsync] a fork deeper than the body window and a certified bundle {gap} block(s) ahead is at hand — \

@@ -360,6 +360,18 @@ impl Node {
 
     /// The header door's checks in their order, naming the first that refuses (`None` = admitted). The
     /// same checks as [`Self::header_door_admits_witnessed`], which stays the boolean door.
+    ///
+    /// ⛔⛔⛔ BUNDLE-DEPTH (lane livediag, 2026-11-27; docs/SOLSTICE-RECEIVE-DEEP-AUDIT-20261127.md row BUNDLE-DEPTH) — the merge-depth
+    /// term is judged against the BLOCK'S OWN score (its highest held parent's plus one), the shape `Dag::merge_depth_verdict` uses,
+    /// never against this node's selected tip. Judged at this node's tip, a node on a forked branch (its tip more than the cap past
+    /// the fork point) refused every honest bundle of the network's chain, so it could never come back: MEASURED live (the shared log,
+    /// 2026-11-27) 154 then 7 refusals "a carried ancestor: merges below the merge depth" while the user's wallet node and the origin
+    /// stood on two branches. The first form (the bundle's tip score less the cap, 22075901) still refused an honest bundle's carried
+    /// ancestors, which sit below its anchor by construction (MEASURED netsim split-past-the-cap at 5e97e899, cap 8: 5 refusals).
+    /// Fork choice between the chains is the adopt's own heavier-by-certified-work rule (`instant_sync`).
+    /// AI RESISTANT (b): the term reads only the block's own parents in this DAG; nothing a peer claims moves it, and a block that
+    /// merges too deep for its own score is still refused here and by the DAG. BORROWED: Kaspa's merge-depth rule is a property of
+    /// the block (its merge-depth root), and chains are chosen by work. SCALE: at most `dag_width` lookups; nothing stored.
     pub(crate) fn header_door_refusal(
         &self,
         block: &crate::block::Block,
@@ -384,11 +396,13 @@ impl Node {
         // cons: none — one DAG lookup per parent, at most `dag_width` of them.
         if !own_genesis {
             let dag = self.relay.dag();
-            if let Some(tip) = dag.selected_tip().and_then(|t| dag.get(&t)) {
-                let bound = tip.blue_score.saturating_sub(self.params().merge_depth_cap as u64);
-                if bound > 0
-                    && header.parents.iter().any(|p| dag.get(p).is_some_and(|pn| pn.blue_score < bound))
-                {
+            // BUNDLE-DEPTH: the bound is the block's OWN score less the cap (see the doc above), never this node's tip. Its own
+            // score is at least its highest held parent's plus one, so a held parent more than the cap below that merges too deep —
+            // the shape `Dag::merge_depth_verdict` (dag.rs) judges in full when the block is placed.
+            let own_floor = header.parents.iter().filter_map(|p| dag.get(p).map(|pn| pn.blue_score)).max().map(|s| s.saturating_add(1));
+            if let Some(own) = own_floor {
+                let bound = own.saturating_sub(self.params().merge_depth_cap as u64);
+                if bound > 0 && header.parents.iter().any(|p| dag.get(p).is_some_and(|pn| pn.blue_score < bound)) {
                     return Some("merges below the merge depth");
                 }
             }
