@@ -6256,6 +6256,11 @@ impl Node {
         tx: PqTx,
         carrier_prechecked: bool,
     ) -> Result<Hash32, MempoolError> {
+        // ⛔ RECENT-REJECTS (2026-11-28): a tx this node evicted as unlayable inside the window is refused before any work, so a peer
+        // re-sending it cannot end slot after slot (the live origin ended 797 templates on one such tx)
+        if self.recently_rejected(&tx.id) {
+            return Err(MempoolError::AlreadyKnown);
+        }
         // ⭐ §9.6 q5 AT THE GOSSIP DOOR (link 62): the pool's cheap refusals before any verify below — a gossiped echo of a
         // pooled tx, an unstamped flood, an id that does not bind its blob. The prechecked door's caller already paid its
         // verify, and `accept_inner` re-asks all of these either way.

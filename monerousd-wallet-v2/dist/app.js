@@ -57,7 +57,10 @@ function confirmCost({ title, lines, warning, confirmLabel }) {
       (l.detail ? '<div class="confirm-detail">' + escapeHtml(l.detail) + '</div>' : '')).join('');
     back.innerHTML = '<div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmCostTitle" aria-describedby="confirmCostWarning">' +
       '<h3 id="confirmCostTitle">' + escapeHtml(title) + '</h3>' + rows +
-      '<p class="confirm-warning" id="confirmCostWarning">⚠ ' + escapeHtml(warning) + '</p>' +
+      '<p class="confirm-warning' + (String(warning || '').length > 220 ? ' is-clamped' : '') + '" id="confirmCostWarning">⚠ ' + escapeHtml(warning) + '</p>' +
+      // CONFIRM-FITS: a long warning (an update's notes) starts collapsed with Read more; expanded it scrolls inside the dialog, and
+      // the buttons below it stay on screen at any window size (styles.css .confirm-dialog)
+      (String(warning || '').length > 220 ? '<button type="button" class="confirm-more" data-more="1">Read more</button>' : '') +
       '<div class="confirm-actions"><button type="button" class="btn btn-ghost" data-confirm="no">Cancel</button>' +
       '<button type="button" class="btn btn-primary" data-confirm="yes">' + escapeHtml(confirmLabel || 'Confirm') + '</button></div></div>';
     const close = (yes) => {
@@ -69,6 +72,13 @@ function confirmCost({ title, lines, warning, confirmLabel }) {
     const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); close(false); } };
     back.addEventListener('click', (ev) => {
       if (ev.target === back) return close(false);
+      const more = ev.target.closest('[data-more]');
+      if (more) {
+        const w = back.querySelector('.confirm-warning');
+        const open = w.classList.toggle('is-clamped') === false;
+        more.textContent = open ? 'Show less' : 'Read more';
+        return;
+      }
       const b = ev.target.closest('[data-confirm]');
       if (b) close(b.dataset.confirm === 'yes');
     });

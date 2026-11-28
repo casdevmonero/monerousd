@@ -1186,13 +1186,21 @@ html.m-phone .launchpad-web3 { display: none; } /* a phone's browser hands a sit
 .confirm-backdrop { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center;
   padding: 16px; background: rgba(0, 0, 0, 0.62); }
 .confirm-dialog { width: 100%; max-width: 420px; background: var(--bg-2); color: var(--text-1); border: 1px solid var(--stroke);
-  border-radius: 16px; padding: 20px; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5); }
+  border-radius: 16px; padding: 20px; box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  /* CONFIRM-FITS (2026-11-28; user: "the update button should be visible under any window size"): the dialog never outgrows the window;
+     its title, cost lines and buttons keep their size and only the warning text scrolls, so the confirm button is always on screen */
+  display: flex; flex-direction: column; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); }
+.confirm-dialog > * { flex-shrink: 0; }
 .confirm-dialog h3 { margin: 0 0 14px; color: var(--text-0); font-size: 18px; }
 .confirm-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--stroke-soft); }
 .confirm-row b { color: var(--text-0); white-space: nowrap; }
 .confirm-detail { margin: -4px 0 6px; font-size: 12px; opacity: 0.75; overflow-wrap: anywhere; }
 .confirm-warning { margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; background: rgba(255, 106, 0, 0.1);
-  color: var(--orange-2); font-size: 13px; line-height: 1.4; }
+  color: var(--orange-2); font-size: 13px; line-height: 1.4; white-space: pre-line; overflow-y: auto; }
+.confirm-dialog > .confirm-warning { flex: 0 1 auto; min-height: 3em; }
+.confirm-warning.is-clamped { max-height: 5.8em; overflow: hidden; }
+.confirm-more { align-self: flex-start; margin: 6px 0 0; padding: 0; border: 0; background: none; color: var(--text-1);
+  font-size: 12px; text-decoration: underline; cursor: pointer; }
 .confirm-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
 
 /* Cash out (§BR-1/5/6): the plan's pieces, their batches, what stays USDm. */

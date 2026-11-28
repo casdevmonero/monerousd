@@ -16,6 +16,10 @@
 /// ⭐ KASPA'S SPENDABILITY (lane speed5, 2026-11-19): how many fold steps under the newest fold step a send's member leg anchors
 /// (`Node::final_fold_step`). 2 clears the measured re-order at the newest step (A-F36) at ~7 s on the live run-2 pace.
 pub(crate) const SPEND_ANCHOR_DEPTH: u64 = 2;
+/// RECENT-REJECTS: how long a tx this node evicted as unlayable is refused at its doors (`Node::recently_rejected`).
+pub(crate) const RECENT_REJECTS_MS: u64 = 30 * 60 * 1000;
+/// RECENT-REJECTS: the most ids remembered (oldest out).
+pub(crate) const RECENT_REJECTS_MAX: usize = 4096;
 
 use crate::fixed::FixedBytes;
 use crate::block::{Block, BlockId};
@@ -1998,6 +2002,12 @@ pub struct Node {
     /// LONG-TERM: one wire (≤ BULK_FRAME_MAX) at most, replaced in place; rebuilt when the frozen set changes or after
     /// JOIN_SERVE_CACHE_MS. bound: 1 entry.
     pub(crate) join_serve_cache: std::sync::Mutex<Option<((usize, u64), u64, Vec<u8>)>>,
+    /// ⛔ RECENT-REJECTS (lane livediag, 2026-11-28) — the ids of pooled txs this node evicted because it could not lay them
+    /// (`evict_refused_spends`), each with when (wall ms); the gossip and RPC doors refuse them for RECENT_REJECTS_MS, so a peer
+    /// re-sending a tx this node's own verifier refuses costs at most one slot per window, never a loop of them. BORROWED: Bitcoin
+    /// Core's `recentRejects`. CACHE-ONLY: it decides only this node's own pool; a restart forgets it and the next refusal refills
+    /// it. O1-FOOTPRINT-REVIEWED: bounded by RECENT_REJECTS_MAX (4,096) entries of 40 B, oldest out.
+    pub(crate) recent_rejects: std::collections::VecDeque<(Hash32, u64)>,
     join_last_freeze: u64,
     nf_evidence_cache: std::collections::HashMap<[u8; 32], crate::nf_evidence::TagEvidence>,
     /// §2.5: shards being fetched: the tags so far and the last one asked after. At most `SHARDS_AT_ONCE` entries.
@@ -19263,9 +19273,23 @@ impl Node {
 
     pub(crate) fn evict_refused_spends(&mut self, ids: &[Hash32]) {
         if !ids.is_empty() {
-            eprintln!("[evict-refused] {} stated spend(s) left the pool: this node could not lay them", ids.len());
+            eprintln!("[evict-refused] {} pooled tx(s) left the pool: this node could not lay them", ids.len());
             self.mempool.remove(ids);
+            // RECENT-REJECTS: remembered, so a peer's re-send is refused at the door for the window
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+            for id in ids {
+                self.recent_rejects.push_back((*id, now));
+            }
+            while self.recent_rejects.len() > RECENT_REJECTS_MAX {
+                self.recent_rejects.pop_front();
+            }
         }
+    }
+
+    /// RECENT-REJECTS — was `id` evicted as unlayable inside the last RECENT_REJECTS_MS? A linear scan of ≤ 4,096 entries.
+    pub(crate) fn recently_rejected(&self, id: &Hash32) -> bool {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        self.recent_rejects.iter().any(|(r, at)| r == id && now.saturating_sub(*at) < RECENT_REJECTS_MS)
     }
 
     /// ⭐ DB-412 — one uniform draw in (0, 1] for this node's next production gap (`NodeRuntime::schedule_next_production`):

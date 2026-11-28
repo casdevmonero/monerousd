@@ -443,7 +443,14 @@ pub fn complete_produce_job(mut job: ProduceJob) -> Result<ProduceJob, Vec<Hash3
             job.block.seal_transitions_root();
             Ok(job)
         }
-        None => Err(p.stated_spend_ids),
+        // ⛔⛔⛔ REFUSED-SLOT-EVICTS-ITS-CARRY (lane livediag, 2026-11-28; NO CHAIN HALTS: a gate fails closed on the bad ITEM, never on
+        // chain progress) — MEASURED on the live origin: 797 templates in a row carried one 9,224-byte multi-note tx (`[tmpl-cand] a
+        // MULTI-NOTE tx … IS a candidate`), every one ended `[ledger-why] the tag cells are not the header's lane` / `a joined ledger
+        // proof this node's OWN verifier refuses`, and `[evict-refused]` never printed: the tx is not a STATED spend, so the eviction
+        // list was empty and it stayed in the pool, ending every slot — the testnet stopped. A refused slot with no stated spend to
+        // blame evicts every pooled tx the template carried; an honest one is re-sent by its sender, the bad one costs one slot.
+        // SAFE-FALLBACK: eviction only drops pool entries this node failed to lay; every later template runs every door unchanged.
+        None => Err(if p.stated_spend_ids.is_empty() { job.block.tx_ids.clone() } else { p.stated_spend_ids }),
     }
 }
 
@@ -935,7 +942,7 @@ pub(crate) fn liveness_floor(tip_ms: u64, now_ms: u64, window_ms: u64) -> bool {
 
 /// ⛔⛔⛔ STALE-ADOPT-SOLO — a peer's announced chain is advancing past this node, pure: the best announced score rose (`moved_ms` > 0)
 /// inside the last window and stands above `ahead_of` (this node's tip plus one DAG width). See `NodeRuntime::liveness_floor_due`.
-pub(crate) fn peer_chain_advancing_at(moved_ms: u64, now_ms: u64, window_ms: u64, best_peer: u64, ahead_of: u64) -> bool {
+pub(crate) fn peer_chain_advancing_at(moved_ms: u64, now_ms: u64, window_ms: u64, best_peer: u128, ahead_of: u128) -> bool {
     moved_ms != 0 && now_ms.saturating_sub(moved_ms) <= window_ms && best_peer > ahead_of
 }
 
@@ -1009,6 +1016,9 @@ mod pace_recovery_tests {
         assert!(!peer_chain_advancing_at(1_000, 1_000 + w + 1, w, 200, 150), "⛔ a peer quiet a whole window still held it");
         assert!(!peer_chain_advancing_at(1_000, 1_000, w, 150, 150), "⛔ a concurrent peer held the floor");
         assert!(!peer_chain_advancing_at(0, 5_000, w, 10_000, 150), "⛔ a never-moved score held the floor");
+        // BY WORK — the live stall at 10f02de6: a peer branch with more blocks but LESS work (its bundles refused NotHeavier) held the
+        // origin's production; the comparison is work against this node's tip work, so a lighter branch holds nothing
+        assert!(!peer_chain_advancing_at(1_000, 1_000 + w, w, 9_000, 10_000), "⛔ a lighter branch (less work) held the floor");
     }
 
     #[test]
@@ -1986,6 +1996,9 @@ pub struct NodeRuntime<T: CellTransport> {
     /// by a beacon's score rising above every score heard before, so a peer that announced a high score once and went quiet stops
     /// counting one DAA window later. CACHE-ONLY: a scalar; a restart re-learns it from the next beacon.
     peer_score_moved_ms: u64,
+    /// STALE-ADOPT-SOLO BY WORK — the most work a same-network peer has announced; `peer_score_moved_ms` moves only when it rises.
+    /// CACHE-ONLY: a scalar.
+    best_peer_blue_work: u128,
     /// ⛔⛔⛔ FORK-ASK — when a run of beacons naming a heavier tip this DAG does not hold began (ms; 0: no run). Reset by any beacon whose
     /// tip this DAG holds. A run of `FORK_ASK_MS` opens the certified-bundle ask whatever the height gap (`active_sync_ask_verdict`).
     /// CACHE-ONLY: a scalar.
@@ -2933,6 +2946,7 @@ impl<T: CellTransport> NodeRuntime<T> {
             floor_tip: None,
             floor_tip_ms: 0,
             peer_score_moved_ms: 0,
+            best_peer_blue_work: 0,
             peer_fork_since_ms: 0,
             peer_fork_gap0: 0,
             behind_since_ms: 0,
@@ -4512,7 +4526,11 @@ impl<T: CellTransport> NodeRuntime<T> {
         }
         if b.blue_score > self.best_peer_blue_score {
             self.best_peer_blue_score = b.blue_score;
-            self.peer_score_moved_ms = now_ms.max(1); // STALE-ADOPT-SOLO: a peer's chain advanced
+        }
+        // STALE-ADOPT-SOLO, BY WORK (2026-11-28): a peer's chain advanced only when its announced WORK rose — fork choice is by work
+        if b.blue_work > self.best_peer_blue_work {
+            self.best_peer_blue_work = b.blue_work;
+            self.peer_score_moved_ms = now_ms.max(1);
         }
         // ⛔⛔⛔ FORK-ASK (lane livediag, 2026-11-27) — a run of beacons naming a HEAVIER tip this DAG never holds is a fork: on one chain a
         // peer's announced tip is held within seconds, so the run breaks. Reset by any beacon whose tip this DAG holds.
@@ -7106,15 +7124,11 @@ impl<T: CellTransport> NodeRuntime<T> {
     /// ⛔⛔⛔ STALE-ADOPT-SOLO — is a same-network peer's announced chain advancing past this node? The best announced score ROSE inside
     /// the last DAA window (`window_ms`) and stands more than one DAG width above this node's tip (inside one width is concurrent,
     /// the production gate's own `peer_ahead` margin). Pure read of two scalars; see [`Self::liveness_floor_due`].
+    /// ⛔⛔⛔ BY WORK (2026-11-28): MEASURED on the live origin at 10f02de6 — it held production for 10+ minutes ("a live peer's chain is
+    /// advancing (20473 against this node's 19942)") behind a peer branch whose bundles it refused NotHeavier: a higher blue SCORE on
+    /// less WORK. Fork choice is by work, so a peer is ahead only when its announced work exceeds this node's tip work.
     fn peer_chain_advancing(&self, now_ms: u64, window_ms: u64) -> bool {
-        let dag_width = self.node.params().dag_width.max(1) as u64;
-        peer_chain_advancing_at(
-            self.peer_score_moved_ms,
-            now_ms,
-            window_ms,
-            self.best_peer_blue_score,
-            self.node.tip_height().saturating_add(dag_width),
-        )
+        peer_chain_advancing_at(self.peer_score_moved_ms, now_ms, window_ms, self.best_peer_blue_work, self.our_tip_blue_work())
     }
 
     /// ⛔⛔ PACE-RUNAWAY — the stall line on the clock ([`pace_after_stall`]): a pace above the share whose selected tip has not moved

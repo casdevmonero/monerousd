@@ -250,6 +250,7 @@ impl Node {
             join_step_buf: Vec::new(),
             join_frozen: Default::default(),
             join_serve_cache: std::sync::Mutex::new(None),
+            recent_rejects: std::collections::VecDeque::new(),
             join_last_freeze: 0,
             nf_evidence_cache: std::collections::HashMap::new(),
             nf_shard_fetch: std::collections::HashMap::new(),

@@ -82,6 +82,8 @@ pub const AUTHORITY_MANIFEST: &[(&str, Authority)] = &[
     ("chain_cert", Authority::LocalCache),
     // DSYNC-SERVE-OFF-LOCK: the served join bundle's wire, rebuilt from `join_frozen` (its source) at most once a minute
     ("join_serve_cache", Authority::LocalCache),
+    // RECENT-REJECTS: ids this node evicted as unlayable, refused at its doors for a window; decides only its own pool
+    ("recent_rejects", Authority::LocalCache),
     ("certified_blue_work", Authority::LocalCache),
     // LIVE-GROWTH (8dc7281d): the deep-fork sweep's call counter — a cadence (`node.rs` `DEEP_FORK_SWEEP_EVERY`), counted from this
     // process's own passes, never chain state. MEASURED (testnet gate 20261127-145549, join's replica census): 3/3/2 across three

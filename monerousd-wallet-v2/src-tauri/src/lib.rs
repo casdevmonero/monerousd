@@ -29395,6 +29395,31 @@ pub fn run() {
             }
         }
     }
+    // ⛔ WALLET-LOG (lane livediag, 2026-11-28; docs/SOLSTICE-RECEIVE-DEEP-AUDIT-20261127.md row WALLET-LOG): a wallet opened from
+    // Finder writes its stderr to /dev/null, so its own lines (the carrier follower's re-roots, the canon follower) could not be read
+    // when an idle window used 96 % of a core (MEASURED 2026-11-28, `sample` of the user's 0.3.6 window). Unless stderr is a terminal,
+    // it goes to `wallet.err.log` in this wallet's data dir, bounded like the node's (two generations of log_cap::STDERR_CAP_BYTES,
+    // 16 MB, checked every 10 min). LOCAL-STORAGE-REQUIRED: a diagnostic log the person's own machine keeps; the lines it holds are
+    // the ones the process already prints (each written PRIVACY-REVIEWED: counts and public positions, never a key, note or amount).
+    #[cfg(all(unix, not(target_os = "ios")))]
+    {
+        use std::io::IsTerminal;
+        let to_null = usdmd_node::oscall::path_of_stderr().map_or(true, |p| p == std::path::Path::new("/dev/null"));
+        if !std::io::stderr().is_terminal() && to_null {
+            let dir = node_data_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join("wallet.err.log");
+            let _ = usdmd_node::log_cap::rotate_path_if_over(&path, usdmd_node::log_cap::STDERR_CAP_BYTES);
+            if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                if usdmd_node::oscall::replace_stderr_with(&f).is_ok() {
+                    std::thread::spawn(|| loop {
+                        std::thread::sleep(std::time::Duration::from_secs(600));
+                        let _ = usdmd_node::log_cap::rotate_stderr_if_over(usdmd_node::log_cap::STDERR_CAP_BYTES);
+                    });
+                }
+            }
+        }
+    }
     // ON-DEVICE PANIC VISIBILITY (iOS discards a Rust panic's stderr): install a process-global panic hook FIRST,
     // before anything can panic, so EVERY panic on ANY thread — the in-process node/arti thread, a Tauri worker,
     // keygen, the note scanner — routes its payload + source location + thread name to the iOS system log (syslog
